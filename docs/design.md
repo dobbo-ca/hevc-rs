@@ -534,3 +534,12 @@ loop_filter_across_tiles_enabled_flag). bitDepth-based band shift = bitDepth - 5
 - Corpus: JCT-VC HEVC_v1 conformance streams (all, since every one starts with an intra
   picture), selected RExt streams for rejection classes, public HEIC samples (later), fuzz-grown
   files. Fetched in CI into a BuildKit cache mount (`id=hevc-rs-data`), never committed.
+
+## Metadata (owner rule, 2026-11-19)
+
+Keep metadata by default and expose it raw: SEI messages (for example mastering display colour
+volume, content light level) and the colour information of the VUI (colour_primaries,
+transfer_characteristics, matrix_coeffs, video_full_range_flag, chroma sample location). An
+option may drop them. To do: a raw `Metadata` on `Info` / `Picture` (payload type + bytes for
+each SEI message, the parsed VUI colour fields), an `Options` switch to drop it, and the bytes
+charged to the ledger with a cap.

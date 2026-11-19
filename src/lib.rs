@@ -61,15 +61,21 @@
 #![allow(dead_code)]
 
 mod bits;
+mod cabac;
+mod ctu;
 mod decoder;
 mod error;
+mod frame;
+mod intra;
 mod ledger;
 mod limits;
 mod nal;
 mod ps;
+mod residual;
 mod scaling;
 mod sei;
 mod slice;
+mod transform;
 
 pub use decoder::{
     decode, decode_hvcc, decode_hvcc_into, decode_into, intra_prefix, probe, probe_hvcc,

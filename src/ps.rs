@@ -1009,7 +1009,7 @@ fn build(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// MSB-first bit writer for hand-built parameter sets.
@@ -1053,7 +1053,7 @@ mod tests {
     }
 
     /// A Main profile SPS: CTB 32, min CB 8, TB 4..32, 4:2:0 8 bit, crop of 2 columns and rows.
-    fn sps_bits(w: u32, h: u32) -> Vec<u8> {
+    pub(crate) fn sps_bits(w: u32, h: u32) -> Vec<u8> {
         let mut b = W::default();
         b.u(4, 0); // vps id
         b.u(3, 0); // max_sub_layers_minus1
@@ -1100,7 +1100,7 @@ mod tests {
     }
 
     /// A PPS with `tiles` columns and rows (uniform) or none.
-    fn pps_bits(tiles: u32) -> Vec<u8> {
+    pub(crate) fn pps_bits(tiles: u32) -> Vec<u8> {
         let mut b = W::default();
         b.ue(0);
         b.ue(0);
@@ -1139,7 +1139,7 @@ mod tests {
         b.bytes()
     }
 
-    fn ledger() -> Ledger {
+    pub(crate) fn ledger() -> Ledger {
         let l = Ledger::default();
         l.reset(1 << 30, 0).unwrap();
         l

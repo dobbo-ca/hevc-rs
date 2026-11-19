@@ -107,6 +107,15 @@ pub(crate) fn alloc_u16_zeroed(len: usize, ledger: &Ledger) -> Result<Vec<u16>, 
     Ok(v)
 }
 
+/// A `Vec` of `len` copies of `v`. Does not charge: the caller has already reserved
+/// `len * size_of::<T>()` bytes in the ledger (so one reservation can cover several buffers).
+pub(crate) fn filled<T: Clone>(len: usize, v: T) -> Result<Vec<T>, Error> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(len).map_err(|_| Error::OutOfMemory)?;
+    out.resize(len, v);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
