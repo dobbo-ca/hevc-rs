@@ -155,7 +155,7 @@ mod tests {
         let mut r = BitReader::new(&[0, 0, 0, 0, 0x80]);
         assert!(r.ue().is_err());
         // Truncated.
-        let mut r = BitReader::new(&[0b0010_0000]);
+        let mut r = BitReader::new(&[0x00, 0x01]); // 15 zeros, a 1, then 15 bits missing
         assert!(r.ue().is_err());
         // se of the largest codes stays in range.
         let mut r = BitReader::new(&[0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0xFF]);
