@@ -1,0 +1,19 @@
+hevc-rs
+Copyright 2026 Chris Dobbyn
+
+hevc-rs is a new crate, not a port of a Go repository. It implements ITU-T Recommendation
+H.265 (High efficiency video coding). The tables in the source (CABAC context initialisation
+values, rangeTabLps, intra angles, the transform matrix, default scaling lists, the deblocking
+beta/tC tables, the chroma QP table) come from that Recommendation.
+
+libde265 (LGPL-3.0) and FFmpeg (LGPL-2.1) are used only as CI-only oracle tools and as design
+references. No code or tables are copied from them.
+
+Third-party code and data
+-------------------------
+
+1. MD5 (src/sei.rs) is written from RFC 1321 (R. Rivest, 1992), which places the algorithm
+   description in the public domain for any use.
+
+2. JCT-VC HEVC conformance bitstreams (ITU-T H.265.1), used only in CI as parity inputs; they
+   are downloaded at build time and never committed.

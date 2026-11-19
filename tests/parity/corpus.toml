@@ -1,0 +1,887 @@
+# The public HEVC conformance streams of the parity gates (docs/design.md, "Oracles and parity").
+# fetch.sh downloads each [[file]] once into the BuildKit cache mount id=hevc-rs-data, checks size
+# and sha256, and extracts the bitstream files (*.bit *.bin *.hevc *.265, any depth, any case) into
+# <dir>/x/<path without .zip>/. sha256 = "TODO" is accepted: fetch.sh prints the computed sum, to be
+# pinned here afterwards.
+
+[[file]]
+path = "AMP_A_Samsung_7.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/AMP_A_Samsung_7.zip"
+size = 266095
+sha256 = "TODO"
+
+[[file]]
+path = "AMP_B_Samsung_7.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/AMP_B_Samsung_7.zip"
+size = 932351
+sha256 = "TODO"
+
+[[file]]
+path = "AMP_D_Hisilicon_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/AMP_D_Hisilicon_3.zip"
+size = 716532
+sha256 = "TODO"
+
+[[file]]
+path = "AMP_E_Hisilicon_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/AMP_E_Hisilicon_3.zip"
+size = 808100
+sha256 = "TODO"
+
+[[file]]
+path = "AMP_F_Hisilicon_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/AMP_F_Hisilicon_3.zip"
+size = 558283
+sha256 = "TODO"
+
+[[file]]
+path = "AMVP_A_MTK_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/AMVP_A_MTK_4.zip"
+size = 18585
+sha256 = "TODO"
+
+[[file]]
+path = "AMVP_B_MTK_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/AMVP_B_MTK_4.zip"
+size = 24723
+sha256 = "TODO"
+
+[[file]]
+path = "AMVP_C_Samsung_7.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/AMVP_C_Samsung_7.zip"
+size = 308139
+sha256 = "TODO"
+
+[[file]]
+path = "BUMPING_A_ericsson_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/BUMPING_A_ericsson_1.zip"
+size = 528429
+sha256 = "TODO"
+
+[[file]]
+path = "CAINIT_A_SHARP_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/CAINIT_A_SHARP_4.zip"
+size = 1898631
+sha256 = "TODO"
+
+[[file]]
+path = "CAINIT_B_SHARP_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/CAINIT_B_SHARP_4.zip"
+size = 1907270
+sha256 = "TODO"
+
+[[file]]
+path = "CAINIT_C_SHARP_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/CAINIT_C_SHARP_3.zip"
+size = 2111011
+sha256 = "TODO"
+
+[[file]]
+path = "CAINIT_D_SHARP_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/CAINIT_D_SHARP_3.zip"
+size = 1974356
+sha256 = "TODO"
+
+[[file]]
+path = "CAINIT_E_SHARP_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/CAINIT_E_SHARP_3.zip"
+size = 2099374
+sha256 = "TODO"
+
+[[file]]
+path = "CAINIT_F_SHARP_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/CAINIT_F_SHARP_3.zip"
+size = 1929217
+sha256 = "TODO"
+
+[[file]]
+path = "CAINIT_G_SHARP_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/CAINIT_G_SHARP_3.zip"
+size = 2175936
+sha256 = "TODO"
+
+[[file]]
+path = "CAINIT_H_SHARP_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/CAINIT_H_SHARP_3.zip"
+size = 2012336
+sha256 = "TODO"
+
+[[file]]
+path = "CIP_A_Panasonic_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/CIP_A_Panasonic_3.zip"
+size = 17895
+sha256 = "TODO"
+
+[[file]]
+path = "cip_B_NEC_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/cip_B_NEC_3.zip"
+size = 14003
+sha256 = "TODO"
+
+[[file]]
+path = "CIP_C_Panasonic_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/CIP_C_Panasonic_2.zip"
+size = 60954
+sha256 = "TODO"
+
+[[file]]
+path = "CONFWIN_A_Sony_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/CONFWIN_A_Sony_1.zip"
+size = 284207
+sha256 = "TODO"
+
+[[file]]
+path = "DBLK_A_MAIN10_VIXS_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/DBLK_A_MAIN10_VIXS_4.zip"
+size = 101230
+sha256 = "TODO"
+
+[[file]]
+path = "DBLK_A_SONY_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/DBLK_A_SONY_3.zip"
+size = 279218
+sha256 = "TODO"
+
+[[file]]
+path = "DBLK_B_SONY_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/DBLK_B_SONY_3.zip"
+size = 75677
+sha256 = "TODO"
+
+[[file]]
+path = "DBLK_C_SONY_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/DBLK_C_SONY_3.zip"
+size = 852033
+sha256 = "TODO"
+
+[[file]]
+path = "DBLK_D_VIXS_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/DBLK_D_VIXS_2.zip"
+size = 17420
+sha256 = "TODO"
+
+[[file]]
+path = "DBLK_E_VIXS_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/DBLK_E_VIXS_2.zip"
+size = 27438
+sha256 = "TODO"
+
+[[file]]
+path = "DBLK_F_VIXS_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/DBLK_F_VIXS_2.zip"
+size = 27444
+sha256 = "TODO"
+
+[[file]]
+path = "DBLK_G_VIXS_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/DBLK_G_VIXS_2.zip"
+size = 27437
+sha256 = "TODO"
+
+[[file]]
+path = "DELTAQP_A_BRCM_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/DELTAQP_A_BRCM_4.zip"
+size = 9529728
+sha256 = "TODO"
+
+[[file]]
+path = "DELTAQP_B_SONY_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/DELTAQP_B_SONY_3.zip"
+size = 5374760
+sha256 = "TODO"
+
+[[file]]
+path = "DELTAQP_C_SONY_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/DELTAQP_C_SONY_3.zip"
+size = 1381335
+sha256 = "TODO"
+
+[[file]]
+path = "DSLICE_A_HHI_5.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/DSLICE_A_HHI_5.zip"
+size = 371423
+sha256 = "TODO"
+
+[[file]]
+path = "DSLICE_B_HHI_5.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/DSLICE_B_HHI_5.zip"
+size = 374392
+sha256 = "TODO"
+
+[[file]]
+path = "DSLICE_C_HHI_5.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/DSLICE_C_HHI_5.zip"
+size = 371764
+sha256 = "TODO"
+
+[[file]]
+path = "ENTP_A_QUALCOMM_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/ENTP_A_QUALCOMM_1.zip"
+size = 2624919
+sha256 = "TODO"
+
+[[file]]
+path = "ENTP_B_Qualcomm_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/ENTP_B_Qualcomm_1.zip"
+size = 312095
+sha256 = "TODO"
+
+[[file]]
+path = "ENTP_C_Qualcomm_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/ENTP_C_Qualcomm_1.zip"
+size = 219316
+sha256 = "TODO"
+
+[[file]]
+path = "EXT_A_ericsson_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/EXT_A_ericsson_4.zip"
+size = 27780
+sha256 = "TODO"
+
+[[file]]
+path = "FILLER_A_Sony_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/FILLER_A_Sony_1.zip"
+size = 284359
+sha256 = "TODO"
+
+[[file]]
+path = "HRD_A_Fujitsu_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/HRD_A_Fujitsu_3.zip"
+size = 147331
+sha256 = "TODO"
+
+[[file]]
+path = "INITQP_A_Sony_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/INITQP_A_Sony_1.zip"
+size = 289519
+sha256 = "TODO"
+
+[[file]]
+path = "INITQP_B_Main10_Sony_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/INITQP_B_Main10_Sony_1.zip"
+size = 406174
+sha256 = "TODO"
+
+[[file]]
+path = "ipcm_A_NEC_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/ipcm_A_NEC_3.zip"
+size = 6037
+sha256 = "TODO"
+
+[[file]]
+path = "ipcm_B_NEC_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/ipcm_B_NEC_3.zip"
+size = 6557
+sha256 = "TODO"
+
+[[file]]
+path = "ipcm_C_NEC_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/ipcm_C_NEC_3.zip"
+size = 6795
+sha256 = "TODO"
+
+[[file]]
+path = "ipcm_D_NEC_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/ipcm_D_NEC_3.zip"
+size = 6767
+sha256 = "TODO"
+
+[[file]]
+path = "ipcm_E_NEC_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/ipcm_E_NEC_2.zip"
+size = 6408
+sha256 = "TODO"
+
+[[file]]
+path = "IPRED_A_docomo_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/IPRED_A_docomo_2.zip"
+size = 336302
+sha256 = "TODO"
+
+[[file]]
+path = "IPRED_B_Nokia_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/IPRED_B_Nokia_3.zip"
+size = 302514
+sha256 = "TODO"
+
+[[file]]
+path = "IPRED_C_Mitsubishi_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/IPRED_C_Mitsubishi_3.zip"
+size = 258524
+sha256 = "TODO"
+
+[[file]]
+path = "LS_A_Orange_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/LS_A_Orange_2.zip"
+size = 594107
+sha256 = "TODO"
+
+[[file]]
+path = "LS_B_Orange_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/LS_B_Orange_4.zip"
+size = 3700777
+sha256 = "TODO"
+
+[[file]]
+path = "LTRPSPS_A_Qualcomm_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/LTRPSPS_A_Qualcomm_1.zip"
+size = 490893
+sha256 = "TODO"
+
+[[file]]
+path = "MAXBINS_A_TI_5.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/MAXBINS_A_TI_5.zip"
+size = 302251
+sha256 = "TODO"
+
+[[file]]
+path = "MAXBINS_B_TI_5.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/MAXBINS_B_TI_5.zip"
+size = 166197
+sha256 = "TODO"
+
+[[file]]
+path = "MAXBINS_C_TI_5.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/MAXBINS_C_TI_5.zip"
+size = 165306
+sha256 = "TODO"
+
+[[file]]
+path = "MERGE_A_TI_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/MERGE_A_TI_3.zip"
+size = 16967
+sha256 = "TODO"
+
+[[file]]
+path = "MERGE_B_TI_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/MERGE_B_TI_3.zip"
+size = 16676
+sha256 = "TODO"
+
+[[file]]
+path = "MERGE_C_TI_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/MERGE_C_TI_3.zip"
+size = 16588
+sha256 = "TODO"
+
+[[file]]
+path = "MERGE_D_TI_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/MERGE_D_TI_3.zip"
+size = 16599
+sha256 = "TODO"
+
+[[file]]
+path = "MERGE_E_TI_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/MERGE_E_TI_3.zip"
+size = 16563
+sha256 = "TODO"
+
+[[file]]
+path = "MERGE_F_MTK_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/MERGE_F_MTK_4.zip"
+size = 25247
+sha256 = "TODO"
+
+[[file]]
+path = "MERGE_G_HHI_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/MERGE_G_HHI_4.zip"
+size = 67055
+sha256 = "TODO"
+
+[[file]]
+path = "MVCLIP_A_qualcomm_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/MVCLIP_A_qualcomm_3.zip"
+size = 100255
+sha256 = "TODO"
+
+[[file]]
+path = "MVDL1ZERO_A_docomo_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/MVDL1ZERO_A_docomo_4.zip"
+size = 1945632
+sha256 = "TODO"
+
+[[file]]
+path = "MVEDGE_A_qualcomm_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/MVEDGE_A_qualcomm_3.zip"
+size = 52420
+sha256 = "TODO"
+
+[[file]]
+path = "NoOutPrior_A_Qualcomm_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/NoOutPrior_A_Qualcomm_1.zip"
+size = 140200
+sha256 = "TODO"
+
+[[file]]
+path = "NoOutPrior_B_Qualcomm_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/NoOutPrior_B_Qualcomm_1.zip"
+size = 142489
+sha256 = "TODO"
+
+[[file]]
+path = "NUT_A_ericsson_5.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/NUT_A_ericsson_5.zip"
+size = 302365
+sha256 = "TODO"
+
+[[file]]
+path = "OPFLAG_A_Qualcomm_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/OPFLAG_A_Qualcomm_1.zip"
+size = 501886
+sha256 = "TODO"
+
+[[file]]
+path = "OPFLAG_B_Qualcomm_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/OPFLAG_B_Qualcomm_1.zip"
+size = 2056800
+sha256 = "TODO"
+
+[[file]]
+path = "OPFLAG_C_Qualcomm_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/OPFLAG_C_Qualcomm_1.zip"
+size = 278961
+sha256 = "TODO"
+
+[[file]]
+path = "PICSIZE_A_Bossen_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/PICSIZE_A_Bossen_1.zip"
+size = 420346
+sha256 = "TODO"
+
+[[file]]
+path = "PICSIZE_B_Bossen_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/PICSIZE_B_Bossen_1.zip"
+size = 338263
+sha256 = "TODO"
+
+[[file]]
+path = "PICSIZE_C_Bossen_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/PICSIZE_C_Bossen_1.zip"
+size = 161056
+sha256 = "TODO"
+
+[[file]]
+path = "PICSIZE_D_Bossen_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/PICSIZE_D_Bossen_1.zip"
+size = 77220
+sha256 = "TODO"
+
+[[file]]
+path = "PMERGE_A_TI_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/PMERGE_A_TI_3.zip"
+size = 16580
+sha256 = "TODO"
+
+[[file]]
+path = "PMERGE_B_TI_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/PMERGE_B_TI_3.zip"
+size = 16628
+sha256 = "TODO"
+
+[[file]]
+path = "PMERGE_C_TI_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/PMERGE_C_TI_3.zip"
+size = 16664
+sha256 = "TODO"
+
+[[file]]
+path = "PMERGE_D_TI_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/PMERGE_D_TI_3.zip"
+size = 16781
+sha256 = "TODO"
+
+[[file]]
+path = "PMERGE_E_TI_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/PMERGE_E_TI_3.zip"
+size = 16977
+sha256 = "TODO"
+
+[[file]]
+path = "POC_A_Bossen_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/POC_A_Bossen_3.zip"
+size = 86243
+sha256 = "TODO"
+
+[[file]]
+path = "PPS_A_qualcomm_7.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/PPS_A_qualcomm_7.zip"
+size = 407388
+sha256 = "TODO"
+
+[[file]]
+path = "PS_B_VIDYO_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/PS_B_VIDYO_3.zip"
+size = 18766
+sha256 = "TODO"
+
+[[file]]
+path = "RAP_A_docomo_6.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RAP_A_docomo_6.zip"
+size = 111169
+sha256 = "TODO"
+
+[[file]]
+path = "RAP_B_Bossen_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RAP_B_Bossen_2.zip"
+size = 120428
+sha256 = "TODO"
+
+[[file]]
+path = "RPLM_A_qualcomm_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RPLM_A_qualcomm_4.zip"
+size = 204287
+sha256 = "TODO"
+
+[[file]]
+path = "RPLM_B_qualcomm_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RPLM_B_qualcomm_4.zip"
+size = 219626
+sha256 = "TODO"
+
+[[file]]
+path = "RPS_A_docomo_5.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RPS_A_docomo_5.zip"
+size = 66960
+sha256 = "TODO"
+
+[[file]]
+path = "RPS_B_qualcomm_5.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RPS_B_qualcomm_5.zip"
+size = 220876
+sha256 = "TODO"
+
+[[file]]
+path = "RPS_C_ericsson_5.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RPS_C_ericsson_5.zip"
+size = 354979
+sha256 = "TODO"
+
+[[file]]
+path = "RPS_D_ericsson_6.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RPS_D_ericsson_6.zip"
+size = 561804
+sha256 = "TODO"
+
+[[file]]
+path = "RPS_E_qualcomm_5.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RPS_E_qualcomm_5.zip"
+size = 436970
+sha256 = "TODO"
+
+[[file]]
+path = "RPS_F_docomo_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RPS_F_docomo_2.zip"
+size = 80776
+sha256 = "TODO"
+
+[[file]]
+path = "RQT_A_HHI_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RQT_A_HHI_4.zip"
+size = 67173
+sha256 = "TODO"
+
+[[file]]
+path = "RQT_B_HHI_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RQT_B_HHI_4.zip"
+size = 67077
+sha256 = "TODO"
+
+[[file]]
+path = "RQT_C_HHI_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RQT_C_HHI_4.zip"
+size = 67023
+sha256 = "TODO"
+
+[[file]]
+path = "RQT_D_HHI_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RQT_D_HHI_4.zip"
+size = 67007
+sha256 = "TODO"
+
+[[file]]
+path = "RQT_E_HHI_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RQT_E_HHI_4.zip"
+size = 85748
+sha256 = "TODO"
+
+[[file]]
+path = "RQT_F_HHI_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RQT_F_HHI_4.zip"
+size = 66958
+sha256 = "TODO"
+
+[[file]]
+path = "RQT_G_HHI_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RQT_G_HHI_4.zip"
+size = 67245
+sha256 = "TODO"
+
+[[file]]
+path = "SAO_A_MediaTek_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAO_A_MediaTek_4.zip"
+size = 52930
+sha256 = "TODO"
+
+[[file]]
+path = "SAO_B_MediaTek_5.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAO_B_MediaTek_5.zip"
+size = 163718
+sha256 = "TODO"
+
+[[file]]
+path = "SAO_C_Samsung_5.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAO_C_Samsung_5.zip"
+size = 449819
+sha256 = "TODO"
+
+[[file]]
+path = "SAO_D_Samsung_5.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAO_D_Samsung_5.zip"
+size = 463353
+sha256 = "TODO"
+
+[[file]]
+path = "SAO_E_Canon_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAO_E_Canon_4.zip"
+size = 152330
+sha256 = "TODO"
+
+[[file]]
+path = "SAO_F_Canon_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAO_F_Canon_3.zip"
+size = 50857
+sha256 = "TODO"
+
+[[file]]
+path = "SAO_G_Canon_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAO_G_Canon_3.zip"
+size = 24604
+sha256 = "TODO"
+
+[[file]]
+path = "SAO_H_Parabola_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAO_H_Parabola_1.zip"
+size = 33641
+sha256 = "TODO"
+
+[[file]]
+path = "SAODBLK_A_MainConcept_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAODBLK_A_MainConcept_4.zip"
+size = 1386846
+sha256 = "TODO"
+
+[[file]]
+path = "SAODBLK_B_MainConcept_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAODBLK_B_MainConcept_4.zip"
+size = 4342805
+sha256 = "TODO"
+
+[[file]]
+path = "SDH_A_Orange_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SDH_A_Orange_4.zip"
+size = 1099127
+sha256 = "TODO"
+
+[[file]]
+path = "SLICES_A_Rovi_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SLICES_A_Rovi_3.zip"
+size = 65113
+sha256 = "TODO"
+
+[[file]]
+path = "SLIST_A_Sony_5.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SLIST_A_Sony_5.zip"
+size = 338351
+sha256 = "TODO"
+
+[[file]]
+path = "SLIST_B_Sony_9.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SLIST_B_Sony_9.zip"
+size = 342838
+sha256 = "TODO"
+
+[[file]]
+path = "SLIST_C_Sony_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SLIST_C_Sony_4.zip"
+size = 333156
+sha256 = "TODO"
+
+[[file]]
+path = "SLIST_D_Sony_9.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SLIST_D_Sony_9.zip"
+size = 364708
+sha256 = "TODO"
+
+[[file]]
+path = "SLPPLP_A_VIDYO_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SLPPLP_A_VIDYO_2.zip"
+size = 23627
+sha256 = "TODO"
+
+[[file]]
+path = "STRUCT_A_Samsung_7.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/STRUCT_A_Samsung_7.zip"
+size = 319768
+sha256 = "TODO"
+
+[[file]]
+path = "STRUCT_B_Samsung_7.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/STRUCT_B_Samsung_7.zip"
+size = 325036
+sha256 = "TODO"
+
+[[file]]
+path = "TILES_A_Cisco_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/TILES_A_Cisco_2.zip"
+size = 485979
+sha256 = "TODO"
+
+[[file]]
+path = "TILES_B_Cisco_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/TILES_B_Cisco_1.zip"
+size = 529009
+sha256 = "TODO"
+
+[[file]]
+path = "TMVP_A_MS_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/TMVP_A_MS_3.zip"
+size = 1628704
+sha256 = "TODO"
+
+[[file]]
+path = "TSCL_A_VIDYO_5.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/TSCL_A_VIDYO_5.zip"
+size = 48346
+sha256 = "TODO"
+
+[[file]]
+path = "TSCL_B_VIDYO_4.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/TSCL_B_VIDYO_4.zip"
+size = 55794
+sha256 = "TODO"
+
+[[file]]
+path = "TSKIP_A_MS_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/TSKIP_A_MS_3.zip"
+size = 6969739
+sha256 = "TODO"
+
+[[file]]
+path = "TSUNEQBD_A_MAIN10_Technicolor_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/TSUNEQBD_A_MAIN10_Technicolor_2.zip"
+size = 216376
+sha256 = "TODO"
+
+[[file]]
+path = "TUSIZE_A_Samsung_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/TUSIZE_A_Samsung_1.zip"
+size = 1239737
+sha256 = "TODO"
+
+[[file]]
+path = "VPSID_A_VIDYO_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/VPSID_A_VIDYO_2.zip"
+size = 25106
+sha256 = "TODO"
+
+[[file]]
+path = "VPSSPSPPS_A_MainConcept_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/VPSSPSPPS_A_MainConcept_1.zip"
+size = 99927
+sha256 = "TODO"
+
+[[file]]
+path = "WP_A_MAIN10_Toshiba_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WP_A_MAIN10_Toshiba_3.zip"
+size = 719732
+sha256 = "TODO"
+
+[[file]]
+path = "WP_A_Toshiba_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WP_A_Toshiba_3.zip"
+size = 739017
+sha256 = "TODO"
+
+[[file]]
+path = "WP_B_Toshiba_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WP_B_Toshiba_3.zip"
+size = 706118
+sha256 = "TODO"
+
+[[file]]
+path = "WP_MAIN10_B_Toshiba_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WP_MAIN10_B_Toshiba_3.zip"
+size = 703530
+sha256 = "TODO"
+
+[[file]]
+path = "WPP_A_ericsson_MAIN10_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_A_ericsson_MAIN10_2.zip"
+size = 6838327
+sha256 = "TODO"
+
+[[file]]
+path = "WPP_A_ericsson_MAIN_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_A_ericsson_MAIN_2.zip"
+size = 4110130
+sha256 = "TODO"
+
+[[file]]
+path = "WPP_B_ericsson_MAIN10_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_B_ericsson_MAIN10_2.zip"
+size = 6819559
+sha256 = "TODO"
+
+[[file]]
+path = "WPP_B_ericsson_MAIN_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_B_ericsson_MAIN_2.zip"
+size = 4167549
+sha256 = "TODO"
+
+[[file]]
+path = "WPP_C_ericsson_MAIN10_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_C_ericsson_MAIN10_2.zip"
+size = 6855110
+sha256 = "TODO"
+
+[[file]]
+path = "WPP_C_ericsson_MAIN_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_C_ericsson_MAIN_2.zip"
+size = 4219517
+sha256 = "TODO"
+
+[[file]]
+path = "WPP_D_ericsson_MAIN10_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_D_ericsson_MAIN10_2.zip"
+size = 1448102
+sha256 = "TODO"
+
+[[file]]
+path = "WPP_D_ericsson_MAIN_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_D_ericsson_MAIN_2.zip"
+size = 892742
+sha256 = "TODO"
+
+[[file]]
+path = "WPP_E_ericsson_MAIN10_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_E_ericsson_MAIN10_2.zip"
+size = 2421464
+sha256 = "TODO"
+
+[[file]]
+path = "WPP_E_ericsson_MAIN_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_E_ericsson_MAIN_2.zip"
+size = 1528860
+sha256 = "TODO"
+
+[[file]]
+path = "WPP_F_ericsson_MAIN10_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_F_ericsson_MAIN10_2.zip"
+size = 3117574
+sha256 = "TODO"
+
+[[file]]
+path = "WPP_F_ericsson_MAIN_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_F_ericsson_MAIN_2.zip"
+size = 1900774
+sha256 = "TODO"

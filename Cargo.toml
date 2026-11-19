@@ -1,0 +1,18 @@
+[package]
+name = "hevc"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+description = "HEVC (H.265) intra-only decoder with strict resource limits, bit-exact. Written for dobbo-ca; not a port."
+publish = false
+exclude = ["tests/fuzz", "tests/parity"]
+
+[dependencies]
+
+# The tests decode whole streams; keep them fast enough under `cargo test`.
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+codegen-units = 1
