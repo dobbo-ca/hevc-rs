@@ -890,52 +890,52 @@ sha256 = "39f5ffaa4c273c800b4e05715e2d4002e31b3bbe39505ea59b08c5fdabe6af21"
 path = "GENERAL_8b_400_RExt_Sony_1.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/GENERAL_8b_400_RExt_Sony_1.zip"
 size = 11593
-sha256 = "TODO"
+sha256 = "64d8eda9ecd8a86acbd9d91fe6e83927a8a155e8d13c891770f1d0d2a1792980"
 
 [[file]]
 path = "GENERAL_12b_400_RExt_Sony_1.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/GENERAL_12b_400_RExt_Sony_1.zip"
 size = 39504
-sha256 = "TODO"
+sha256 = "8524fa46aee7066ca77f08092f799572809b01e0d5f35c73286cbd0d414d0bf3"
 
 [[file]]
 path = "GENERAL_8b_420_RExt_Sony_1.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/GENERAL_8b_420_RExt_Sony_1.zip"
 size = 15367
-sha256 = "TODO"
+sha256 = "a3121dd9a59902b4517a395e91a48337d9fc11f4caf60208dbdf9c43fdd6c2db"
 
 [[file]]
 path = "GENERAL_10b_420_RExt_Sony_1.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/GENERAL_10b_420_RExt_Sony_1.zip"
 size = 31728
-sha256 = "TODO"
+sha256 = "fd878ccd5e1c1b306a110fac13237a76d1a3984cf95529e5e569924f074082dd"
 
 [[file]]
 path = "GENERAL_12b_420_RExt_Sony_1.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/GENERAL_12b_420_RExt_Sony_1.zip"
 size = 58478
-sha256 = "TODO"
+sha256 = "931932aa943957ce18ac693253e8ce8d07ebb1ef9cc32527e06e5cb8c59c3c71"
 
 [[file]]
 path = "Bitdepth_A_RExt_Sony_1.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/Bitdepth_A_RExt_Sony_1.zip"
 size = 35522
-sha256 = "TODO"
+sha256 = "34967e2047d59b0f3e96e7501712a056c01f369501d812b170c717ce1d417368"
 
 [[file]]
 path = "Bitdepth_B_RExt_Sony_1.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/Bitdepth_B_RExt_Sony_1.zip"
 size = 35468
-sha256 = "TODO"
+sha256 = "6f5f16377e9287ced1ad06a9493249ed1d61e393d779b06e777a92e14b6c6eb6"
 
 [[file]]
 path = "IPCM_A_RExt_NEC_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/IPCM_A_RExt_NEC_2.zip"
 size = 5476
-sha256 = "TODO"
+sha256 = "cc78df0aa70ed8536b002b48ea7feacf72ab703bba7e5286c290d02d1eb51308"
 
 [[file]]
 path = "IPCM_B_RExt_NEC.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/IPCM_B_RExt_NEC.zip"
 size = 6004
-sha256 = "TODO"
+sha256 = "b248e35a32f76f3384ddfb3ea7727b7d088ae977b3c649e152cca06149f546ce"
