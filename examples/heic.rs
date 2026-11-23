@@ -114,6 +114,13 @@ fn decode_one(name: &str, data: &[u8], outdir: &Path) {
             return;
         }
     };
+    // Bench only (tests/parity/bench.sh): HEIC_BENCH=1 times the decode alone, as heic-oracle
+    // does with it: no cross-check, and only the .info file is written.
+    if std::env::var_os("HEIC_BENCH").is_some() {
+        let i = &h.image.info;
+        std::fs::write(outdir.join(format!("{name}.info")), format!("{}", i.width)).unwrap();
+        return;
+    }
     // decode_heic_item on the parse of the same file must give the primary image of decode_heic.
     let iso = isobmff::Limits::default();
     let heif = isobmff::parse(data, &iso, &cancel).unwrap();

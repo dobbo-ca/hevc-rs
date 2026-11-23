@@ -1,6 +1,9 @@
 //! SEI messages: the sei_message() walk, the decoded picture hash (payloadType 132, D.2.20 /
 //! D.3.19) and its computation.
 
+use crate::error::{Error, Result};
+use std::sync::atomic::{AtomicBool, Ordering};
+
 /// Hash algorithm of a decoded picture hash SEI (hash_type 0, 1, 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HashKind {
@@ -87,14 +90,16 @@ fn parse_hash(p: &[u8]) -> Option<PictureHash> {
 
 /// Hash of the decoded (uncropped) picture per D.3.19. `planes[c]` is plane `c` with
 /// `widths[c]` x `heights[c]` samples, tightly packed. Components beyond the shortest input
-/// slice are left zero.
+/// slice are left zero. `cancel` is read once per row; when set, the result is
+/// `Error::Cancelled`.
 pub(crate) fn compute(
     kind: HashKind,
     planes: &[&[u16]],
     widths: &[usize],
     heights: &[usize],
     bit_depths: &[u8],
-) -> [[u8; 16]; 3] {
+    cancel: &AtomicBool,
+) -> Result<[[u8; 16]; 3]> {
     let mut out = [[0u8; 16]; 3];
     let comps = planes
         .iter()
@@ -106,22 +111,22 @@ pub(crate) fn compute(
         match kind {
             HashKind::Md5 => {
                 let mut md5 = Md5::new();
-                for_each_sample(plane, w, h, |_, _, s| {
+                for_each_sample(plane, w, h, cancel, |_, _, s| {
                     md5.update(s as u8);
                     if depth > 8 {
                         md5.update((s >> 8) as u8);
                     }
-                });
+                })?;
                 *dst = md5.finish();
             }
             HashKind::Crc => {
                 let mut crc = 0xFFFFu32;
-                for_each_sample(plane, w, h, |_, _, s| {
+                for_each_sample(plane, w, h, cancel, |_, _, s| {
                     crc = crc_byte(crc, s as u8);
                     if depth > 8 {
                         crc = crc_byte(crc, (s >> 8) as u8);
                     }
-                });
+                })?;
                 // The spec appends two zero bytes.
                 crc = crc_byte(crc_byte(crc, 0), 0);
                 for (d, b) in dst.iter_mut().zip((crc as u16).to_be_bytes()) {
@@ -130,32 +135,43 @@ pub(crate) fn compute(
             }
             HashKind::Checksum => {
                 let mut sum = 0u32;
-                for_each_sample(plane, w, h, |x, y, s| {
+                for_each_sample(plane, w, h, cancel, |x, y, s| {
                     let mask = ((x & 0xff) ^ (y & 0xff) ^ (x >> 8) ^ (y >> 8)) as u32;
                     sum = sum.wrapping_add(u32::from(s & 0xff) ^ mask);
                     if depth > 8 {
                         sum = sum.wrapping_add(u32::from(s >> 8) ^ mask);
                     }
-                });
+                })?;
                 for (d, b) in dst.iter_mut().zip(sum.to_be_bytes()) {
                     *d = b;
                 }
             }
         }
     }
-    out
+    Ok(out)
 }
 
-/// Calls `f(x, y, sample)` for the samples of a w x h plane in raster order.
-fn for_each_sample(plane: &[u16], w: usize, h: usize, mut f: impl FnMut(usize, usize, u16)) {
+/// Calls `f(x, y, sample)` for the samples of a w x h plane in raster order. `cancel` is read
+/// before each row.
+fn for_each_sample(
+    plane: &[u16],
+    w: usize,
+    h: usize,
+    cancel: &AtomicBool,
+    mut f: impl FnMut(usize, usize, u16),
+) -> Result<()> {
     if w == 0 {
-        return;
+        return Ok(());
     }
     for (y, row) in plane.chunks_exact(w).take(h).enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Error::Cancelled);
+        }
         for (x, &s) in row.iter().enumerate() {
             f(x, y, s);
         }
     }
+    Ok(())
 }
 
 /// One byte of the D.3.19 CRC: polynomial 0x1021, MSB first, 16-bit register.
@@ -293,31 +309,90 @@ mod tests {
     #[test]
     fn md5_picture_bytes() {
         // 8-bit: one byte per sample; 10-bit: two little-endian bytes.
-        let p8 = compute(HashKind::Md5, &[&[0x61, 0x62, 0x63]], &[3], &[1], &[8]);
+        let p8 = compute(
+            HashKind::Md5,
+            &[&[0x61, 0x62, 0x63]],
+            &[3],
+            &[1],
+            &[8],
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert_eq!(p8[0], md5_of(b"abc"));
-        let p10 = compute(HashKind::Md5, &[&[0x0261]], &[1], &[1], &[10]);
+        let p10 = compute(
+            HashKind::Md5,
+            &[&[0x0261]],
+            &[1],
+            &[1],
+            &[10],
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert_eq!(p10[0], md5_of(&[0x61, 0x02]));
     }
 
     #[test]
     fn checksum_tiny_plane() {
         // x = 0: mask 0 -> 1; x = 1: mask 1 -> 2 ^ 1 = 3.
-        let h = compute(HashKind::Checksum, &[&[1, 2]], &[2], &[1], &[8]);
+        let h = compute(
+            HashKind::Checksum,
+            &[&[1, 2]],
+            &[2],
+            &[1],
+            &[8],
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert_eq!(h[0][..4], 4u32.to_be_bytes());
         // 10-bit sample 0x0305 at (0, 0): 0x05 + 0x03.
-        let h = compute(HashKind::Checksum, &[&[0x0305]], &[1], &[1], &[10]);
+        let h = compute(
+            HashKind::Checksum,
+            &[&[0x0305]],
+            &[1],
+            &[1],
+            &[10],
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert_eq!(h[0][..4], 8u32.to_be_bytes());
     }
 
     #[test]
     fn crc_tiny_plane() {
         // Empty plane: 16 zero bits from 0xFFFF give 0x1D0F (worked by hand).
-        let h = compute(HashKind::Crc, &[&[]], &[1], &[0], &[8]);
+        let h = compute(
+            HashKind::Crc,
+            &[&[]],
+            &[1],
+            &[0],
+            &[8],
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert_eq!(h[0][..2], [0x1D, 0x0F]);
         // "123456789": CRC-16/AUG-CCITT check value.
         let s: Vec<u16> = b"123456789".iter().map(|&b| u16::from(b)).collect();
-        let h = compute(HashKind::Crc, &[&s], &[9], &[1], &[8]);
+        let h = compute(
+            HashKind::Crc,
+            &[&s],
+            &[9],
+            &[1],
+            &[8],
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert_eq!(h[0][..2], [0xE5, 0xCC]);
+    }
+
+    #[test]
+    fn hash_stops_when_cancelled() {
+        let set = AtomicBool::new(true);
+        for kind in [HashKind::Md5, HashKind::Crc, HashKind::Checksum] {
+            let r = compute(kind, &[&[1, 2, 3, 4]], &[2], &[2], &[8], &set);
+            assert_eq!(r.unwrap_err(), Error::Cancelled);
+        }
+        // An empty plane has no row to check: no error.
+        assert!(compute(HashKind::Md5, &[&[]], &[0], &[0], &[8], &set).is_ok());
     }
 
     #[test]

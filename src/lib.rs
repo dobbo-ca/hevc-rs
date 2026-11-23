@@ -25,7 +25,7 @@
 //!
 //! `max_alloc` is charged before each allocation and released on drop. `max_threads = 1` spawns
 //! no thread (v1 is serial anyway). The decode entry points read a cancel flag before every NAL
-//! unit and every CTU, and in deblocking and SAO per row; when it is set the call returns
+//! unit and every CTU, and in deblocking, SAO, the picture hash and the output crop per row; when it is set the call returns
 //! [`Error::Cancelled`].
 //!
 //! ```
@@ -76,6 +76,7 @@
 
 mod bits;
 mod cabac;
+mod crop;
 mod ctu;
 mod deblock;
 mod decoder;
