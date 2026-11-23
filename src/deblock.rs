@@ -10,7 +10,13 @@
 use crate::error::{Error, Result};
 use crate::frame::Frame;
 use crate::ps::Active;
+use crate::simd::{self, Tier};
 use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(target_arch = "aarch64")]
+mod arm;
+#[cfg(target_arch = "x86_64")]
+mod x86;
 
 /// beta' of Table 8-12, indexed by Q = 0..=51.
 const BETA_TAB: [u8; 52] = [
@@ -164,16 +170,212 @@ fn luma_line(
     o
 }
 
-/// 8.7.2.5.3 and 8.7.2.5.4 for the 4 lines of one luma edge segment. `q0` is the index of q0 of
-/// line 0, `is` the index step across the edge, `ks` the step along it.
-fn luma_segment(plane: &mut [u16], q0: usize, is: usize, ks: usize, bs: i32, e: &Edge, depth: u32) {
+/// Eight luma edge lines in structure-of-arrays form, one SIMD lane per line: `s[r][n]` is sample
+/// `r` of line `n`, `[p3, p2, p1, p0, q0, q1, q2, q3]`. Flags are -1 (set) or 0. Segments of one
+/// pass touch disjoint samples (edges 8 apart, 4 samples read on each side), so lines of
+/// different segments can be filtered together.
+#[derive(Clone, Default)]
+pub(crate) struct Lines {
+    s: [[i32; 8]; 8],
+    tc: [i32; 8],
+    strong: [i32; 8],
+    dep: [i32; 8],
+    deq: [i32; 8],
+    no_p: [i32; 8],
+    no_q: [i32; 8],
+    max: i32,
+}
+
+/// Eight chroma edge lines, `[p1, p0, q0, q1]`, same layout as [`Lines`].
+#[derive(Clone, Default)]
+pub(crate) struct CLines {
+    s: [[i32; 8]; 4],
+    tc: [i32; 8],
+    no_p: [i32; 8],
+    no_q: [i32; 8],
+    max: i32,
+}
+
+fn mask(b: bool) -> i32 {
+    -i32::from(b)
+}
+
+fn flag(a: &[i32; 8], n: usize) -> bool {
+    a.get(n).is_some_and(|&v| v != 0)
+}
+
+fn put(a: &mut [i32; 8], n: usize, v: i32) {
+    if let Some(x) = a.get_mut(n) {
+        *x = v;
+    }
+}
+
+fn set_lane<const R: usize>(rows: &mut [[i32; 8]; R], n: usize, a: &[i32; R]) {
+    for (row, &v) in rows.iter_mut().zip(a) {
+        put(row, n, v);
+    }
+}
+
+fn get_lane<const R: usize>(rows: &[[i32; 8]; R], n: usize) -> [i32; R] {
+    let mut a = [0i32; R];
+    for (v, row) in a.iter_mut().zip(rows) {
+        *v = row.get(n).copied().unwrap_or(0);
+    }
+    a
+}
+
+/// The Scalar tier: [`luma_line`] on every lane.
+fn luma_scalar(l: &mut Lines) {
+    for n in 0..8 {
+        let o = luma_line(
+            get_lane(&l.s, n),
+            flag(&l.strong, n),
+            flag(&l.dep, n),
+            flag(&l.deq, n),
+            l.tc.get(n).copied().unwrap_or(0),
+            l.max,
+            flag(&l.no_p, n),
+            flag(&l.no_q, n),
+        );
+        set_lane(&mut l.s, n, &o);
+    }
+}
+
+/// The Scalar tier: [`chroma_line`] on every lane.
+fn chroma_scalar(l: &mut CLines) {
+    for n in 0..8 {
+        let o = chroma_line(
+            get_lane(&l.s, n),
+            l.tc.get(n).copied().unwrap_or(0),
+            l.max,
+            flag(&l.no_p, n),
+            flag(&l.no_q, n),
+        );
+        set_lane(&mut l.s, n, &o);
+    }
+}
+
+/// Runs the luma filter of `tier` on the 8 lines. A tier the CPU lacks runs the Scalar code.
+#[allow(unsafe_code)]
+fn filter_luma(tier: Tier, l: &mut Lines) {
+    match tier {
+        #[cfg(target_arch = "x86_64")]
+        Tier::Avx2 | Tier::Avx512 if std::arch::is_x86_feature_detected!("avx2") => {
+            // SAFETY: is_x86_feature_detected! found avx2 in the guard (Avx512 is only selected
+            // together with avx2, src/simd/mod.rs); the kernel has no other precondition.
+            unsafe { x86::luma(l) }
+        }
+        #[cfg(target_arch = "aarch64")]
+        Tier::Neon if std::arch::is_aarch64_feature_detected!("neon") => {
+            // SAFETY: is_aarch64_feature_detected! found neon in the guard (src/simd/mod.rs).
+            unsafe { arm::luma(l) }
+        }
+        _ => luma_scalar(l),
+    }
+}
+
+/// Runs the chroma filter of `tier` on the 8 lines (see [`filter_luma`]).
+#[allow(unsafe_code)]
+fn filter_chroma(tier: Tier, l: &mut CLines) {
+    match tier {
+        #[cfg(target_arch = "x86_64")]
+        Tier::Avx2 | Tier::Avx512 if std::arch::is_x86_feature_detected!("avx2") => {
+            // SAFETY: is_x86_feature_detected! found avx2 in the guard (Avx512 is only selected
+            // together with avx2, src/simd/mod.rs); the kernel has no other precondition.
+            unsafe { x86::chroma(l) }
+        }
+        #[cfg(target_arch = "aarch64")]
+        Tier::Neon if std::arch::is_aarch64_feature_detected!("neon") => {
+            // SAFETY: is_aarch64_feature_detected! found neon in the guard (src/simd/mod.rs).
+            unsafe { arm::chroma(l) }
+        }
+        _ => chroma_scalar(l),
+    }
+}
+
+/// What the lines of one luma segment share.
+struct Seg {
+    strong: bool,
+    dep: bool,
+    deq: bool,
+    tc: i32,
+    no_p: bool,
+    no_q: bool,
+}
+
+/// Lines of luma segments waiting for the filter; `bases[n]` is where line `n` came from.
+struct LumaBatch {
+    l: Lines,
+    bases: [usize; 8],
+    n: usize,
+    /// Index step across the edge.
+    is: usize,
+    tier: Tier,
+}
+
+impl LumaBatch {
+    fn new(tier: Tier, is: usize, depth: u32) -> Self {
+        let l = Lines {
+            max: (1i32 << depth.min(16)) - 1,
+            ..Lines::default()
+        };
+        Self {
+            l,
+            bases: [0; 8],
+            n: 0,
+            is,
+            tier,
+        }
+    }
+
+    fn push(&mut self, plane: &mut [u16], base: usize, a: [i32; 8], g: &Seg) {
+        let n = self.n;
+        set_lane(&mut self.l.s, n, &a);
+        put(&mut self.l.tc, n, g.tc);
+        put(&mut self.l.strong, n, mask(g.strong));
+        put(&mut self.l.dep, n, mask(g.dep));
+        put(&mut self.l.deq, n, mask(g.deq));
+        put(&mut self.l.no_p, n, mask(g.no_p));
+        put(&mut self.l.no_q, n, mask(g.no_q));
+        if let Some(b) = self.bases.get_mut(n) {
+            *b = base;
+        }
+        self.n += 1;
+        if self.n >= 8 {
+            self.flush(plane);
+        }
+    }
+
+    /// Filters the queued lines and writes them back.
+    fn flush(&mut self, plane: &mut [u16]) {
+        if self.n == 0 {
+            return;
+        }
+        filter_luma(self.tier, &mut self.l);
+        for (n, &base) in self.bases.iter().enumerate().take(self.n) {
+            store(plane, base, self.is, -4, &get_lane(&self.l.s, n));
+        }
+        self.n = 0;
+    }
+}
+
+/// 8.7.2.5.3 and 8.7.2.5.4 for the 4 lines of one luma edge segment: the decision here, the
+/// lines are queued in `b`. `q0` is the index of q0 of line 0, `ks` the step along the edge.
+fn luma_segment(
+    b: &mut LumaBatch,
+    plane: &mut [u16],
+    q0: usize,
+    ks: usize,
+    bs: i32,
+    e: &Edge,
+    depth: u32,
+) {
     let scale = 1i32 << depth.saturating_sub(8).min(8);
-    let max = (1i32 << depth.min(16)) - 1;
     let beta = lookup(&BETA_TAB, e.qp + (e.beta_off << 1)) * scale;
     let tc = lookup(&TC_TAB, e.qp + 2 * (bs - 1) + (e.tc_off << 1)) * scale;
     let (Some(l0), Some(l3)) = (
-        load::<8>(plane, q0, is, -4),
-        load::<8>(plane, q0 + 3 * ks, is, -4),
+        load::<8>(plane, q0, b.is, -4),
+        load::<8>(plane, q0 + 3 * ks, b.is, -4),
     ) else {
         return;
     };
@@ -190,35 +392,90 @@ fn luma_segment(plane: &mut [u16], q0: usize, is: usize, ks: usize, bs: i32, e: 
     let strong = d_sam(2 * dpq0, p0_0, p3_0, q0_0, q3_0, beta, tc)
         && d_sam(2 * dpq3, p0_3, p3_3, q0_3, q3_3, beta, tc);
     let side = (beta + (beta >> 1)) >> 3;
-    let (dep, deq) = (dp0 + dp3 < side, dq0 + dq3 < side);
+    let g = Seg {
+        strong,
+        dep: dp0 + dp3 < side,
+        deq: dq0 + dq3 < side,
+        tc,
+        no_p: e.no_p,
+        no_q: e.no_q,
+    };
     for k in 0..4 {
         let base = q0 + k * ks;
-        if let Some(a) = load::<8>(plane, base, is, -4) {
-            let o = luma_line(a, strong, dep, deq, tc, max, e.no_p, e.no_q);
-            store(plane, base, is, -4, &o);
+        if let Some(a) = load::<8>(plane, base, b.is, -4) {
+            b.push(plane, base, a, &g);
         }
     }
 }
 
-/// 8.7.2.5.5 and 8.7.2.5.8 for the 4 lines of one chroma edge segment.
-fn chroma_segment(plane: &mut [u16], at: usize, is: usize, ks: usize, tc: i32, max: i32, e: &Edge) {
+/// 8.7.2.5.5 and 8.7.2.5.8 for one chroma line `[p1, p0, q0, q1]`.
+fn chroma_line(a: [i32; 4], tc: i32, max: i32, no_p: bool, no_q: bool) -> [i32; 4] {
+    let [p1, p0, q0, q1] = a;
+    let delta = ((((q0 - p0) << 2) + p1 - q1 + 4) >> 3).clamp(-tc, tc);
+    let p0n = if no_p { p0 } else { (p0 + delta).clamp(0, max) };
+    let q0n = if no_q { q0 } else { (q0 - delta).clamp(0, max) };
+    [p1, p0n, q0n, q1]
+}
+
+/// Lines of chroma segments waiting for the filter (see [`LumaBatch`]).
+struct ChromaBatch {
+    l: CLines,
+    bases: [usize; 8],
+    n: usize,
+    is: usize,
+    tier: Tier,
+}
+
+impl ChromaBatch {
+    fn new(tier: Tier, is: usize, depth: u32) -> Self {
+        let l = CLines {
+            max: (1i32 << depth.min(16)) - 1,
+            ..CLines::default()
+        };
+        Self {
+            l,
+            bases: [0; 8],
+            n: 0,
+            is,
+            tier,
+        }
+    }
+
+    fn push(&mut self, plane: &mut [u16], base: usize, a: [i32; 4], tc: i32, e: &Edge) {
+        let n = self.n;
+        set_lane(&mut self.l.s, n, &a);
+        put(&mut self.l.tc, n, tc);
+        put(&mut self.l.no_p, n, mask(e.no_p));
+        put(&mut self.l.no_q, n, mask(e.no_q));
+        if let Some(b) = self.bases.get_mut(n) {
+            *b = base;
+        }
+        self.n += 1;
+        if self.n >= 8 {
+            self.flush(plane);
+        }
+    }
+
+    fn flush(&mut self, plane: &mut [u16]) {
+        if self.n == 0 {
+            return;
+        }
+        filter_chroma(self.tier, &mut self.l);
+        for (n, &base) in self.bases.iter().enumerate().take(self.n) {
+            store(plane, base, self.is, -2, &get_lane(&self.l.s, n));
+        }
+        self.n = 0;
+    }
+}
+
+/// The 4 lines of one chroma edge segment, queued in `b`.
+fn chroma_segment(b: &mut ChromaBatch, plane: &mut [u16], at: usize, ks: usize, tc: i32, e: &Edge) {
     for k in 0..4 {
         let base = at + k * ks;
-        let Some([p1, p0, q0, q1]) = load::<4>(plane, base, is, -2) else {
+        let Some(a) = load::<4>(plane, base, b.is, -2) else {
             return;
         };
-        let delta = ((((q0 - p0) << 2) + p1 - q1 + 4) >> 3).clamp(-tc, tc);
-        let p0n = if e.no_p {
-            p0
-        } else {
-            (p0 + delta).clamp(0, max)
-        };
-        let q0n = if e.no_q {
-            q0
-        } else {
-            (q0 - delta).clamp(0, max)
-        };
-        store(plane, base, is, -2, &[p1, p0n, q0n, q1]);
+        b.push(plane, base, a, tc, e);
     }
 }
 
@@ -230,9 +487,16 @@ fn check(cancel: &AtomicBool) -> Result<()> {
     }
 }
 
-fn luma_pass(frame: &mut Frame, act: &Active, vertical: bool, cancel: &AtomicBool) -> Result<()> {
+fn luma_pass(
+    tier: Tier,
+    frame: &mut Frame,
+    act: &Active,
+    vertical: bool,
+    cancel: &AtomicBool,
+) -> Result<()> {
     let depth = act.sps.bit_depth_luma;
     let stride = frame.stride[0];
+    let mut batch = LumaBatch::new(tier, if vertical { 1 } else { stride }, depth);
     for gy in 0..frame.grid_h {
         check(cancel)?;
         for gx in 0..frame.grid_w {
@@ -250,23 +514,27 @@ fn luma_pass(frame: &mut Frame, act: &Active, vertical: bool, cancel: &AtomicBoo
             if bs == 0 {
                 continue;
             }
-            let (p, is, ks) = if vertical {
-                ((x - 1, y), 1, stride)
+            let (p, ks) = if vertical {
+                ((x - 1, y), stride)
             } else {
-                ((x, y - 1), stride, 1)
+                ((x, y - 1), 1)
             };
             let Some(e) = edge(frame, act, (x, y), p) else {
                 continue;
             };
             if let Some(plane) = frame.planes.first_mut() {
-                luma_segment(plane, y * stride + x, is, ks, bs, &e, depth);
+                luma_segment(&mut batch, plane, y * stride + x, ks, bs, &e, depth);
             }
         }
+    }
+    if let Some(plane) = frame.planes.first_mut() {
+        batch.flush(plane);
     }
     Ok(())
 }
 
 fn chroma_pass(
+    tier: Tier,
     frame: &mut Frame,
     act: &Active,
     c: usize,
@@ -286,7 +554,7 @@ fn chroma_pass(
     };
     let depth = act.sps.bit_depth_chroma;
     let scale = 1i32 << depth.saturating_sub(8).min(8);
-    let max = (1i32 << depth.min(16)) - 1;
+    let mut batch = ChromaBatch::new(tier, if vertical { 1 } else { stride }, depth);
     // Segments of 4 chroma samples along the edge (8 luma samples in 4:2:0).
     for cy in (0..h).step_by(4) {
         check(cancel)?;
@@ -304,32 +572,151 @@ fn chroma_pass(
             if bs != Some(2) {
                 continue;
             }
-            let (p, is, ks) = if vertical {
-                ((x - 1, y), 1, stride)
+            let (p, ks) = if vertical {
+                ((x - 1, y), stride)
             } else {
-                ((x, y - 1), stride, 1)
+                ((x, y - 1), 1)
             };
             let Some(e) = edge(frame, act, (x, y), p) else {
                 continue;
             };
             let tc = lookup(&TC_TAB, qpc(e.qp + pic_offset) + 2 + (e.tc_off << 1)) * scale;
             if let Some(plane) = frame.planes.get_mut(c) {
-                chroma_segment(plane, cy * stride + cx, is, ks, tc, max, &e);
+                chroma_segment(&mut batch, plane, cy * stride + cx, ks, tc, &e);
             }
         }
+    }
+    if let Some(plane) = frame.planes.get_mut(c) {
+        batch.flush(plane);
     }
     Ok(())
 }
 
 /// Deblocks the whole picture in place: vertical edges first, then horizontal edges.
 pub(crate) fn deblock(frame: &mut Frame, act: &Active, cancel: &AtomicBool) -> Result<()> {
+    deblock_with(simd::tier(), frame, act, cancel)
+}
+
+/// [`deblock`] on an explicit tier (the tests compare every tier with Scalar).
+fn deblock_with(tier: Tier, frame: &mut Frame, act: &Active, cancel: &AtomicBool) -> Result<()> {
     for vertical in [true, false] {
-        luma_pass(frame, act, vertical, cancel)?;
+        luma_pass(tier, frame, act, vertical, cancel)?;
         for c in 1..frame.num_planes() {
-            chroma_pass(frame, act, c, vertical, cancel)?;
+            chroma_pass(tier, frame, act, c, vertical, cancel)?;
         }
     }
     Ok(())
+}
+
+/// Reads bytes as a never-ending stream (zeros past the end).
+struct Bytes<'a>(&'a [u8], usize);
+
+impl Bytes<'_> {
+    fn byte(&mut self) -> u32 {
+        let v = self.0.get(self.1).copied().unwrap_or(0);
+        self.1 = self.1.saturating_add(1);
+        u32::from(v)
+    }
+}
+
+/// Sample depths the generators draw from.
+const DEPTHS: [u32; 4] = [8, 10, 12, 16];
+
+/// Draws `N` samples of a random shape: noise, smooth, 0/max extremes or a step edge.
+fn gen_samples<const N: usize>(
+    rng: &mut impl FnMut() -> u32,
+    mode: u32,
+    max: i32,
+    scale: i32,
+) -> [i32; N] {
+    let m = u32::try_from(max + 1).unwrap_or(1);
+    let base = i32::try_from(rng() % m).unwrap_or(0);
+    let off = i32::try_from(rng() % 64).unwrap_or(0) - 32;
+    let mut a = [0i32; N];
+    for (i, v) in a.iter_mut().enumerate() {
+        let noise = i32::try_from(rng() % 9).unwrap_or(0) - 4;
+        let step = if i < N / 2 { 0 } else { off * scale };
+        *v = match mode {
+            0 => i32::try_from(rng() % m).unwrap_or(0),
+            1 => base + noise * scale,
+            2 => {
+                if rng() & 1 == 0 {
+                    0
+                } else {
+                    max
+                }
+            }
+            _ => base + step + noise.signum() * scale,
+        }
+        .clamp(0, max);
+    }
+    a
+}
+
+/// A random luma batch; `rng` is a source of 32-bit values.
+fn gen_lines(rng: &mut impl FnMut() -> u32) -> Lines {
+    let depth = DEPTHS.get(rng() as usize % 4).copied().unwrap_or(8);
+    let (max, scale) = ((1i32 << depth) - 1, 1i32 << (depth - 8));
+    let mut l = Lines {
+        max,
+        ..Lines::default()
+    };
+    let mode = rng() % 4;
+    for n in 0..8 {
+        set_lane(&mut l.s, n, &gen_samples::<8>(rng, mode, max, scale));
+        let r = rng();
+        put(&mut l.tc, n, i32::try_from(rng() % 25).unwrap_or(0) * scale);
+        put(&mut l.strong, n, mask(r & 1 != 0));
+        put(&mut l.dep, n, mask(r & 2 != 0));
+        put(&mut l.deq, n, mask(r & 4 != 0));
+        put(&mut l.no_p, n, mask(r & 24 == 24));
+        put(&mut l.no_q, n, mask(r & 96 == 96));
+    }
+    l
+}
+
+/// A random chroma batch.
+fn gen_clines(rng: &mut impl FnMut() -> u32) -> CLines {
+    let depth = DEPTHS.get(rng() as usize % 4).copied().unwrap_or(8);
+    let (max, scale) = ((1i32 << depth) - 1, 1i32 << (depth - 8));
+    let mut l = CLines {
+        max,
+        ..CLines::default()
+    };
+    let mode = rng() % 4;
+    for n in 0..8 {
+        set_lane(&mut l.s, n, &gen_samples::<4>(rng, mode, max, scale));
+        let r = rng();
+        put(&mut l.tc, n, i32::try_from(rng() % 25).unwrap_or(0) * scale);
+        put(&mut l.no_p, n, mask(r & 3 == 3));
+        put(&mut l.no_q, n, mask(r & 12 == 12));
+    }
+    l
+}
+
+/// Every tier of this CPU against Scalar on kernel inputs drawn from `rng`; true when all match.
+fn tiers_match(rng: &mut impl FnMut() -> u32) -> bool {
+    let (l, c) = (gen_lines(rng), gen_clines(rng));
+    let (mut lw, mut cw) = (l.clone(), c.clone());
+    filter_luma(Tier::Scalar, &mut lw);
+    filter_chroma(Tier::Scalar, &mut cw);
+    simd::available().into_iter().all(|t| {
+        let (mut a, mut b) = (l.clone(), c.clone());
+        filter_luma(t, &mut a);
+        filter_chroma(t, &mut b);
+        a.s == lw.s && b.s == cw.s
+    })
+}
+
+/// Cross-tier fuzz entry (see `__fuzz_deblock` in lib.rs): kernel inputs built from `data`.
+pub(crate) fn fuzz_tiers(data: &[u8]) -> bool {
+    let mut bytes = Bytes(data, 0);
+    // 4 bytes make one 32-bit value.
+    let mut rng = move || {
+        let [a, b, c, d] = [bytes.byte(), bytes.byte(), bytes.byte(), bytes.byte()];
+        a | (b << 8) | (c << 16) | (d << 24)
+    };
+    (0..16).all(|_| tiers_match(&mut rng))
 }
 
 #[cfg(test)]
@@ -481,5 +868,174 @@ mod tests {
             (qpc(29), qpc(30), qpc(43), qpc(44), qpc(-3)),
             (29, 29, 37, 38, -3)
         );
+    }
+    /// xorshift64*, no dependency.
+    struct Xs(u64);
+
+    impl Xs {
+        fn next(&mut self) -> u32 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            (self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u32
+        }
+    }
+
+    #[test]
+    fn tiers_are_there() {
+        let avail = simd::available();
+        #[cfg(target_arch = "x86_64")]
+        assert!(avail.contains(&Tier::Avx2), "AVX2 not detected");
+        #[cfg(target_arch = "aarch64")]
+        assert!(avail.contains(&Tier::Neon), "NEON not detected");
+        assert!(avail.contains(&Tier::Scalar));
+    }
+
+    /// Kernels: random and extreme lines (depth 8/10/12/16, tc 0..=24 * scale, all flag mixes).
+    #[test]
+    fn kernels_match_scalar() {
+        let mut x = Xs(0x9E37_79B9_7F4A_7C15);
+        for i in 0..20_000 {
+            assert!(tiers_match(&mut || x.next()), "batch {i}");
+        }
+    }
+
+    /// Fixed worst cases: all samples 0 or max, every tc, every flag combination, per tier.
+    #[test]
+    fn kernels_extremes() {
+        for depth in DEPTHS {
+            let (max, scale) = ((1i32 << depth) - 1, 1i32 << (depth - 8));
+            for tc in 0..=24 {
+                for pat in 0..256u32 {
+                    let mut l = Lines {
+                        max,
+                        ..Lines::default()
+                    };
+                    for n in 0..8 {
+                        let a: [i32; 8] =
+                            std::array::from_fn(|i| if (pat >> i) & 1 == 1 { max } else { 0 });
+                        set_lane(&mut l.s, n, &a);
+                        put(&mut l.tc, n, tc * scale);
+                        put(&mut l.strong, n, mask(n & 1 != 0));
+                        put(&mut l.dep, n, mask(n & 2 != 0));
+                        put(&mut l.deq, n, mask(n & 4 != 0));
+                        put(&mut l.no_p, n, mask(n == 5));
+                        put(&mut l.no_q, n, mask(n == 6));
+                    }
+                    let mut want = l.clone();
+                    filter_luma(Tier::Scalar, &mut want);
+                    for t in simd::available() {
+                        let mut got = l.clone();
+                        filter_luma(t, &mut got);
+                        assert_eq!(
+                            got.s,
+                            want.s,
+                            "{} depth {depth} tc {tc} pat {pat}",
+                            t.name()
+                        );
+                    }
+                    let mut c = CLines {
+                        max,
+                        ..CLines::default()
+                    };
+                    for n in 0..8 {
+                        let a: [i32; 4] =
+                            std::array::from_fn(
+                                |i| if (pat >> (i + n)) & 1 == 1 { max } else { 0 },
+                            );
+                        set_lane(&mut c.s, n, &a);
+                        put(&mut c.tc, n, tc * scale);
+                        put(&mut c.no_p, n, mask(n == 2));
+                        put(&mut c.no_q, n, mask(n == 3));
+                    }
+                    let mut want = c.clone();
+                    filter_chroma(Tier::Scalar, &mut want);
+                    for t in simd::available() {
+                        let mut got = c.clone();
+                        filter_chroma(t, &mut got);
+                        assert_eq!(
+                            got.s,
+                            want.s,
+                            "{} chroma depth {depth} tc {tc} pat {pat}",
+                            t.name()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// 64x64 picture with random QpY, offsets, edges, no_filter cells and blocky samples.
+    fn random_picture(l: &Ledger, seed: u64) -> (Active, Frame) {
+        let mut r = Xs(seed);
+        let (act, mut f) = setup(l, 30);
+        for qy in (0..64).step_by(4) {
+            for qx in (0..64).step_by(4) {
+                let qp = i8::try_from(r.next() % 70).unwrap() - 10;
+                f.fill_qp_y(qx, qy, 4, 4, qp).unwrap();
+            }
+        }
+        let beta = i32::try_from(r.next() % 13).unwrap() - 6;
+        let tc = i32::try_from(r.next() % 13).unwrap() - 6;
+        f.slices[0].beta_offset_div2 = beta;
+        f.slices[0].tc_offset_div2 = tc;
+        for c in 0..3 {
+            let w = f.width[c];
+            let bases: Vec<i32> = (0..81)
+                .map(|_| 90 + i32::try_from(r.next() % 60).unwrap())
+                .collect();
+            for y in 0..f.height[c] {
+                for x in 0..w {
+                    let noise = i32::try_from(r.next() % 5).unwrap() - 2;
+                    let v = (bases[(y / 8) * 9 + x / 8] + noise).clamp(0, 255);
+                    f.planes[c][y * w + x] = u16::try_from(v).unwrap();
+                }
+            }
+        }
+        for gy in 0..16 {
+            for gx in 0..16 {
+                let (x, y) = (gx * 4, gy * 4);
+                f.fill_edge_v(x, y, 4, 4, [0, 1, 2, 2][(r.next() % 4) as usize])
+                    .unwrap();
+                f.fill_edge_h(x, y, 4, 4, [0, 1, 2, 2][(r.next() % 4) as usize])
+                    .unwrap();
+                if r.next() % 8 == 0 {
+                    f.fill_no_filter(x, y, 4, 4, 1).unwrap();
+                }
+            }
+        }
+        (act, f)
+    }
+
+    /// Whole pictures: every tier gives the planes of Scalar.
+    #[test]
+    fn pictures_match_scalar() {
+        let l = ledger();
+        let cancel = AtomicBool::new(false);
+        let mut changed = 0;
+        for seed in 1..=60u64 {
+            let (act, mut want) = random_picture(&l, seed * 0x1234_5679);
+            let orig = want.planes.clone();
+            deblock_with(Tier::Scalar, &mut want, &act, &cancel).unwrap();
+            changed += usize::from(orig != want.planes);
+            for t in simd::available() {
+                let (act, mut got) = random_picture(&l, seed * 0x1234_5679);
+                deblock_with(t, &mut got, &act, &cancel).unwrap();
+                assert!(got.planes == want.planes, "{} seed {seed}", t.name());
+                l.release(got.charged);
+            }
+            l.release(want.charged);
+        }
+        assert!(changed > 30, "the pictures are not filtered: {changed}");
+    }
+
+    #[test]
+    fn fuzz_entry_runs() {
+        assert!(fuzz_tiers(&[]));
+        assert!(fuzz_tiers(&[0xff; 700]));
+        let data: Vec<u8> = (0..4000u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        assert!(fuzz_tiers(&data));
     }
 }

@@ -67,3 +67,34 @@ sum for samples of at most 16 bits.
 Tests: `transform::tests::tiers_match_scalar` (all sizes, depths 8/10/12/16, qP range, DCT, DST,
 skip, bypass, flat and default scaling lists, extreme coefficients) and `fuzz_tiers_random_bytes`.
 Fuzz: `tests/fuzz/fuzz_targets/transform_tiers.rs` calls `hevc::__fuzz_transform::tiers_agree`.
+## SIMD: deblocking (`src/deblock.rs`, `src/deblock/{x86,arm}.rs`)
+
+The decisions (dE, dEp, dEq, tc, beta) stay scalar and per 4-line segment. The filter arithmetic
+runs on batches of 8 lines (`Lines`, `CLines`: one 32-bit lane per line, samples as 8 or 4 rows
+of 8 lanes). A pass queues the lines of its segments and filters 8 at a time; segments of one
+pass touch disjoint samples, so the order does not matter. The gather and scatter between the
+plane and the batch is safe code (`load` / `store`, bounds-checked `get`).
+
+| Tier | Luma | Chroma |
+|---|---|---|
+| Scalar | `luma_line` per lane (the oracle) | `chroma_line` per lane |
+| Avx2 | `x86::luma`, 8 lanes | `x86::chroma`, 8 lanes |
+| Avx512 | the AVX2 kernels (a segment is 4 lines; 16 lanes would not pay) | same |
+| Neon | `arm::luma`, two halves of 4 lanes | `arm::chroma` |
+
+Same 32-bit integer expressions as the scalar code, branches as masks and blends: bit-exact,
+no overflow difference (samples <= 65535, tc <= 24 * 256).
+
+`unsafe` inventory:
+
+- `deblock::filter_luma` and `filter_chroma` (`#[allow(unsafe_code)]`): call the safe
+  `#[target_feature]` kernels. Invariant: the CPU has AVX2 (NEON). Checked in the match guard with
+  `is_x86_feature_detected!("avx2")` (`is_aarch64_feature_detected!("neon")`), so a tier that the
+  CPU lacks runs the scalar code.
+- `simd::x86::ld_i32x8` / `st_i32x8`, `simd::arm::ld_i32x4` / `st_i32x4`: take `&[i32; N]`, the
+  type proves the bounds.
+
+Tests (`deblock::tests`): kernels on 20 000 random batches and on 0/max extremes for every tc,
+all depths (8, 10, 12, 16), every tier of `simd::available()` against Scalar; whole 64x64
+pictures with random QpY, offsets, edges and no_filter cells. Fuzz: `deblock_tiers`
+(`__fuzz_deblock::tiers`).
