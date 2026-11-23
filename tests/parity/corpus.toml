@@ -512,376 +512,376 @@ sha256 = "39058b857df8d60c92135e1ae32a5e09b1ee76be6ed06e19014d2dc18c6df778"
 path = "PS_B_VIDYO_3.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/PS_B_VIDYO_3.zip"
 size = 18766
-sha256 = "TODO"
+sha256 = "df6adc3d47b8c2b80404f5b892b2f24071731be97a1ea4604205f6a914cd9ba7"
 
 [[file]]
 path = "RAP_A_docomo_6.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RAP_A_docomo_6.zip"
 size = 111169
-sha256 = "TODO"
+sha256 = "5031bac0b1520ed826bf3112d000e59c76677c01dee706738af0d206cde031be"
 
 [[file]]
 path = "RAP_B_Bossen_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RAP_B_Bossen_2.zip"
 size = 120428
-sha256 = "TODO"
+sha256 = "162e16fa34535085f58a3128782a820ae41430281508ab0a7ef036a0d7cf4707"
 
 [[file]]
 path = "RPLM_A_qualcomm_4.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RPLM_A_qualcomm_4.zip"
 size = 204287
-sha256 = "TODO"
+sha256 = "d085cf26bc0e2f903071cdf2c2aae04c1ea6dc19628004c402ed19a1a32beb58"
 
 [[file]]
 path = "RPLM_B_qualcomm_4.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RPLM_B_qualcomm_4.zip"
 size = 219626
-sha256 = "TODO"
+sha256 = "00cc75255e2ec35010cb635daac2bfa0217feb9b14f353d01645a2528a2f57cf"
 
 [[file]]
 path = "RPS_A_docomo_5.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RPS_A_docomo_5.zip"
 size = 66960
-sha256 = "TODO"
+sha256 = "45427f66400a033e7a47cc6ca9b21d456e9e06450db6ca8d8fa92c438125324b"
 
 [[file]]
 path = "RPS_B_qualcomm_5.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RPS_B_qualcomm_5.zip"
 size = 220876
-sha256 = "TODO"
+sha256 = "1925e1a9867b5380395af9b2b52a4b1f2c0ccfa5c62abb330c481fa26aca5307"
 
 [[file]]
 path = "RPS_C_ericsson_5.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RPS_C_ericsson_5.zip"
 size = 354979
-sha256 = "TODO"
+sha256 = "72eaf0e85d1f5809a1b1ebe2051a171c4361ae39fa206e198b69eb9972795459"
 
 [[file]]
 path = "RPS_D_ericsson_6.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RPS_D_ericsson_6.zip"
 size = 561804
-sha256 = "TODO"
+sha256 = "ad3a34befc07b88538442859c2c7a4faa96ad8e48875f0189b93875bb7fef302"
 
 [[file]]
 path = "RPS_E_qualcomm_5.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RPS_E_qualcomm_5.zip"
 size = 436970
-sha256 = "TODO"
+sha256 = "74f59448bb458875bc8081bd724de999902e7422fd77b74a7ca1c48381d9e96a"
 
 [[file]]
 path = "RPS_F_docomo_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RPS_F_docomo_2.zip"
 size = 80776
-sha256 = "TODO"
+sha256 = "db62853318f3a7bc5af8b3fb193fbc1f7e2384353dfe184c75dd678e7543b2f1"
 
 [[file]]
 path = "RQT_A_HHI_4.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RQT_A_HHI_4.zip"
 size = 67173
-sha256 = "TODO"
+sha256 = "958d958baedbe4f2c864f5d9b3b87e69884170db403b4e190d1d33a0490ec3c6"
 
 [[file]]
 path = "RQT_B_HHI_4.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RQT_B_HHI_4.zip"
 size = 67077
-sha256 = "TODO"
+sha256 = "901a5697989fd5dca6e6f780e33008e17a1fe501752daa15643a6ed8f2a51f13"
 
 [[file]]
 path = "RQT_C_HHI_4.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RQT_C_HHI_4.zip"
 size = 67023
-sha256 = "TODO"
+sha256 = "64c05810393d2eea2d3aa3da2e88eb8a7a15d18dc3773649609dd3633daf5c66"
 
 [[file]]
 path = "RQT_D_HHI_4.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RQT_D_HHI_4.zip"
 size = 67007
-sha256 = "TODO"
+sha256 = "b388926a52db194ffd5850f19881daa4d9cdac05defedf22d0effd23ddedd4ea"
 
 [[file]]
 path = "RQT_E_HHI_4.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RQT_E_HHI_4.zip"
 size = 85748
-sha256 = "TODO"
+sha256 = "025675b85ef5e10fa8ca7f995ed8cecf93ef9cc35e348d5d1b47a4d389b5d866"
 
 [[file]]
 path = "RQT_F_HHI_4.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RQT_F_HHI_4.zip"
 size = 66958
-sha256 = "TODO"
+sha256 = "1c83c4de3818e827e106083c381aa4f8ed179a086f928e3f139605be74df9e03"
 
 [[file]]
 path = "RQT_G_HHI_4.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RQT_G_HHI_4.zip"
 size = 67245
-sha256 = "TODO"
+sha256 = "43f05990af976fbd49ee454bc6fcc8c872cff1d9e424bef16a775b98e4133912"
 
 [[file]]
 path = "SAO_A_MediaTek_4.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAO_A_MediaTek_4.zip"
 size = 52930
-sha256 = "TODO"
+sha256 = "e0b5c8f4ab4fb592971f06469db630d9e7ef72b4d37d729604e2fdaa9df706c9"
 
 [[file]]
 path = "SAO_B_MediaTek_5.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAO_B_MediaTek_5.zip"
 size = 163718
-sha256 = "TODO"
+sha256 = "f8d4c91e443b02d13ee180c5ca02769048766a338993bb90d97fbe683cbb979f"
 
 [[file]]
 path = "SAO_C_Samsung_5.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAO_C_Samsung_5.zip"
 size = 449819
-sha256 = "TODO"
+sha256 = "6152998e7dfa1aa0933437201b5abbc319d949cf13411d60ae324f2f407ef243"
 
 [[file]]
 path = "SAO_D_Samsung_5.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAO_D_Samsung_5.zip"
 size = 463353
-sha256 = "TODO"
+sha256 = "9dec8b2172d0b07babdfd866abd783c344b328ebf83af826cf76da1ae2e9cd77"
 
 [[file]]
 path = "SAO_E_Canon_4.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAO_E_Canon_4.zip"
 size = 152330
-sha256 = "TODO"
+sha256 = "a6c7a169386ad20bfc4b249d152c5426e5cd17b906e213993f86c4c2fc55b47e"
 
 [[file]]
 path = "SAO_F_Canon_3.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAO_F_Canon_3.zip"
 size = 50857
-sha256 = "TODO"
+sha256 = "9bc5e53214261ea3cefc035327b6c110096d8d933f0ed82fff6fcf8270de5e7c"
 
 [[file]]
 path = "SAO_G_Canon_3.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAO_G_Canon_3.zip"
 size = 24604
-sha256 = "TODO"
+sha256 = "7a7566dcf043a9adf6007b1d15182d82d998566e243c8f64bec76917653923e2"
 
 [[file]]
 path = "SAO_H_Parabola_1.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAO_H_Parabola_1.zip"
 size = 33641
-sha256 = "TODO"
+sha256 = "c823ce5b11e759970b0e5996f05f8d2e8bd0fa65b461f40dd74df1d9a74ac7c6"
 
 [[file]]
 path = "SAODBLK_A_MainConcept_4.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAODBLK_A_MainConcept_4.zip"
 size = 1386846
-sha256 = "TODO"
+sha256 = "2ca335887ff3262f4a1a2653b5feaa34d2fd313e0f268966ce316549e654e1e0"
 
 [[file]]
 path = "SAODBLK_B_MainConcept_4.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SAODBLK_B_MainConcept_4.zip"
 size = 4342805
-sha256 = "TODO"
+sha256 = "575165fe6d0a474abdbfb2a628e8c1c2399827fca9f9f47c11aaf71976b51441"
 
 [[file]]
 path = "SDH_A_Orange_4.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SDH_A_Orange_4.zip"
 size = 1099127
-sha256 = "TODO"
+sha256 = "ddf41877f10b47bad946712954e4a4b35cae435bac187d8c404c6bcfcb4acad0"
 
 [[file]]
 path = "SLICES_A_Rovi_3.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SLICES_A_Rovi_3.zip"
 size = 65113
-sha256 = "TODO"
+sha256 = "d0141e111c1c854930eb16430cc5d3e5b82ccfa1458805fce20dd410b08c61ad"
 
 [[file]]
 path = "SLIST_A_Sony_5.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SLIST_A_Sony_5.zip"
 size = 338351
-sha256 = "TODO"
+sha256 = "c51997394e58293b6bedbc5493056fee1b0e7fd41e266468d6a4664b1699b568"
 
 [[file]]
 path = "SLIST_B_Sony_9.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SLIST_B_Sony_9.zip"
 size = 342838
-sha256 = "TODO"
+sha256 = "7d449a938659d1588662f8dfd88aa060ca34457209282b72a93d3f63719cc404"
 
 [[file]]
 path = "SLIST_C_Sony_4.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SLIST_C_Sony_4.zip"
 size = 333156
-sha256 = "TODO"
+sha256 = "0af7bda8eae57ab56e96e6d9796c5dbe449036229fd177657147eb5ee6be1369"
 
 [[file]]
 path = "SLIST_D_Sony_9.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SLIST_D_Sony_9.zip"
 size = 364708
-sha256 = "TODO"
+sha256 = "81c28ef25fd48762dc92f510a216404bd2275971b66377f1f04b4e5b5cc007a4"
 
 [[file]]
 path = "SLPPLP_A_VIDYO_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/SLPPLP_A_VIDYO_2.zip"
 size = 23627
-sha256 = "TODO"
+sha256 = "05e36c3313678556e498cfeb3c4f3f73786f9608b8cd3c8b79ddf65c1ee42b4f"
 
 [[file]]
 path = "STRUCT_A_Samsung_7.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/STRUCT_A_Samsung_7.zip"
 size = 319768
-sha256 = "TODO"
+sha256 = "56a83b66b9e20dbfb20b196797c8136a9c19d3df39d4c1142e0b96e0159b617b"
 
 [[file]]
 path = "STRUCT_B_Samsung_7.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/STRUCT_B_Samsung_7.zip"
 size = 325036
-sha256 = "TODO"
+sha256 = "d2ddaebfefdd2e6189030f75d88b351c027aaabed3cd71ce6752b44f120f2078"
 
 [[file]]
 path = "TILES_A_Cisco_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/TILES_A_Cisco_2.zip"
 size = 485979
-sha256 = "TODO"
+sha256 = "bd63079966105a3bdac764979cb82b708f586cc7c34859a1d466e18cc6a5c345"
 
 [[file]]
 path = "TILES_B_Cisco_1.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/TILES_B_Cisco_1.zip"
 size = 529009
-sha256 = "TODO"
+sha256 = "75b3c9b2981cda59d497750322cde7ca23d6cef39fa9a8e11f36926758b7f83b"
 
 [[file]]
 path = "TMVP_A_MS_3.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/TMVP_A_MS_3.zip"
 size = 1628704
-sha256 = "TODO"
+sha256 = "78fa4422f42adda3f8d7ef1f9b3b92d9428af3140bbfb52bafd9bf3dc129c4c2"
 
 [[file]]
 path = "TSCL_A_VIDYO_5.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/TSCL_A_VIDYO_5.zip"
 size = 48346
-sha256 = "TODO"
+sha256 = "987ff999aac9b3c9828763b9aeb67a393ef32dede683356f2702f2686c905313"
 
 [[file]]
 path = "TSCL_B_VIDYO_4.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/TSCL_B_VIDYO_4.zip"
 size = 55794
-sha256 = "TODO"
+sha256 = "2a2bcebdc2ca70ad1124d9f95c95f3ea89cab05df194b88296e65b31131e16bf"
 
 [[file]]
 path = "TSKIP_A_MS_3.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/TSKIP_A_MS_3.zip"
 size = 6969739
-sha256 = "TODO"
+sha256 = "7f09bd323228975260b14c1b8e92cb15341771b29addd71cc0c2471d5e070a80"
 
 [[file]]
 path = "TSUNEQBD_A_MAIN10_Technicolor_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/TSUNEQBD_A_MAIN10_Technicolor_2.zip"
 size = 216376
-sha256 = "TODO"
+sha256 = "615696a911a824988da0d883ab573fb673fd72bf45275d75549abc763602f814"
 
 [[file]]
 path = "TUSIZE_A_Samsung_1.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/TUSIZE_A_Samsung_1.zip"
 size = 1239737
-sha256 = "TODO"
+sha256 = "f4d82ace7374c115c17ae8759994393a9353cd4902520bea20f6d3f864c60b2c"
 
 [[file]]
 path = "VPSID_A_VIDYO_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/VPSID_A_VIDYO_2.zip"
 size = 25106
-sha256 = "TODO"
+sha256 = "c7fe4e7c81b22146930b3840cf11eef02d8da4328ea2428d9107d8dd53dd75aa"
 
 [[file]]
 path = "VPSSPSPPS_A_MainConcept_1.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/VPSSPSPPS_A_MainConcept_1.zip"
 size = 99927
-sha256 = "TODO"
+sha256 = "fcbe56da7f4fcf1d870736ddf4ce0a3d572f53f78d418e49b5adc376e1cb04df"
 
 [[file]]
 path = "WP_A_MAIN10_Toshiba_3.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WP_A_MAIN10_Toshiba_3.zip"
 size = 719732
-sha256 = "TODO"
+sha256 = "26b3bc442265222032c1960cc02fe2bd55121fe933e70e5039521785073d33b2"
 
 [[file]]
 path = "WP_A_Toshiba_3.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WP_A_Toshiba_3.zip"
 size = 739017
-sha256 = "TODO"
+sha256 = "1eb0245131b15b10e671eff84e9c04e1f7413136908cf2120a8eac4ae2e2a1a2"
 
 [[file]]
 path = "WP_B_Toshiba_3.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WP_B_Toshiba_3.zip"
 size = 706118
-sha256 = "TODO"
+sha256 = "1138929b7df554d07e61052a222a8a501611fcdea520fb89519a0356a3ff76ad"
 
 [[file]]
 path = "WP_MAIN10_B_Toshiba_3.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WP_MAIN10_B_Toshiba_3.zip"
 size = 703530
-sha256 = "TODO"
+sha256 = "9e54d047e0e3ee79724d64d6fbc09c3ea25f01c45e34797d8640c64f31f97e01"
 
 [[file]]
 path = "WPP_A_ericsson_MAIN10_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_A_ericsson_MAIN10_2.zip"
 size = 6838327
-sha256 = "TODO"
+sha256 = "1827b7111a9ce76f6c04332b61cd24d9daf818fd203aa1d0b7d1087b9b83a6aa"
 
 [[file]]
 path = "WPP_A_ericsson_MAIN_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_A_ericsson_MAIN_2.zip"
 size = 4110130
-sha256 = "TODO"
+sha256 = "81c601e9301ba5f562ebf9918e73d1c7153e0a6fe8fa4509f61035a212188216"
 
 [[file]]
 path = "WPP_B_ericsson_MAIN10_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_B_ericsson_MAIN10_2.zip"
 size = 6819559
-sha256 = "TODO"
+sha256 = "ecc6e54eb2f37f2398d3eedafde156969e684ed343a73a70b143e557ad8d9f5f"
 
 [[file]]
 path = "WPP_B_ericsson_MAIN_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_B_ericsson_MAIN_2.zip"
 size = 4167549
-sha256 = "TODO"
+sha256 = "57bfa7dc2417976825187b43829f1e107d87ebe661cfa4a02087efae3bd1148e"
 
 [[file]]
 path = "WPP_C_ericsson_MAIN10_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_C_ericsson_MAIN10_2.zip"
 size = 6855110
-sha256 = "TODO"
+sha256 = "97e267a3593dab465c137a349188b2bde024b3c6339c1e49195944a79680b2cf"
 
 [[file]]
 path = "WPP_C_ericsson_MAIN_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_C_ericsson_MAIN_2.zip"
 size = 4219517
-sha256 = "TODO"
+sha256 = "4d1f3e7fc1b05e22f2c53fabc670a3db9a642bb511004c4d785b49582890bdf2"
 
 [[file]]
 path = "WPP_D_ericsson_MAIN10_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_D_ericsson_MAIN10_2.zip"
 size = 1448102
-sha256 = "TODO"
+sha256 = "0c365aa50f6bcdabb72e62349e45a02a5cdbcb93f52d02764a1cb04890f1eb1e"
 
 [[file]]
 path = "WPP_D_ericsson_MAIN_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_D_ericsson_MAIN_2.zip"
 size = 892742
-sha256 = "TODO"
+sha256 = "04c166df6e6d68584910fce77055f6c16428fc5c907bb1befd10bbf40c16b939"
 
 [[file]]
 path = "WPP_E_ericsson_MAIN10_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_E_ericsson_MAIN10_2.zip"
 size = 2421464
-sha256 = "TODO"
+sha256 = "79df12a77f9c2369c94bf68d3c550e0965adf364ae82bd67e7b612c624020e9c"
 
 [[file]]
 path = "WPP_E_ericsson_MAIN_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_E_ericsson_MAIN_2.zip"
 size = 1528860
-sha256 = "TODO"
+sha256 = "10f4a50870f763d7ccbd975adce20176022a1b9712664244a94c069322534faf"
 
 [[file]]
 path = "WPP_F_ericsson_MAIN10_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_F_ericsson_MAIN10_2.zip"
 size = 3117574
-sha256 = "TODO"
+sha256 = "08ec305637fb1dd9731f1befd882f44e19f2bc54d1b6faca662d9c191c2c0b65"
 
 [[file]]
 path = "WPP_F_ericsson_MAIN_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_F_ericsson_MAIN_2.zip"
 size = 1900774
-sha256 = "TODO"
+sha256 = "39f5ffaa4c273c800b4e05715e2d4002e31b3bbe39505ea59b08c5fdabe6af21"
