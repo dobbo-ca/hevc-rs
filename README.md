@@ -1,6 +1,6 @@
 # hevc-rs
 
-HEVC (H.265) decoding for intra pictures under strict resource limits, in Rust. It decodes Main, Main 10 and Main Still Picture streams (4:2:0 and 4:0:0, 8 to 12 bits per component) from an Annex B byte stream or from HEIF/MP4 samples plus an `hvcC` record, bit-exact with the spec; P and B slices are rejected with `Error::InterSlice`. It is a new crate written from the H.265 spec, not a port. Pure Rust, no dependency, no `unsafe`. Apache-2.0; see `NOTICE`.
+HEVC (H.265) decoding for intra pictures under strict resource limits, in Rust. It decodes Main, Main 10 and Main Still Picture streams (4:2:0 and 4:0:0, 8 to 12 bits per component) from an Annex B byte stream or from HEIF/MP4 samples plus an `hvcC` record, bit-exact with the spec; P and B slices are rejected with `Error::InterSlice`. It is a new crate written from the H.265 spec, not a port. Pure Rust, one dependency (isobmff-rs, for HEIC), no `unsafe`. Apache-2.0; see `NOTICE`.
 
 Dependency: `hevc = { git = "https://github.com/dobbo-ca/hevc-rs", rev = "<sha>" }`
 
@@ -27,6 +27,16 @@ println!("{} pictures", pictures.len());
 
 `decode_into` keeps the pictures output before an error. `decode_hvcc` takes the `hvcC` payload and length-prefixed samples. `probe` reads the first SPS without decoding.
 
+## HEIC
+
+`decode_heic` decodes the primary image of a HEIC file (one `hvc1` item or a grid of tiles, plus its alpha plane) on top of isobmff-rs. `irot`, `imir` and `clap` come back raw in `transforms`, not applied.
+
+```rust
+let file = std::fs::read("photo.heic")?;
+let heic = hevc::decode_heic(&file, &Options::default(), &limits, &cancel)?;
+println!("{}x{}, {} transforms", heic.image.info.width, heic.image.info.height, heic.transforms.len());
+```
+
 ## Resource limits
 
 There is no unlimited entry point. Every call takes a `Limits`.
@@ -52,7 +62,7 @@ There is no unlimited entry point. Every call takes a `Limits`.
 - [docs/limits.md](docs/limits.md): limits, charging, errors
 - [docs/threading.md](docs/threading.md): serial in v1
 - [docs/safety.md](docs/safety.md): no `unsafe`, hostile input
-- [docs/dependencies.md](docs/dependencies.md): none
+- [docs/dependencies.md](docs/dependencies.md): isobmff-rs
 - [docs/parity.md](docs/parity.md): oracles, corpus, gates
 - [docs/fuzzing.md](docs/fuzzing.md): fuzz targets
 - [docs/benchmarks.md](docs/benchmarks.md): benchmarks

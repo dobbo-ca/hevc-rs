@@ -2,7 +2,8 @@
 //!
 //! The crate decodes Main, Main 10 and Main Still Picture streams (4:2:0 and 4:0:0, 8 to 12
 //! bits) from an Annex B byte stream or from HEIF/MP4 samples plus an `hvcC` record. P and B
-//! slices are rejected with [`Error::InterSlice`]. The build spec is `docs/design.md`.
+//! slices are rejected with [`Error::InterSlice`]. [`decode_heic`] decodes the primary image of a
+//! HEIC file. The build spec is `docs/design.md`.
 //!
 //! Status: intra decoding works. Every I picture is decoded (CABAC, intra prediction, residual,
 //! deblocking, SAO), checked against the decoded picture hash SEI when present, and output in
@@ -76,6 +77,7 @@ mod deblock;
 mod decoder;
 mod error;
 mod frame;
+mod heic;
 mod intra;
 mod ledger;
 mod limits;
@@ -92,6 +94,7 @@ pub use decoder::{
     decode, decode_hvcc, decode_hvcc_into, decode_into, intra_prefix, probe, probe_hvcc,
 };
 pub use error::Error;
+pub use heic::{Axis, Clap, HeicImage, Transform, decode_heic};
 pub use limits::Limits;
 
 /// Decode switches. Default: both in-loop filters on (conforming output), metadata kept.

@@ -5,3 +5,11 @@ version = 4
 [[package]]
 name = "hevc"
 version = "0.1.0"
+dependencies = [
+ "isobmff",
+]
+
+[[package]]
+name = "isobmff"
+version = "0.1.0"
+source = "git+https://github.com/dobbo-ca/isobmff-rs?rev=26953d6120830fee8173964f7222e95f5cc3a35c#26953d6120830fee8173964f7222e95f5cc3a35c"

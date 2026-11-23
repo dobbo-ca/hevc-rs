@@ -15,6 +15,20 @@ All of this runs in CI only; nothing is built or run on a developer machine.
   with a P or B slice (`hevc::intra_prefix`); no file when no picture is left.
 - libde265 v1.0.15 `dec265` (built from the tag) and Debian bookworm ffmpeg (`-f rawvideo`, native
   pix_fmt, `-fps_mode passthrough`) decode the same prefix files.
+- `examples/heic.rs`: `heic <in-dir> <out-dir>` decodes the primary image of every `*.heic`,
+  `*.heif` and `*.hif` file (`hevc::decode_heic`, default options and limits) and writes
+  `<name>.yuv` (planes Y, Cb, Cr at native depth: 1 byte per sample at depth 8, else 2 bytes
+  little-endian; monochrome is Y only), `<name>.alpha` (the alpha plane, same sample format; only
+  when there is one) and `<name>.info` (`W H chroma depthY depthC alpha`, chroma 400 or 420, alpha
+  0 or 1), or `<name>.err` with a token (`unsupported`, `invalid`, `container`, `limit`, ...). The
+  image is not rotated, mirrored or cropped by its transforms.
+- libheif v1.23.7 (`tests/parity/c/heic_oracle.c` linked statically to the tag, commit
+  `12a259a5`, with libde265 v1.0.15 as the only codec) is the HEIC oracle `heic-oracle`:
+  `heif_decode_image` of the primary image with `heif_colorspace_undefined`,
+  `heif_chroma_undefined` and `ignore_transformations = 1`, so the native YCbCr layout and depth
+  are kept, in the same output files. An RGB or interleaved result is `<name>.err` = `convert`;
+  other failures are `decode`. For a monochrome image libheif has no chroma plane, so its depthC
+  is written as depthY. libheif is LGPL: it is a CI-only binary, never linked into the crate.
 
 ## Gates
 
@@ -32,6 +46,27 @@ All of this runs in CI only; nothing is built or run on a developer machine.
 4. G4 decoded picture hash: no `.info` line is `bad`.
 5. G5 `--threads 1` equals the default.
 6. G6 diagnostic, report only: `--no-filters` against dec265 with deblocking and SAO disabled.
+7. G7 HEIC: hevc-rs against libheif on the HEIC corpus. Not soft: it fails whatever
+   `PARITY_DECODE` is. For every file both decode, `.yuv` and `.alpha` are byte-equal and `.info`
+   is equal (for a monochrome image the depthC field is not compared). Files only one side
+   decodes:
+   - libheif decodes, hevc-rs says `unsupported` (for example 4:2:2, 4:4:4, a protected item or a
+     tool outside the scope) or `limit` (libheif runs with its security limits off, hevc-rs with
+     `Limits::default()`): listed in `heic-disagreements.txt`, explained, not a failure;
+   - hevc-rs decodes, libheif fails: listed in `heic-disagreements.txt`, not a failure;
+   - libheif decodes and hevc-rs fails with any other token (`invalid`, `container`,
+     `inter`, ...), a file with an `.alpha` on one side only, or a file with no output on a side:
+     a line of `d-heic.diff`, G7 fails.
+
+   Coverage: G7 also fails when fewer than `PARITY_MIN_HEIC` (default 20) files are decoded by
+   both, so a libheif without a HEVC decoder cannot pass with nothing compared (the oracle image
+   also checks that libde265 is linked, and `heic-oracle` exits 2 without a HEVC decoder). Two
+   corpus files with the same name once flattened and stripped of the extension (`a.heic` and
+   `a.hif`) fail the run, since their outputs would overwrite each other.
+
+   A file both reject is only counted. `heic-errors.txt` has the error token of every rejected
+   file on each side. The summary has the counts: files, decoded by each, decoded by both, equal,
+   alpha planes compared, rejected by both, explained.
 
 ## Counts
 
@@ -50,6 +85,19 @@ The live numbers are in each run's `summary.md`; update this table when the corp
 ## Corpus
 
 JCT-VC HEVC_v1 conformance streams (all 147 in `tests/parity/corpus.toml`, since each starts
-with an intra picture). RExt streams for the rejection classes and public HEIC samples are
-planned, not in the corpus yet; fuzz-grown files are added when present. Fetched in CI into a
-BuildKit cache mount (`id=hevc-rs-data`), never committed.
+with an intra picture). RExt streams for the rejection classes are planned, not in the corpus
+yet; fuzz-grown files are added when present. Fetched in CI into a BuildKit cache mount
+(`id=hevc-rs-data`), never committed.
+
+HEIC corpus (`tests/parity/heic-corpus.toml`): the HEVC-coded HEIC/HEIF sources of isobmff-rs's
+corpus, at the same pinned commits, except the libheif fuzzing corpora (`fuzzing/data`: libheif
+decodes hostile files that hevc-rs rejects on purpose, and the oracle runs with libheif's
+security limits off, so they would be expected divergences; hevc-rs has its own `heic` fuzz
+target): libheif (`tests/data`, `examples`),
+MPEGGroup/FileFormatConformance (Git LFS), nokiatech/heif (gh-pages conformance files),
+imazen/heic (`testdata/apple-hdr`) and aaron-rust/hdr-sample-images (Git LFS, the `3A*` and `3B*`
+`.heic` files). `tests/parity/heic-fetch.sh` makes a blobless sparse checkout of each source at
+its commit (verified after the fetch), pulls the LFS files, and keeps only `*.heic`, `*.heif` and
+`*.hif` files, into a second BuildKit cache mount (`id=hevc-rs-heic-data`, files under
+`/heic/x/<source>/...`), never committed. `run.sh` copies them flat (`/` becomes `__`) before the
+two decoders run.

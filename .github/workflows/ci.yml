@@ -7,9 +7,10 @@ concurrency:
   cancel-in-progress: true
 jobs:
   # The checks run inside .github/ci/Dockerfile on the in-cluster BuildKit, so the Rust image and the
-  # build cache stay in the cluster. The crate has no private dependency: no secret, no token. The
-  # layers are also saved to the Actions cache (one scope per job), so a restart of buildkitd does
-  # not throw them away.
+  # build cache stay in the cluster. The crate depends on one private dobbo-ca port (isobmff-rs) by
+  # git rev: every job that builds the image gets a GitHub App token, passed as the BuildKit secret
+  # gh_token. The layers are also saved to the Actions cache (one scope per job), so a restart of
+  # buildkitd does not throw them away.
   # A PR needs only `test`; arm64, parity and parity-arm64 run on main and on workflow_dispatch.
   test:
     runs-on: github-arc-runner-set
@@ -17,6 +18,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { lfs: false }
+      - id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.CI_READ_APP_ID }}
+          private-key: ${{ secrets.CI_READ_APP_KEY }}
+          owner: dobbo-ca
+          repositories: isobmff-rs
+          permission-contents: read
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: remote
@@ -32,6 +41,8 @@ jobs:
           # Only main and dispatch runs export: a PR's cache is scoped to its ref, so no other PR
           # could read it, and the export takes about two minutes.
           cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=hevc-rs-test' || '' }}
+          secrets: |
+            gh_token=${{ steps.app.outputs.token }}
 
   # The lib tests on aarch64 under qemu-user, both HEVC_SIMD tiers.
   arm64:
@@ -41,6 +52,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { lfs: false }
+      - id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.CI_READ_APP_ID }}
+          private-key: ${{ secrets.CI_READ_APP_KEY }}
+          owner: dobbo-ca
+          repositories: isobmff-rs
+          permission-contents: read
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: remote
@@ -54,10 +73,12 @@ jobs:
           outputs: type=cacheonly
           cache-from: type=gha,scope=hevc-rs-arm64
           cache-to: type=gha,mode=max,scope=hevc-rs-arm64
+          secrets: |
+            gh_token=${{ steps.app.outputs.token }}
 
-  # libde265 (dec265), ffmpeg and examples/oracle.rs decode the same inputs; the output must be
-  # equal (tests/parity/run.sh). The stage never fails on a diff: the report is the build output,
-  # and the last step fails on its status file.
+  # libde265 (dec265), ffmpeg and examples/oracle.rs decode the same inputs, and libheif and examples/heic.rs the HEIC
+  # corpus; the output must be equal (tests/parity/run.sh). The stage never fails on a diff: the
+  # report is the build output, and the last step fails on its status file.
   parity:
     if: github.event_name != 'pull_request'
     runs-on: github-arc-runner-set
@@ -65,6 +86,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { lfs: false }
+      - id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.CI_READ_APP_ID }}
+          private-key: ${{ secrets.CI_READ_APP_KEY }}
+          owner: dobbo-ca
+          repositories: isobmff-rs
+          permission-contents: read
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: remote
@@ -78,6 +107,8 @@ jobs:
           outputs: type=local,dest=parity-out
           cache-from: type=gha,scope=hevc-rs-parity
           cache-to: type=gha,mode=max,scope=hevc-rs-parity
+          secrets: |
+            gh_token=${{ steps.app.outputs.token }}
       - if: always()
         run: '[ ! -f parity-out/summary.md ] || cat parity-out/summary.md >> "$GITHUB_STEP_SUMMARY"'
       - if: always()
@@ -97,6 +128,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { lfs: false }
+      - id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.CI_READ_APP_ID }}
+          private-key: ${{ secrets.CI_READ_APP_KEY }}
+          owner: dobbo-ca
+          repositories: isobmff-rs
+          permission-contents: read
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: remote
@@ -110,3 +149,5 @@ jobs:
           outputs: type=cacheonly
           cache-from: type=gha,scope=hevc-rs-parity-arm64
           cache-to: type=gha,mode=max,scope=hevc-rs-parity-arm64
+          secrets: |
+            gh_token=${{ steps.app.outputs.token }}

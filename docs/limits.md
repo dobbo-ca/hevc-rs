@@ -38,3 +38,21 @@ SPS and in `probe`. `max_pictures` counts pictures started in one call.
 ## Cancellation
 
 The cancel flag is read before each NAL unit and before each CTU; set means `Error::Cancelled`.
+
+## decode_heic
+
+`decode_heic` keeps its whole peak within `max_alloc`:
+
+- isobmff gets `Limits { max_alloc: max_alloc / 8, max_threads: 1, max_pixels: ours, ..default }`
+  twice over, never at once with each other's peak: the parse (its result, the item graph, stays
+  alive for the call) and one `item_bytes` at a time (a copy only for an item with several
+  extents). Together at most `max_alloc / 4`.
+- The other `max_alloc - max_alloc / 4` is shared by the hevc decode of the current item
+  (`max_alloc` of that call = what is left after the planes already kept), the assembled output
+  planes and the first tile's SEI messages. A decoded tile is alive next to the output canvas;
+  the check before the canvas is allocated counts both. `AllocLimit` when it does not fit.
+- `max_width`, `max_height` and `max_pixels` apply to every coded item (in the decoder) and to
+  the output size of a grid, before any tile is decoded. isobmff's own `max_pixels` is set to
+  ours.
+- isobmff limit errors other than alloc and pixels (boxes, items, grid tiles, ...) are
+  `InvalidData("limit-<field>")`.
