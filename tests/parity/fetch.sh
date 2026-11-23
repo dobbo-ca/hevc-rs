@@ -27,12 +27,22 @@ while IFS=$tab read -r path url size sum; do
   else
     echo "fetch $path ($size bytes)"
     rm -f "$f.ok" "$x.ok"
-    # -C - resumes a .part left by an interrupted run.
-    if [ ! -f "$f.part" ] || [ "$(stat -c %s "$f.part")" != "$size" ]; then
-      curl -fsSL --retry 3 --limit-rate 20M -A "$ua" -C - -o "$f.part" "$url"
-    fi
-    got=$(stat -c %s "$f.part")
-    [ "$got" = "$size" ] || { echo "$path: size $got, want $size" >&2; rm -f "$f.part"; exit 1; }
+    # -C - resumes a .part left by an interrupted run. itu.int answers a short error page when it
+    # gets many requests in a row, so a short reply is retried after a growing pause.
+    try=0
+    while :; do
+      if [ ! -f "$f.part" ] || [ "$(stat -c %s "$f.part")" -lt "$size" ]; then
+        curl -fsSL --retry 3 --limit-rate 20M -A "$ua" -C - -o "$f.part" "$url" || true
+      fi
+      got=$(stat -c %s "$f.part" 2>/dev/null || echo 0)
+      [ "$got" = "$size" ] && break
+      rm -f "$f.part"
+      try=$((try + 1))
+      [ $try -lt 6 ] || { echo "$path: size $got, want $size after $try tries" >&2; exit 1; }
+      echo "$path: short reply ($got bytes), retry $try in $((try * 60)) s"
+      sleep $((try * 60))
+    done
+    sleep 2
     if [ "$sum" = TODO ]; then
       echo "$path: sha256 TODO, computed $(sha256sum "$f.part" | cut -d' ' -f1)"
     else
