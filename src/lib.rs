@@ -99,7 +99,7 @@ pub use decoder::{
     decode, decode_hvcc, decode_hvcc_into, decode_into, intra_prefix, probe, probe_hvcc,
 };
 pub use error::Error;
-pub use heic::{Axis, Clap, HeicImage, Transform, decode_heic};
+pub use heic::{Axis, Clap, HeicImage, Transform, decode_heic, decode_heic_item};
 pub use limits::Limits;
 
 /// Decode switches. Default: both in-loop filters on (conforming output), metadata kept.
