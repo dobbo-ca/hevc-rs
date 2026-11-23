@@ -120,12 +120,16 @@ fn row_acc<const W: usize>(
         if s == 0 {
             continue;
         }
-        for (ac, c) in accs.chunks_exact_mut(2).zip(t.as_chunks::<8>().0) {
+        for (ac, c) in accs
+            .as_chunks_mut::<2>()
+            .0
+            .iter_mut()
+            .zip(t.as_chunks::<8>().0)
+        {
             let v = ld_i16x8(c);
-            if let [lo, hi] = ac {
-                *lo = vmlal_n_s16(*lo, vget_low_s16(v), s);
-                *hi = vmlal_n_s16(*hi, vget_high_s16(v), s);
-            }
+            let [lo, hi] = ac;
+            *lo = vmlal_n_s16(*lo, vget_low_s16(v), s);
+            *hi = vmlal_n_s16(*hi, vget_high_s16(v), s);
         }
     }
     accs
@@ -141,13 +145,17 @@ fn store_i16(out: &mut [i16], v: &[int32x4_t; 8]) {
         }
         return;
     }
-    for (o, q) in out.as_chunks_mut::<8>().0.iter_mut().zip(v.chunks_exact(2)) {
-        if let [a, b] = q {
-            st_i16x8(
-                o,
-                vcombine_s16(vqrshrn_n_s32::<7>(*a), vqrshrn_n_s32::<7>(*b)),
-            );
-        }
+    for (o, q) in out
+        .as_chunks_mut::<8>()
+        .0
+        .iter_mut()
+        .zip(v.as_chunks::<2>().0)
+    {
+        let [a, b] = q;
+        st_i16x8(
+            o,
+            vcombine_s16(vqrshrn_n_s32::<7>(*a), vqrshrn_n_s32::<7>(*b)),
+        );
     }
 }
 
