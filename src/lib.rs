@@ -49,7 +49,11 @@
 //! assert_eq!(r.unwrap_err(), Error::AllocLimit);
 //! ```
 
-#![forbid(unsafe_code)]
+#![deny(
+    unsafe_code,
+    unsafe_op_in_unsafe_fn,
+    clippy::undocumented_unsafe_blocks
+)]
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -87,6 +91,7 @@ mod residual;
 mod sao;
 mod scaling;
 mod sei;
+mod simd;
 mod slice;
 mod transform;
 
@@ -232,4 +237,11 @@ pub struct Picture {
     /// unit, suffix ones after), in bitstream order, raw. Empty when [`Options::metadata`] is
     /// false. Messages past [`Limits::max_metadata`] are dropped.
     pub sei: Vec<SeiMessage>,
+}
+
+/// The SIMD tier this process uses: `"scalar"`, `"avx2"`, `"avx512"` or `"neon"`. It is
+/// detected once; the environment variable `HEVC_SIMD` (same names) forces a tier the CPU has.
+/// The output is the same for every tier.
+pub fn simd_tier() -> &'static str {
+    simd::tier().name()
 }

@@ -122,6 +122,10 @@ static int decode_one(const char *path, const char *name, const char *out)
         heif_context_get_primary_image_handle(ctx, &hnd).code != heif_error_Ok) {
         goto fail;
     }
+    /* Bench only (tests/parity/bench.sh): HEIC_THREADS=N caps the decoding threads (grid tiles). */
+    if (getenv("HEIC_THREADS")) {
+        heif_context_set_max_decoding_threads(ctx, atoi(getenv("HEIC_THREADS")));
+    }
     opt->ignore_transformations = 1;
     /* Keep the samples as decoded: with a NULL output profile libheif otherwise converts to sRGB
        defaults (full range), e.g. limited-range luma 233 becomes 253. */

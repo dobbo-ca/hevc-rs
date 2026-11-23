@@ -223,20 +223,57 @@ RUN --mount=type=cache,id=hevc-rs-data,target=/data,sharing=locked,readonly \
     && cp tests/fuzz/seeds/annexb/* tests/fuzz/seeds/decode/ \
     && cargo +nightly fuzz build --fuzz-dir tests/fuzz
 
-# Benchmark (bench.yml): libde265 (dec265) and examples/bench on the same corpus, in one
-# container, so the ratio compares the same machine. BENCH_RUN changes per run, so a cache hit
-# of the same source does not reuse an old timing.
-FROM src AS bench
+# Benchmark (bench.yml, tests/parity/bench.sh): libde265 (dec265), ffmpeg, libheif (heic-oracle)
+# and hevc-rs on the same corpus, in one container, so the ratios compare the same machine.
+# hevc-rs is built twice: the default build (runtime SIMD dispatch) and the x86-64-v4 build with
+# the Zen 4/5 false-dependency features of the release binaries (rust-ports conventions), with its
+# own cache mount since RUSTFLAGS changes every artifact. BENCH_RUN changes per run, so a cache
+# hit of the same source does not reuse an old timing.
+FROM ffmpeg-oracle AS bench
 COPY --from=c-oracle /usr/local/bin/dec265 /usr/local/bin/dec265
+COPY --from=heic-oracle /usr/local/bin/heic-oracle /usr/local/bin/heic-oracle
 COPY --from=data /data.list /data.list
+COPY --from=heic-data /heic.list /heic.list
+COPY . .
 RUN --mount=type=cache,id=hevc-rs-target-bench,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + \
-    && cargo build --locked --release --example oracle --example bench \
+    && cargo build --locked --release --example oracle --example bench --example heic \
     && cp target/release/examples/oracle /usr/local/bin/hevc-oracle \
-    && cp target/release/examples/bench /usr/local/bin/hevc-bench
+    && cp target/release/examples/bench /usr/local/bin/hevc-bench \
+    && cp target/release/examples/heic /usr/local/bin/hevc-heic
+RUN --mount=type=cache,id=hevc-rs-target-bench-v4,sharing=locked,target=/src/target \
+    find src examples tests -name '*.rs' -exec touch {} + \
+    && RUSTFLAGS="-C target-cpu=x86-64-v4 -C target-feature=+false-deps-tzcnt,+false-deps-bls" \
+       cargo build --locked --release --example bench --example heic \
+    && cp target/release/examples/bench /usr/local/bin/hevc-bench-v4 \
+    && cp target/release/examples/heic /usr/local/bin/hevc-heic-v4
 ARG BENCH_RUN=0
 RUN --mount=type=cache,id=hevc-rs-data,target=/data,sharing=locked,readonly \
+    --mount=type=cache,id=hevc-rs-heic-data,target=/heic,sharing=locked,readonly \
     echo "run $BENCH_RUN" && mkdir -p /report && { sh tests/parity/bench.sh /report; echo $? > /report/status; }
 
 FROM scratch AS bench-report
 COPY --from=bench /report /
+
+# Where the time goes (profile.yml, tests/parity/profile.sh): perf (and valgrind's callgrind as
+# the fallback when the host does not allow perf events) on the bench example built with line
+# debug info, and on dec265 for comparison, over the intra prefix of every corpus stream. The
+# prefix files are made here and kept in the image, since `docker run` has no cache mount.
+FROM ffmpeg-oracle AS profile-tools
+RUN apt-get update && apt-get install -y --no-install-recommends linux-perf valgrind \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM profile-tools AS profile
+COPY --from=c-oracle /usr/local/bin/dec265 /usr/local/bin/dec265
+COPY --from=data /data.list /data.list
+COPY . .
+RUN --mount=type=cache,id=hevc-rs-target-profile,sharing=locked,target=/src/target \
+    find src examples tests -name '*.rs' -exec touch {} + \
+    && CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo build --locked --release --example oracle --example bench \
+    && cp target/release/examples/oracle /usr/local/bin/hevc-oracle \
+    && cp target/release/examples/bench /usr/local/bin/hevc-bench
+RUN --mount=type=cache,id=hevc-rs-data,target=/data,sharing=locked,readonly \
+    mkdir -p /prof/in && while IFS= read -r f; do \
+         n=${f#./}; e=$(printf '%s' "${n##*.}" | tr 'A-Z' 'a-z'); cp "/data/x/$n" "/prof/in/$(echo "${n%.*}" | tr / _).$e"; \
+       done < /data.list \
+    && hevc-oracle prefix /prof/in /prof/prefix && rm -rf /prof/in && ls /prof/prefix | wc -l

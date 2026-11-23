@@ -1,14 +1,27 @@
 # Benchmarks
 
-Information only: there is no speed bar and no CI gate.
+Information only: there is no speed bar and no CI gate. Nothing is run locally.
 
 `examples/bench.rs`: `bench [--threads N] <stream>` decodes one Annex B file once and exits 0
-when it yields a picture. `tests/parity/bench.sh` times that process and `dec265` on the intra
-prefix of every corpus stream, so the report compares dec265 with hevc-rs per stream. Both run
-with one thread (`dec265 -t1`, `bench --threads 1`). Decode is serial in v1, so hevc-rs at its
-default thread count is the same run; add the default-thread column (and `dec265` at its default)
-with the threading phase. `.github/workflows/bench.yml` runs on push to `main` and on
-`workflow_dispatch`. Nothing is run locally.
+when it yields a picture (`bench --tier` prints the SIMD tier). `tests/parity/bench.sh` times
+that process against the reference decoders, best of 3, on the intra prefix of every corpus
+stream and on every file of the HEIC corpus. `.github/workflows/bench.yml` runs on push to
+`main` and on `workflow_dispatch` (also on a PR branch: `gh workflow run bench.yml --ref <branch>`).
+
+- References: libde265 v1.0.15 `dec265` and Debian bookworm `ffmpeg` for Annex B streams;
+  libheif v1.23.7 with libde265 (`heic-oracle`) for HEIC files.
+- 1 thread: `dec265 -t1`, `ffmpeg -threads 1`, `bench --threads 1`, `HEIC_THREADS=1` (libheif's
+  `heif_context_set_max_decoding_threads` and `max_threads` of `examples/heic`). Default threads:
+  `dec265 -t$(nproc)`, `ffmpeg` with no `-threads`, the default `Limits::max_threads`.
+- hevc-rs builds: the default release build (runtime SIMD dispatch), and the v4 build
+  (`RUSTFLAGS="-C target-cpu=x86-64-v4 -C target-feature=+false-deps-tzcnt,+false-deps-bls"`, the
+  flags of our release binaries). The 1-thread time is also given with `HEVC_SIMD=scalar` and
+  `HEVC_SIMD=avx2`, so the gain of each tier shows.
+- Classes, from `oracle probe`: `main` (8-bit 4:2:0), `main10` (10-bit 4:2:0), `rext` (12-bit,
+  4:0:0), `heic`.
+
+`.github/workflows/profile.yml` (dispatch only) prints where hevc-rs and dec265 spend their time
+(`tests/parity/profile.sh`: perf, or callgrind when the host allows no perf events).
 
 ## Results
 

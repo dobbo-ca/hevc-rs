@@ -97,7 +97,15 @@ fn decode_one(name: &str, data: &[u8], outdir: &Path) {
         Ok("nosao") => opts.sao = false,
         _ => {}
     }
-    let r = hevc::decode_heic(data, &opts, &Limits::default(), &cancel);
+    // Bench only (tests/parity/bench.sh): HEIC_THREADS=N sets `max_threads`.
+    let mut limits = Limits::default();
+    if let Some(n) = std::env::var("HEIC_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        limits.max_threads = n;
+    }
+    let r = hevc::decode_heic(data, &opts, &limits, &cancel);
     let h = match r {
         Ok(h) => h,
         Err(e) => {
