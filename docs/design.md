@@ -191,6 +191,8 @@ src/residual.rs     residual_coding
 src/intra.rs        intra sample prediction (8.4.4.2)
 src/transform.rs    scaling (dequant) + inverse transform + transform skip + bypass (8.6)
 src/deblock.rs      deblocking filter (8.7.2)
+src/deblock/x86.rs  AVX2 deblocking kernels (safe target_feature fns)
+src/deblock/arm.rs  NEON deblocking kernels
 src/sao.rs          SAO (8.7.3)
 src/frame.rs        per-picture state: sample planes and metadata grids, availability
 src/decoder.rs      NAL loop, parameter set store, activation, picture start/finish, POC,

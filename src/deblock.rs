@@ -256,7 +256,7 @@ fn chroma_scalar(l: &mut CLines) {
 }
 
 /// Runs the luma filter of `tier` on the 8 lines. A tier the CPU lacks runs the Scalar code.
-#[allow(unsafe_code)]
+#[allow(unsafe_code, unused_unsafe)]
 fn filter_luma(tier: Tier, l: &mut Lines) {
     match tier {
         #[cfg(target_arch = "x86_64")]
@@ -275,7 +275,7 @@ fn filter_luma(tier: Tier, l: &mut Lines) {
 }
 
 /// Runs the chroma filter of `tier` on the 8 lines (see [`filter_luma`]).
-#[allow(unsafe_code)]
+#[allow(unsafe_code, unused_unsafe)]
 fn filter_chroma(tier: Tier, l: &mut CLines) {
     match tier {
         #[cfg(target_arch = "x86_64")]
