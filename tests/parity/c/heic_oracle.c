@@ -123,6 +123,9 @@ static int decode_one(const char *path, const char *name, const char *out)
         goto fail;
     }
     opt->ignore_transformations = 1;
+    /* Keep the samples as decoded: with a NULL output profile libheif otherwise converts to sRGB
+       defaults (full range), e.g. limited-range luma 233 becomes 253. */
+    opt->output_image_nclx_profile_passthrough = 1;
     if (heif_decode_image(hnd, &img, heif_colorspace_undefined, heif_chroma_undefined, opt).code != heif_error_Ok) {
         goto fail;
     }
