@@ -246,13 +246,3 @@ pub struct Picture {
 pub fn simd_tier() -> &'static str {
     simd::tier().name()
 }
-
-/// Entry of the cross-tier fuzz target `crop_tiers`. Not part of the API.
-#[doc(hidden)]
-pub mod __fuzz_crop {
-    /// Builds a plane and a window from `data`, crops it on every SIMD tier this CPU has, and
-    /// returns true when each result equals the scalar one.
-    pub fn tiers_match(data: &[u8]) -> bool {
-        crate::crop::fuzz_tiers(data)
-    }
-}

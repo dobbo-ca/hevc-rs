@@ -2,8 +2,12 @@
 
 ## `unsafe`
 
-The crate root has `#![forbid(unsafe_code)]`. The SIMD phase, if it comes, will use the
-safe-SIMD pattern of the conventions and revisit this page.
+The crate root has `#![deny(unsafe_code, unsafe_op_in_unsafe_fn,
+clippy::undocumented_unsafe_blocks)]`. `unsafe` is allowed in two places only, as in the rust-ports
+safe-SIMD pattern: the load/store helpers of `src/simd/x86.rs` and `src/simd/arm.rs` (each takes a
+fixed-size array reference, so its type proves the bounds), and the per-family dispatch that calls
+a `#[target_feature]` kernel after `simd::tier()` / `simd::available()` found the features at run
+time. The kernels themselves are safe functions. Each kernel family has a section below.
 
 ## Hostile input
 
@@ -17,29 +21,14 @@ safe-SIMD pattern of the conventions and revisit this page.
 - Fuzzing runs with a memory cap so an allocation outside the limits is a crash (see
   [fuzzing.md](fuzzing.md)).
 
-## Crop (src/crop.rs)
+## Kernels removed
 
-The output crop copies the conformance window of a `u16` plane into `Samples`. `u16` rows are
-`extend_from_slice`. 8-bit rows are packed to `u8` (`s as u8`, truncating) by one kernel family,
-`pack_u8_with(tier, dst, src)`:
+A kernel stays only when the bench shows a gain (`tests/parity/bench.sh`, corpus totals at one
+thread, best of 3; `HEVC_SIMD` forces the tier). These were tried and removed:
 
-| Tier | Kernel | Notes |
-|---|---|---|
-| Scalar | `pack_scalar` | the oracle |
-| Avx2 | `x86k::pack_avx2` | mask to the low byte, `packus_epi16`, `permute4x64(0xD8)`; 32 samples per step |
-| Avx512 | `x86k::pack_avx512` | `_mm512_cvtepi16_epi8` (`vpmovwb`, truncating); 32 per step |
-| Neon | `neonk::pack_neon` | `vmovn_u16` + `vmovn_high_u16`; 16 per step |
+| Kernel | Tiers | Bench | Result |
+|---|---|---|---|
+| Output pack `u16` to `u8` (`src/crop.rs`) | AVX2 (`packus` + lane permute), AVX-512 (`vpmovwb`), NEON (`vmovn`) | run 45286842132: scalar 5914.7 ms, avx2 5912.9 ms, avx512 5912.4 ms (dec265 3360.8 ms) | no measurable gain; the scalar narrowing loop stays |
 
-Tails (under one step) go through `pack_scalar`. Every tier gives the same bytes for every `u16`,
-including values over 255.
-
-`unsafe` inventory: the three calls in `pack_u8_with` (the only function with
-`#[allow(unsafe_code)]` here), one per tier. Invariant: the CPU has the tier's features, which
-`simd::available()` proves by runtime detection; the slices are trimmed to one length at the top
-of the function. The kernels are safe `#[target_feature]` fns that take arrays from slices with
-`as_chunks`; the loads and stores are the `simd::x86` / `simd::arm` helpers.
-
-`crop_plane` checks the window against the plane per row (`get`, `checked_add`, `chunks_exact`)
-and reads the cancel flag before every row. The picture hash (`sei::compute`) reads it before
-every row too. Both return `Error::Cancelled`. Tests compare every available tier with Scalar and
-with a naive reference; the fuzz target `crop_tiers` does the same on bounded inputs.
+The output crop (`src/crop.rs`) and the picture hash (`sei::compute`) read the cancel flag before
+every row and return `Error::Cancelled`.

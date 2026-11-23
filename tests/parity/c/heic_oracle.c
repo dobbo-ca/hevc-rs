@@ -58,6 +58,10 @@ static FILE *open_out(const char *dir, const char *name, const char *ext)
     if (snprintf(path, sizeof path, "%s/%s.%s", dir, name, ext) >= (int)sizeof path) {
         return NULL;
     }
+    /* Bench only (tests/parity/bench.sh): HEIC_BENCH=1 writes only the .info file. */
+    if (getenv("HEIC_BENCH") && strcmp(ext, "info") != 0) {
+        return fopen("/dev/null", "wb");
+    }
     return fopen(path, "wb");
 }
 

@@ -55,10 +55,3 @@ path = "fuzz_targets/heic.rs"
 test = false
 doc = false
 bench = false
-
-[[bin]]
-name = "crop_tiers"
-path = "fuzz_targets/crop_tiers.rs"
-test = false
-doc = false
-bench = false

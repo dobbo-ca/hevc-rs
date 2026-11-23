@@ -78,13 +78,14 @@ done
 # heic-oracle (libheif) in the dec265 place and no ffmpeg (0).
 : > $W/heic.tsv
 if [ -f /heic.list ]; then
+  export HEIC_BENCH=1  # decode only: no .yuv writes, no cross-check (examples/heic.rs, heic_oracle.c)
   i=0
   while IFS= read -r f; do
     i=$((i + 1)); d=$W/h/$i; mkdir -p $d/in
     cp "/heic/x/${f#./}" $d/in/
     n=$(printf '%s' "${f#./}" | sed 's#/#__#g')
-    if c1=$(HEIC_THREADS=1 best heic-oracle $d/in $d/o) && ls $d/o | grep -q '\.yuv$' \
-      && r1=$(HEIC_THREADS=1 best hevc-heic $d/in $d/r) && ls $d/r | grep -q '\.yuv$' \
+    if c1=$(HEIC_THREADS=1 best heic-oracle $d/in $d/o) && ls $d/o | grep -q '\.info$' \
+      && r1=$(HEIC_THREADS=1 best hevc-heic $d/in $d/r) && ls $d/r | grep -q '\.info$' \
       && v1=$(HEIC_THREADS=1 best hevc-heic-v4 $d/in $d/r) \
       && s1=$(HEVC_SIMD=scalar HEIC_THREADS=1 best hevc-heic $d/in $d/r) \
       && a1=$(HEVC_SIMD=avx2 HEIC_THREADS=1 best hevc-heic $d/in $d/r) \

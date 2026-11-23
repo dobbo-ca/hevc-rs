@@ -18,7 +18,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY tests/fuzz/Cargo.toml tests/fuzz/Cargo.lock tests/fuzz/
 RUN mkdir -p src tests/fuzz/fuzz_targets && touch src/lib.rs \
-    && for t in annexb hvcc params probe decode heic crop_tiers; do touch tests/fuzz/fuzz_targets/$t.rs; done
+    && for t in annexb hvcc params probe decode heic; do touch tests/fuzz/fuzz_targets/$t.rs; done
 RUN --mount=type=secret,id=gh_token \
     git config --global url."https://x-access-token:$(cat /run/secrets/gh_token)@github.com/".insteadOf "https://github.com/" \
     && CARGO_NET_GIT_FETCH_WITH_CLI=true cargo fetch --locked \
@@ -207,7 +207,7 @@ COPY --from=data /data.list /data.list
 COPY --from=heic-data /heic.list /heic.list
 RUN --mount=type=cache,id=hevc-rs-data,target=/data,sharing=locked,readonly \
     --mount=type=cache,id=hevc-rs-heic-data,target=/heic,sharing=locked,readonly \
-    mkdir -p tests/fuzz/seeds/annexb tests/fuzz/seeds/probe tests/fuzz/seeds/decode tests/fuzz/seeds/hvcc tests/fuzz/seeds/params tests/fuzz/seeds/heic tests/fuzz/seeds/crop_tiers \
+    mkdir -p tests/fuzz/seeds/annexb tests/fuzz/seeds/probe tests/fuzz/seeds/decode tests/fuzz/seeds/hvcc tests/fuzz/seeds/params tests/fuzz/seeds/heic \
     && printf '\000\000\000\001\100\001\014\001\377\377\001\140\000\000\003\000\220\000\000\003\000\000\003\000\135\254\131' > tests/fuzz/seeds/annexb/vps.bit \
     && printf '\000\000\000\001\102\001\001\001\140\000\000\000\220\000\000\000\000\000\135\240\002\200\200\055\026\131\131\244' > tests/fuzz/seeds/annexb/sps.bit \
     && printf '\000\000\001\106\001\120' > tests/fuzz/seeds/annexb/aud.bit \
