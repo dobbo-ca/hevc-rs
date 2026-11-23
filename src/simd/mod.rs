@@ -17,6 +17,7 @@ use std::sync::OnceLock;
 
 /// A SIMD tier. `Avx512` means AVX-512 F, BW and VL (and AVX2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code, reason = "each target constructs only its own tiers")]
 pub(crate) enum Tier {
     Scalar,
     Avx2,
