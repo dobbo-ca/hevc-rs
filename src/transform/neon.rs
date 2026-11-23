@@ -164,9 +164,22 @@ fn store_i32(out: &mut [i32], v: &[int32x4_t; 8]) {
 #[inline]
 #[target_feature(enable = "neon")]
 fn transform(coeffs: &mut [i32], p: &TuParams, bd2: u32) {
+    match p.log2_size {
+        2 => sized::<16>(coeffs, p, bd2),
+        3 => sized::<64>(coeffs, p, bd2),
+        4 => sized::<256>(coeffs, p, bd2),
+        _ => sized::<1024>(coeffs, p, bd2),
+    }
+}
+
+/// [`transform`] with scratch arrays of `NN` (= n * n) entries, so a 4x4 block zeroes 64
+/// bytes and not 4 KiB.
+#[inline]
+#[target_feature(enable = "neon")]
+fn sized<const NN: usize>(coeffs: &mut [i32], p: &TuParams, bd2: u32) {
     let n = 1usize << p.log2_size;
-    let mut c16 = [0i16; 1024];
-    let mut ht = [0i16; 1024];
+    let mut c16 = [0i16; NN];
+    let mut ht = [0i16; NN];
     let (Some(c16), Some(ht)) = (c16.get_mut(..n * n), ht.get_mut(..n * n)) else {
         return;
     };
