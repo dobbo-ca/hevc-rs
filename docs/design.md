@@ -585,3 +585,44 @@ Implemented:
   message kept per picture; a message that would pass it is dropped, no error. The bytes are
   charged to the ledger when collected and stay booked with the output picture, like its planes
   (the ledger refusing is `Error::AllocLimit`).
+
+## HEIC glue
+
+`src/heic.rs`, on top of isobmff-rs (private git dependency, `docs/dependencies.md`). isobmff
+gives the item graph; this crate decodes the pixels.
+
+```rust
+pub fn decode_heic(file: &[u8], opts: &Options, limits: &Limits, cancel: &AtomicBool)
+    -> Result<HeicImage, Error>;
+pub struct HeicImage { pub image: Picture, pub alpha: Option<Plane>, pub transforms: Vec<Transform> }
+pub enum Transform { Clap(Clap), Rotate(u16), Mirror(Axis) }   // own types, same fields as isobmff's
+```
+
+- `image` is the primary item: one coded `hvc1` item, or a `grid` of `hvc1` tiles. A coded item
+  is `Heif::item_bytes` plus its `hvcC` record, passed as one sample to `decode_hvcc_into`; it
+  must give exactly one picture, else `InvalidData`. Grid tiles go row-major, tile `(col, row)`
+  at `(col * tile_w, row * tile_h)` (chroma at half), cropped to the grid `output_width x
+  output_height`. Tiles must have the same size and format (chroma, bit depths) and cover the
+  output, else `InvalidData`; 4:2:0 tiles must have even sides unless that axis has one tile.
+  The tile pitch is the tiles' `ispe` size (as libheif places them): a tile that decodes to
+  another size is `InvalidData`. A grid column or row wholly outside the output is skipped.
+- A protected item (`protection_index` not 0, for example CENC) is `Unsupported("protected
+  item")`: its slice data is encrypted, so it is not decoded as if clear.
+  `place` and `blit` are pure functions over planes (unit tested without fixtures).
+- Not applied: `irot`, `imir`, `clap` come back raw and in file order in `transforms`. The caller
+  applies them.
+- Metadata is kept raw (the owner rule above): `image.sei`, `image.info.vui` and `poc` are the
+  first tile's; `hash_ok` is `Some(true)` only if every tile's hash was checked and passed.
+  `Options::metadata` false drops them.
+- `alpha` is the luma plane of the auxiliary alpha item (`Image::alpha` of isobmff:
+  `urn:mpeg:hevc:2015:auxid:1`, `urn:mpeg:mpegB:cicp:systems:auxiliary:alpha` or
+  `urn:mpeg:avc:2015:auxid:1`), itself coded
+  or a grid (a grid of alpha decodes luma only).
+- A primary (or alpha) image that is not `hvc1` or a grid of `hvc1` (AV1, overlay, identity,
+  other) is `Unsupported("primary image is not HEVC")`.
+- Errors: isobmff `Cancelled`, `OutOfMemory`, `LimitExceeded(Alloc)` and `LimitExceeded(Pixels)`
+  map to `Cancelled`, `OutOfMemory`, `AllocLimit` and `PixelLimit`; every other isobmff error is
+  `InvalidData(err.class())`.
+- Limits: see `docs/limits.md`. The cancel flag is read before each coded item (between tiles).
+- libheif is the CI oracle only (`examples/heic.rs` is the Rust side of the comparison); it is LGPL
+  and never linked.

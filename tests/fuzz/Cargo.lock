@@ -46,6 +46,9 @@ dependencies = [
 [[package]]
 name = "hevc"
 version = "0.1.0"
+dependencies = [
+ "isobmff",
+]
 
 [[package]]
 name = "hevc-fuzz"
@@ -54,6 +57,11 @@ dependencies = [
  "hevc",
  "libfuzzer-sys",
 ]
+
+[[package]]
+name = "isobmff"
+version = "0.1.0"
+source = "git+https://github.com/dobbo-ca/isobmff-rs?rev=26953d6120830fee8173964f7222e95f5cc3a35c#26953d6120830fee8173964f7222e95f5cc3a35c"
 
 [[package]]
 name = "jobserver"

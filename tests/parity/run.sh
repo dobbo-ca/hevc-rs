@@ -1,11 +1,11 @@
 #!/bin/sh
 # Parity gates of hevc-rs (docs/design.md, "Oracles and parity"). CI only, called by
 # .github/ci/Dockerfile; needs the oracle binaries on PATH.
-#   run.sh full <report-dir>   the gates on /data/x + tests/data/fuzz-grown
+#   run.sh full <report-dir>   the gates on /data/x + tests/data/fuzz-grown, and G7 on /heic/x
 #   run.sh ref <out-dir>       hevc-oracle on the first 20 corpus streams, one thread
 #   run.sh arm <ref-dir>       the aarch64 oracle (qemu) on the same prefixes vs <ref-dir>
-# Binaries: hevc-oracle (examples/oracle), dec265 (libde265), ffmpeg, ffprobe, and for `arm`
-# hevc-oracle-arm64 run by $ARM_RUN. Exit status 0 only when every gate is an empty diff.
+# Binaries: hevc-oracle (examples/oracle), hevc-heic (examples/heic), dec265 (libde265),
+# heic-oracle (libheif), ffmpeg, ffprobe, and for `arm` hevc-oracle-arm64 run by $ARM_RUN. Exit status 0 only when every gate is an empty diff.
 # PARITY_DECODE=1 turns the picture gates (dec265, ffmpeg, hash) on; otherwise they only report.
 set -u
 export LC_ALL=C
@@ -17,6 +17,7 @@ flat() {
   while IFS= read -r f; do
     rel=$(printf '%s' "${f#"$2"/}" | sed 's#/#__#g')
     e=$(printf '%s' "${rel##*.}" | tr 'A-Z' 'a-z')
+    [ -e "$1/${rel%.*}.$e" ] && echo "$f" >> $W/collide
     cp "$f" "$1/${rel%.*}.$e"
   done
 }
@@ -98,6 +99,109 @@ cmpyuv() {
     else echo "$n: only $4 has output" >> "$5"; fi
   done < $W/names
   echo "$cmpn $cmpb" > "$6"
+}
+
+# normi <info-file>: "W H chroma depthY depthC alpha" of an HEIC .info, with depthC "-" when the
+# image is monochrome (chroma 400).
+normi() {
+  [ -f "$1" ] || { echo missing; return; }
+  read -r w h c dy dc a _ < "$1"
+  [ "$c" = 400 ] && dc=-
+  echo "$w $h $c $dy $dc $a"
+}
+
+# heic_part: the HEIC gate (G7). hevc-heic (examples/heic) and heic-oracle (libheif) decode every
+# *.heic *.heif *.hif file of /heic/x; for every file both decode, .yuv, .alpha and .info must be
+# equal. A file only libheif decodes, where hevc-rs says `unsupported`, and a file only hevc-rs
+# decodes, are listed in heic-disagreements.txt (explained, not failures); any other case is a
+# line of d-heic. Fewer than PARITY_MIN_HEIC (default 20) files decoded by both is a line too. The counts go to $W/heic-summary.md. Monochrome images: the .info depthC is not
+# compared (libheif has no chroma plane there).
+heic_part() {
+  mkdir -p $W/hin $W/hr $W/hl
+  : > $W/collide
+  find /heic/x -type f \( -iname '*.heic' -o -iname '*.heif' -o -iname '*.hif' \) 2> /dev/null | sort | flat $W/hin /heic/x
+  nh=$(ls $W/hin | wc -l)
+  [ "$nh" -gt 0 ] || { echo "heic corpus is empty" >&2; bad=1; }
+  # Output names are the file name without its extension: two files with one stem (a.heic and
+  # a.hif, or X.HEIC and X.heic that flat() merged) would overwrite each other's output.
+  { ls $W/hin | sed 's/\.[^.]*$//' | sort | uniq -d | sed 's/$/ (same name without extension)/'; sed 's/$/ (same flattened name)/' $W/collide; } > $W/heic-names
+  [ -s $W/heic-names ] && { echo "heic corpus name collisions:" >&2; cat $W/heic-names >&2; bad=1; }
+  run hevc-heic $W/hin $W/hr
+  run heic-oracle $W/hin $W/hl
+  for v in none nodeblock nosao; do HEIC_FILTERS=$v hevc-heic $W/hin $W/hv-$v > /dev/null 2>&1; done
+  # Diagnosis: the primary coded item as Annex B, decoded by dec265 (a third witness).
+  HEIC_ANNEXB=1 hevc-heic $W/hin $W/hx > /dev/null 2>&1; mkdir -p $W/hd
+  for x in $W/hx/*.265; do [ -f "$x" ] && { b=${x##*/}; dec265 -q -o "$W/hd/${b%.265}.yuv" "$x" > /dev/null 2>&1 || rm -f "$W/hd/${b%.265}.yuv"; }; done
+  : > $W/d-heic; : > $W/heic-explained
+  hboth=0 heq=0 halpha=0 hbothfail=0
+  for f in $W/hin/*; do
+    [ -f "$f" ] || continue
+    b=${f##*/}; s=${b%.*}
+    r=$W/hr/$s l=$W/hl/$s
+    if [ -f "$r.yuv" ] && [ -f "$l.yuv" ]; then
+      hboth=$((hboth + 1)); hok=1
+      if ! cmp -s "$r.yuv" "$l.yuv"; then
+        # Diagnosis: bytes that differ, the first one, the luma plane size, and which hevc-rs
+        # variant without an in-loop filter equals libheif.
+        nd=$(cmp -l "$r.yuv" "$l.yuv" 2> /dev/null | wc -l)
+        first=$(cmp "$r.yuv" "$l.yuv" 2> /dev/null | sed -n 's/.* \(byte\|char\) \([0-9]*\).*/\2/p')
+        read -r iw ih _ idy _ < "$r.info"; ib=1; [ "$idy" -gt 8 ] && ib=2
+        same=
+        for v in none nodeblock nosao; do
+          [ -f "$W/hv-$v/$s.yuv" ] && cmp -s "$W/hv-$v/$s.yuv" "$l.yuv" && same="$same $v"
+        done
+        d265=no-output; [ -f "$W/hd/$s.yuv" ] && { d265=neither; cmp -s "$W/hd/$s.yuv" "$r.yuv" && d265=hevc-rs; cmp -s "$W/hd/$s.yuv" "$l.yuv" && d265="$d265+libheif"; }
+        echo "$s: yuv differs (dec265 on the item equals: $d265; hevc-rs $(wc -c < "$r.yuv") bytes, libheif $(wc -c < "$l.yuv") bytes; $nd bytes differ, first at byte $first, luma plane $((iw * ih * ib)) bytes; libheif equals hevc-rs with filters off:${same:- no variant})" >> $W/d-heic
+        # Diagnosis: the first 24 samples of each side for small files.
+        if [ "$(wc -c < "$r.yuv")" -le 20000 ]; then
+          for k in r:$r.yuv l:$l.yuv d:$W/hd/$s.yuv; do
+            [ -f "${k#*:}" ] && echo "    ${k%%:*} $(od -An -tu1 -N24 "${k#*:}" | tr -s ' \n' ' ')" >> $W/d-heic
+            [ -f "${k#*:}" ] && echo "    ${k%%:*} at luma end $(od -An -tu1 -j $((iw * ih * ib)) -N16 "${k#*:}" | tr -s ' \n' ' ')" >> $W/d-heic
+          done
+        fi
+        hok=0
+      fi
+      if [ -f "$r.alpha" ] && [ -f "$l.alpha" ]; then
+        halpha=$((halpha + 1))
+        cmp -s "$r.alpha" "$l.alpha" || { echo "$s: alpha differs (hevc-rs $(wc -c < "$r.alpha") bytes, libheif $(wc -c < "$l.alpha") bytes)" >> $W/d-heic; hok=0; }
+      elif [ -f "$r.alpha" ] || [ -f "$l.alpha" ]; then
+        echo "$s: alpha plane on one side only (hevc-rs $([ -f "$r.alpha" ] && echo yes || echo no), libheif $([ -f "$l.alpha" ] && echo yes || echo no))" >> $W/d-heic; hok=0
+      fi
+      [ "$(normi "$r.info")" = "$(normi "$l.info")" ] || { echo "$s: info hevc-rs='$(cat "$r.info" 2> /dev/null)' libheif='$(cat "$l.info" 2> /dev/null)'" >> $W/d-heic; hok=0; }
+      [ $hok = 1 ] && heq=$((heq + 1))
+    elif [ -f "$r.yuv" ]; then
+      echo "$s: hevc-rs decodes, libheif fails ($(cat "$l.err" 2> /dev/null || echo no output))" >> $W/heic-explained
+    elif [ -f "$l.yuv" ]; then
+      # `limit`: libheif runs with its security limits off, hevc-rs with its default Limits.
+      re=$(cat "$r.err" 2> /dev/null)
+      if [ "$re" = unsupported ] || [ "$re" = limit ]; then
+        echo "$s: libheif decodes ($(cat "$l.info" 2> /dev/null)), hevc-rs rejects as $re" >> $W/heic-explained
+      else
+        echo "$s: libheif decodes, hevc-rs fails ($(cat "$r.err" 2> /dev/null || echo no output): $(cat "$W/hr/$s.msg" 2> /dev/null))" >> $W/d-heic
+      fi
+    elif [ -f "$r.err" ] && [ -f "$l.err" ]; then
+      hbothfail=$((hbothfail + 1))
+    else
+      echo "$s: no output (hevc-rs: $(ls "$r".* 2> /dev/null | wc -l) files, libheif: $(ls "$l".* 2> /dev/null | wc -l) files)" >> $W/d-heic
+    fi
+  done
+  # Coverage: a libheif without a HEVC decoder fails every file and would leave nothing compared.
+  [ "$hboth" -ge "${PARITY_MIN_HEIC:-20}" ] || echo "coverage: $hboth files decoded by both, below PARITY_MIN_HEIC=${PARITY_MIN_HEIC:-20}" >> $W/d-heic
+  cp $W/heic-explained "$REP/heic-disagreements.txt"
+  for e in $W/hr/*.err; do [ -f "$e" ] && echo "hevc-rs ${e#$W/hr/}: $(cat "$e")"; done > "$REP/heic-errors.txt"
+  for e in $W/hl/*.err; do [ -f "$e" ] && echo "libheif ${e#$W/hl/}: $(cat "$e")"; done >> "$REP/heic-errors.txt"
+  {
+    echo; echo "### HEIC (hevc-rs vs libheif)"; echo
+    echo "| set | count |"; echo "|---|---|"
+    echo "| files (heic, heif, hif) | $nh |"
+    echo "| hevc-rs: decoded / error | $(count $W/hr '*.yuv') / $(count $W/hr '*.err') |"
+    echo "| libheif: decoded / error | $(count $W/hl '*.yuv') / $(count $W/hl '*.err') |"
+    echo "| decoded by both | $hboth |"
+    echo "| equal (yuv, alpha, info) | $heq |"
+    echo "| alpha planes compared | $halpha |"
+    echo "| rejected by both | $hbothfail |"
+    echo "| only one side decodes, explained (heic-disagreements.txt) | $(wc -l < $W/heic-explained) |"
+  } > $W/heic-summary.md
 }
 
 full() {
@@ -221,6 +325,8 @@ EOT
   find $W/rs1 -type f -name '*.info' -exec grep -lw bad {} + 2> /dev/null | sed 's#.*/##; s#\.info$#: hash bad#' | sort > $W/d-hash
   # G5: threads.
   diff -rq $W/rs1 $W/rsn > $W/d-threads
+  # G7: HEIC, hevc-rs vs libheif.
+  heic_part
 
   read -r cmpn cmpb < $W/s-dec265
   pics=$(find $W/rs1 -type f -name '*.info' -exec cat {} + | wc -l)
@@ -246,10 +352,12 @@ EOT
   gate "G4 decoded picture hash (no bad)" $W/d-hash soft
   gate "G5 1 thread vs default threads" $W/d-threads
   echo "| G6 (report only) dec265 vs hevc-rs, deblocking and SAO off | $(wc -l < $W/d-nofilters) diff lines |" >> "$REP/summary.md"
+  gate "G7 HEIC: hevc-rs vs libheif (yuv, alpha, info of every file both decode)" $W/d-heic
   [ -s $W/ffprobe-failed ] && { echo; echo "ffprobe failed (G1 skips them), first 50:"; echo; head -n 50 $W/ffprobe-failed | sed 's/^/    /'; } >> "$REP/summary.md"
+  cat $W/heic-summary.md >> "$REP/summary.md"
   # Streams hevc-rs rejects, with the error token (unsupported tools are expected; see docs/parity.md).
   for e in $W/probe/*.err $W/rs1/*.err; do [ -f "$e" ] && echo "${e#$W/}: $(cat "$e")"; done > "$REP/errors.txt"
-  for d in d-probe d-dec265 d-ffmpeg d-hash d-threads d-nofilters; do [ -f $W/$d ] && cp $W/$d "$REP/$d.diff"; done
+  for d in d-probe d-dec265 d-ffmpeg d-hash d-threads d-nofilters d-heic; do [ -f $W/$d ] && cp $W/$d "$REP/$d.diff"; done
   rm -rf $W
   return $bad
 }

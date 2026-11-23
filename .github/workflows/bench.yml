@@ -15,6 +15,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { lfs: false }
+      - id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.CI_READ_APP_ID }}
+          private-key: ${{ secrets.CI_READ_APP_KEY }}
+          owner: dobbo-ca
+          repositories: isobmff-rs
+          permission-contents: read
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: remote
@@ -29,6 +37,8 @@ jobs:
           build-args: BENCH_RUN=${{ github.run_id }}
           cache-from: type=gha,scope=hevc-rs-bench
           cache-to: type=gha,mode=max,scope=hevc-rs-bench
+          secrets: |
+            gh_token=${{ steps.app.outputs.token }}
       - if: always()
         run: '[ ! -f bench-out/summary.md ] || cat bench-out/summary.md >> "$GITHUB_STEP_SUMMARY"'
       - if: always()

@@ -234,13 +234,10 @@ pub(crate) fn decode_slice_segment(
         d.st.ctx_ds = Some(d.ctx.clone());
     }
     // rbsp_slice_segment_trailing_bits: the stop bit was the last bit read by the terminate bin;
-    // then zero bits to the byte boundary and cabac_zero_words.
-    let r = d.cabac.reader();
-    align_zero(r)?;
-    let rest = r.data().get(r.bit_pos() / 8..).unwrap_or(&[]);
-    if rest.iter().any(|&b| b != 0) {
-        return Err(Error::InvalidData("data after the slice segment end"));
-    }
+    // then zero bits to the byte boundary and cabac_zero_words. Bytes after that are ignored, as
+    // libde265 and libheif do: some HEIF writers leave junk after the slice data of an item
+    // (MPEG FileFormatConformance iff_hevc_single_item); the decoded picture is not affected.
+    align_zero(d.cabac.reader())?;
     Ok(())
 }
 

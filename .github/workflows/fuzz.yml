@@ -29,7 +29,7 @@ jobs:
         run: |
           case "$MAXT" in *[!0-9]*|'') echo "max_total_time must be a number" >&2; exit 1 ;; esac
           [ "$MAXT" -le 3000 ] || { echo "max_total_time over 3000 s would pass the job timeout" >&2; exit 1; }
-          all="annexb hvcc params probe decode"
+          all="annexb hvcc params probe decode heic"
           case "$ONLY" in
             '') list=$all ;;
             *) case " $all " in *" $ONLY "*) list=$ONLY ;; *) echo "unknown target $ONLY" >&2; exit 1 ;; esac ;;
@@ -50,6 +50,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { lfs: false }
+      - id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.CI_READ_APP_ID }}
+          private-key: ${{ secrets.CI_READ_APP_KEY }}
+          owner: dobbo-ca
+          repositories: isobmff-rs
+          permission-contents: read
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: remote
@@ -64,6 +72,8 @@ jobs:
           tags: hevc-fuzz:local
           cache-from: type=gha,scope=hevc-rs-fuzz
           cache-to: type=gha,mode=max,scope=hevc-rs-fuzz
+          secrets: |
+            gh_token=${{ steps.app.outputs.token }}
       # The corpus is kept between runs: restored here, copied into the container, copied back
       # out and saved, so a run goes on from where the last one stopped. One cache per target.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

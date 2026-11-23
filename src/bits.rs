@@ -99,10 +99,6 @@ impl<'a> BitReader<'a> {
         let stop = i * 8 + 7 - b.trailing_zeros() as usize;
         self.pos < stop
     }
-
-    pub fn data(&self) -> &'a [u8] {
-        self.data
-    }
 }
 
 #[cfg(test)]
@@ -173,7 +169,6 @@ mod tests {
         assert_eq!(r.bits_left(), 4);
         assert_eq!(r.skip(5).unwrap_err(), Error::InvalidData("truncated"));
         assert_eq!(r.u(4).unwrap(), 0xB);
-        assert_eq!(r.data().len(), 2);
     }
 
     #[test]
