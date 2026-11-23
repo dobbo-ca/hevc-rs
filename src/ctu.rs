@@ -325,7 +325,7 @@ impl Dec<'_, '_> {
         let w = self.sps().pic_width_in_ctbs_y as usize;
         let slice_addr = self.sp.slice_addr_rs as usize;
         let (mut left, mut up) = (false, false);
-        if rs % w > 0 && rs > slice_addr && self.tile_of(rs) == self.tile_of(rs - 1) {
+        if !rs.is_multiple_of(w) && rs > slice_addr && self.tile_of(rs) == self.tile_of(rs - 1) {
             left = self.cabac.decode(&mut self.ctx.sao_merge)?;
         }
         if rs >= w && !left && rs - w >= slice_addr && self.tile_of(rs) == self.tile_of(rs - w) {

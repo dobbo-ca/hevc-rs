@@ -531,8 +531,8 @@ mod tests {
                         c_idx: round as usize % 3,
                         scan_idx,
                         transform_skip_allowed: log2 == 2,
-                        bypass: round % 7 == 0,
-                        sign_hiding: round % 2 == 0,
+                        bypass: round.is_multiple_of(7),
+                        sign_hiding: round.is_multiple_of(2),
                     };
                     let mut buf = vec![0; 1 << (2 * log2)];
                     let _ = residual_coding(&mut cabac, &mut ctx, &p, &mut buf);
