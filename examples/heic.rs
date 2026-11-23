@@ -128,6 +128,70 @@ fn decode_one(name: &str, data: &[u8], outdir: &Path) {
     std::fs::write(outdir.join(format!("{name}.info")), line).unwrap();
 }
 
+/// Diagnosis only: when HEIC_ANNEXB is set, the primary image's coded item (one hvc1 item, not
+/// a grid) is written as an Annex B stream `<name>.265` (the hvcC NAL units, then the item's NAL
+/// units, each after a 4-byte start code), so dec265 can decode the same bytes.
+fn write_annexb(name: &str, data: &[u8], outdir: &Path) {
+    let limits = isobmff::Limits::default();
+    let cancel = AtomicBool::new(false);
+    let Ok(heif) = isobmff::parse(data, &limits, &cancel) else {
+        return;
+    };
+    let Ok(img) = heif.primary_image() else {
+        return;
+    };
+    let isobmff::ImageKind::Coded {
+        config: isobmff::CodecConfig::Hevc(hv),
+        ..
+    } = &img.kind
+    else {
+        return;
+    };
+    let (Some(cfg), Ok(item)) = (
+        isobmff::Heif::slice(data, hv.raw),
+        heif.item_bytes(data, img.id, &limits, &cancel),
+    ) else {
+        return;
+    };
+    let mut out = Vec::new();
+    // hvcC: 22 header bytes, numOfArrays, then per array 1 byte, u16 count, (u16 len, NAL)*.
+    let Some((&arrays, mut d)) = cfg.get(22..).and_then(|r| r.split_first()) else {
+        return;
+    };
+    for _ in 0..arrays {
+        let Some(n) = d.get(1..3).map(|b| u16::from_be_bytes([b[0], b[1]])) else {
+            return;
+        };
+        d = &d[3..];
+        for _ in 0..n {
+            let Some(len) = d
+                .get(..2)
+                .map(|b| usize::from(u16::from_be_bytes([b[0], b[1]])))
+            else {
+                return;
+            };
+            let Some(nal) = d.get(2..2 + len) else { return };
+            out.extend_from_slice(&[0, 0, 0, 1]);
+            out.extend_from_slice(nal);
+            d = &d[2 + len..];
+        }
+    }
+    let ls = usize::from(hv.length_size_minus_one) + 1;
+    let mut s: &[u8] = &item;
+    while s.len() >= ls {
+        let len = s[..ls]
+            .iter()
+            .fold(0usize, |a, &b| (a << 8) | usize::from(b));
+        let Some(nal) = s.get(ls..ls + len) else {
+            return;
+        };
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(nal);
+        s = &s[ls + len..];
+    }
+    std::fs::write(outdir.join(format!("{name}.265")), out).unwrap();
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [indir, outdir] = &args[..] else {
@@ -139,6 +203,10 @@ fn main() {
     let mut files = Vec::new();
     walk(indir, indir, &mut files);
     for (name, path) in files {
-        decode_one(&name, &std::fs::read(&path).unwrap(), outdir);
+        let data = std::fs::read(&path).unwrap();
+        decode_one(&name, &data, outdir);
+        if std::env::var_os("HEIC_ANNEXB").is_some() {
+            write_annexb(&name, &data, outdir);
+        }
     }
 }

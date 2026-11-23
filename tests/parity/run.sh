@@ -129,6 +129,9 @@ heic_part() {
   run hevc-heic $W/hin $W/hr
   run heic-oracle $W/hin $W/hl
   for v in none nodeblock nosao; do HEIC_FILTERS=$v hevc-heic $W/hin $W/hv-$v > /dev/null 2>&1; done
+  # Diagnosis: the primary coded item as Annex B, decoded by dec265 (a third witness).
+  HEIC_ANNEXB=1 hevc-heic $W/hin $W/hx > /dev/null 2>&1; mkdir -p $W/hd
+  for x in $W/hx/*.265; do [ -f "$x" ] && { b=${x##*/}; dec265 -q -o "$W/hd/${b%.265}.yuv" "$x" > /dev/null 2>&1 || rm -f "$W/hd/${b%.265}.yuv"; }; done
   : > $W/d-heic; : > $W/heic-explained
   hboth=0 heq=0 halpha=0 hbothfail=0
   for f in $W/hin/*; do
@@ -141,13 +144,14 @@ heic_part() {
         # Diagnosis: bytes that differ, the first one, the luma plane size, and which hevc-rs
         # variant without an in-loop filter equals libheif.
         nd=$(cmp -l "$r.yuv" "$l.yuv" 2> /dev/null | wc -l)
-        first=$(cmp "$r.yuv" "$l.yuv" 2> /dev/null | sed -n 's/.*byte \([0-9]*\).*/\1/p')
+        first=$(cmp "$r.yuv" "$l.yuv" 2> /dev/null | sed -n 's/.* \(byte\|char\) \([0-9]*\).*/\2/p')
         read -r iw ih _ idy _ < "$r.info"; ib=1; [ "$idy" -gt 8 ] && ib=2
         same=
         for v in none nodeblock nosao; do
           [ -f "$W/hv-$v/$s.yuv" ] && cmp -s "$W/hv-$v/$s.yuv" "$l.yuv" && same="$same $v"
         done
-        echo "$s: yuv differs (hevc-rs $(wc -c < "$r.yuv") bytes, libheif $(wc -c < "$l.yuv") bytes; $nd bytes differ, first at byte $first, luma plane $((iw * ih * ib)) bytes; libheif equals hevc-rs with filters off:${same:- no variant})" >> $W/d-heic
+        d265=no-output; [ -f "$W/hd/$s.yuv" ] && { d265=neither; cmp -s "$W/hd/$s.yuv" "$r.yuv" && d265=hevc-rs; cmp -s "$W/hd/$s.yuv" "$l.yuv" && d265="$d265+libheif"; }
+        echo "$s: yuv differs (dec265 on the item equals: $d265; hevc-rs $(wc -c < "$r.yuv") bytes, libheif $(wc -c < "$l.yuv") bytes; $nd bytes differ, first at byte $first, luma plane $((iw * ih * ib)) bytes; libheif equals hevc-rs with filters off:${same:- no variant})" >> $W/d-heic
         hok=0
       fi
       if [ -f "$r.alpha" ] && [ -f "$l.alpha" ]; then
