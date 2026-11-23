@@ -177,7 +177,7 @@ heic_part() {
       if [ "$re" = unsupported ] || [ "$re" = limit ]; then
         echo "$s: libheif decodes ($(cat "$l.info" 2> /dev/null)), hevc-rs rejects as $re" >> $W/heic-explained
       else
-        echo "$s: libheif decodes, hevc-rs fails ($(cat "$r.err" 2> /dev/null || echo no output))" >> $W/d-heic
+        echo "$s: libheif decodes, hevc-rs fails ($(cat "$r.err" 2> /dev/null || echo no output): $(cat "$W/hr/$s.msg" 2> /dev/null))" >> $W/d-heic
       fi
     elif [ -f "$r.err" ] && [ -f "$l.err" ]; then
       hbothfail=$((hbothfail + 1))

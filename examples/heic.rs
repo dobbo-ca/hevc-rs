@@ -102,6 +102,7 @@ fn decode_one(name: &str, data: &[u8], outdir: &Path) {
         Ok(h) => h,
         Err(e) => {
             std::fs::write(outdir.join(format!("{name}.err")), token(&e)).unwrap();
+            std::fs::write(outdir.join(format!("{name}.msg")), e.to_string()).unwrap();
             return;
         }
     };

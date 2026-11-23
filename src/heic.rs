@@ -68,6 +68,8 @@ fn iso_err(e: isobmff::Error) -> Error {
         isobmff::Error::OutOfMemory => Error::OutOfMemory,
         isobmff::Error::LimitExceeded(Limit::Alloc) => Error::AllocLimit,
         isobmff::Error::LimitExceeded(Limit::Pixels) => Error::PixelLimit,
+        // Valid HEIF that isobmff-rs does not handle (e.g. the `mini` box): outside the scope.
+        isobmff::Error::Unsupported(what) => Error::Unsupported(what),
         e => Error::InvalidData(e.class()),
     }
 }
@@ -566,6 +568,7 @@ mod tests {
         assert_eq!(iso_err(E::LimitExceeded(Limit::Alloc)), Error::AllocLimit);
         assert_eq!(iso_err(E::LimitExceeded(Limit::Pixels)), Error::PixelLimit);
         assert_eq!(iso_err(E::Truncated), Error::InvalidData("truncated"));
+        assert_eq!(iso_err(E::Unsupported("mini")), Error::Unsupported("mini"));
         assert_eq!(merge_hash(Some(true), Some(true)), Some(true));
         assert_eq!(merge_hash(Some(true), None), None);
         assert_eq!(merge_hash(Some(true), Some(false)), Some(false));
