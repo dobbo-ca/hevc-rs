@@ -266,3 +266,13 @@ pub mod __fuzz_intra {
         crate::intra::fuzz_tiers(data)
     }
 }
+
+/// Cross-tier fuzz entry points; not part of the API.
+#[doc(hidden)]
+pub mod __fuzz_deblock {
+    /// Builds deblocking kernel inputs from `data` and runs every SIMD tier of this CPU against
+    /// the scalar one. True when all outputs are equal.
+    pub fn tiers(data: &[u8]) -> bool {
+        crate::deblock::fuzz_tiers(data)
+    }
+}
