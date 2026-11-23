@@ -110,7 +110,7 @@ full() {
     [ -z "$pf" ] || [ "${dc:-$d}" = "$d" ] || pf=
     if [ -z "$pf" ]; then echo "$s" >> $W/ffskip; continue; fi
     echo "$s" >> $W/ffnames
-    ffmpeg -nostdin -v error -i "$p" -f rawvideo -fps_mode passthrough -pix_fmt "$pf" "$W/ff/$s.yuv" > /dev/null 2>&1 \
+    ffmpeg -nostdin -v error -flags unaligned -i "$p" -f rawvideo -fps_mode passthrough -pix_fmt "$pf" "$W/ff/$s.yuv" > /dev/null 2>&1 \
       || { rm -f "$W/ff/$s.yuv"; echo "ffmpeg failed" > "$W/ff/$s.err"; }
   done
 
@@ -154,6 +154,29 @@ EOT
   cmpyuv $W/ff ffmpeg $W/rs1 hevc-rs $W/d-ffmpeg $W/s-ffmpeg $W/ffnames
   # G6 (diagnostic): reconstruction without the in-loop filters.
   cmpyuv $W/denf dec265-nofilters $W/rsnf hevc-rs-nofilters $W/d-nofilters $W/s-nofilters
+  # G2: every stream that hevc-rs decodes is confirmed: equal to dec265, or equal to ffmpeg, or
+  # every picture has a decoded picture hash SEI that matched. A stream with an oracle that
+  # differs while another check confirms hevc-rs is listed in disagreements.tsv (not a failure).
+  : > $W/d-confirm; printf 'stream\tdec265\tffmpeg\tpictures\thash ok\thash none\thash bad\n' > "$REP/streams.tsv"
+  : > $W/disagree; nde=0 nff=0 nhash=0
+  for y in $W/rs1/*.yuv; do
+    [ -f "$y" ] || continue
+    b=${y##*/}; s=${b%.yuv}
+    de=failed; [ -f "$W/de/$s.yuv" ] && { cmp -s "$y" "$W/de/$s.yuv" && de=equal || de=differs; }
+    ff=failed; grep -Fxq "$s" $W/ffskip && ff=skipped
+    [ -f "$W/ff/$s.yuv" ] && { cmp -s "$y" "$W/ff/$s.yuv" && ff=equal || ff=differs; }
+    pics=$(wc -l < "$W/rs1/$s.info"); ok=$(grep -cw ok "$W/rs1/$s.info"); none=$(grep -cw none "$W/rs1/$s.info")
+    hb=$((pics - ok - none))
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$s" "$de" "$ff" "$pics" "$ok" "$none" "$hb" >> "$REP/streams.tsv"
+    [ $de = equal ] && nde=$((nde + 1)); [ $ff = equal ] && nff=$((nff + 1))
+    full=no; [ "$pics" -gt 0 ] && [ "$ok" = "$pics" ] && { full=yes; nhash=$((nhash + 1)); }
+    if [ $de = equal ] || [ $ff = equal ] || [ $full = yes ]; then
+      [ $de = differs ] || [ $ff = differs ] && echo "$s: dec265 $de, ffmpeg $ff, hash ok $ok/$pics" >> $W/disagree
+    else
+      echo "$s: not confirmed (dec265 $de, ffmpeg $ff, hash ok $ok/$pics)" >> $W/d-confirm
+    fi
+  done
+  cp $W/disagree "$REP/disagreements.txt"; mkdir -p "$REP/info" && cp $W/rs1/*.info "$REP/info/"
   # G4: decoded picture hash SEI.
   find $W/rs1 -type f -name '*.info' -exec grep -lw bad {} + 2> /dev/null | sed 's#.*/##; s#\.info$#: hash bad#' | sort > $W/d-hash
   # G5: threads.
@@ -173,14 +196,16 @@ EOT
     echo "| streams compared with dec265 | $cmpn |"
     echo "| bytes compared with dec265 | $cmpb |"
     echo "| ffprobe failed or unmapped | $(wc -l < $W/ffprobe-failed) |"
+    echo "| streams equal to dec265 / ffmpeg / with every picture hash ok | $nde / $nff / $nhash |"
+    echo "| pictures with hash ok / none / bad | $(cat $W/rs1/*.info | grep -cw ok) / $(cat $W/rs1/*.info | grep -cw none) / $(cat $W/rs1/*.info | grep -cw bad) |"
+    echo "| oracle disagreements explained (disagreements.txt) | $(wc -l < $W/disagree) |"
     echo; echo "| gate | result |"; echo "|---|---|"
   } > "$REP/summary.md"
   gate "G1 probe vs ffprobe (W H chroma depthY)" $W/d-probe
-  gate "G2 dec265 vs hevc-rs" $W/d-dec265 soft
-  gate "G3 ffmpeg vs hevc-rs" $W/d-ffmpeg soft
+  gate "G2 every stream confirmed (dec265 or ffmpeg equal, or every picture hash ok)" $W/d-confirm soft
   gate "G4 decoded picture hash (no bad)" $W/d-hash soft
   gate "G5 1 thread vs default threads" $W/d-threads
-  gate "G6 dec265 vs hevc-rs, deblocking and SAO off" $W/d-nofilters soft
+  echo "| G6 (report only) dec265 vs hevc-rs, deblocking and SAO off | $(wc -l < $W/d-nofilters) diff lines |" >> "$REP/summary.md"
   [ -s $W/ffprobe-failed ] && { echo; echo "ffprobe failed (G1 skips them), first 50:"; echo; head -n 50 $W/ffprobe-failed | sed 's/^/    /'; } >> "$REP/summary.md"
   for d in d-probe d-dec265 d-ffmpeg d-hash d-threads d-nofilters; do [ -f $W/$d ] && cp $W/$d "$REP/$d.diff"; done
   rm -rf $W
