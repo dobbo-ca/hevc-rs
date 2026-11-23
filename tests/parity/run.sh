@@ -216,6 +216,11 @@ full() {
   run hevc-oracle --threads 1 $W/prefix $W/rs1
   run hevc-oracle $W/prefix $W/rsn
   run hevc-oracle --threads 1 --no-filters $W/prefix $W/rsnf
+  # G8: the lower SIMD tiers give the same files as the default (best) tier, avx512 on the CI
+  # hosts.
+  for t in scalar avx2; do
+    export HEVC_SIMD=$t; run hevc-oracle --threads 1 $W/prefix $W/rs-$t; unset HEVC_SIMD
+  done
 
   # libde265 and ffmpeg on every prefix stream. ffmpeg's pix_fmt comes from the hevc-rs probe.
   : > $W/ffnames; : > $W/ffskip
@@ -325,6 +330,8 @@ EOT
   find $W/rs1 -type f -name '*.info' -exec grep -lw bad {} + 2> /dev/null | sed 's#.*/##; s#\.info$#: hash bad#' | sort > $W/d-hash
   # G5: threads.
   diff -rq $W/rs1 $W/rsn > $W/d-threads
+  # G8: SIMD tiers.
+  { diff -rq $W/rs1 $W/rs-scalar; diff -rq $W/rs1 $W/rs-avx2; } > $W/d-tiers
   # G7: HEIC, hevc-rs vs libheif.
   heic_part
 
@@ -351,13 +358,14 @@ EOT
   gate "G2 every stream confirmed (dec265 or ffmpeg equal, or every picture hash ok)" $W/d-confirm soft
   gate "G4 decoded picture hash (no bad)" $W/d-hash soft
   gate "G5 1 thread vs default threads" $W/d-threads
+  gate "G8 HEVC_SIMD=scalar and avx2 vs the default tier" $W/d-tiers
   echo "| G6 (report only) dec265 vs hevc-rs, deblocking and SAO off | $(wc -l < $W/d-nofilters) diff lines |" >> "$REP/summary.md"
   gate "G7 HEIC: hevc-rs vs libheif (yuv, alpha, info of every file both decode)" $W/d-heic
   [ -s $W/ffprobe-failed ] && { echo; echo "ffprobe failed (G1 skips them), first 50:"; echo; head -n 50 $W/ffprobe-failed | sed 's/^/    /'; } >> "$REP/summary.md"
   cat $W/heic-summary.md >> "$REP/summary.md"
   # Streams hevc-rs rejects, with the error token (unsupported tools are expected; see docs/parity.md).
   for e in $W/probe/*.err $W/rs1/*.err; do [ -f "$e" ] && echo "${e#$W/}: $(cat "$e")"; done > "$REP/errors.txt"
-  for d in d-probe d-dec265 d-ffmpeg d-hash d-threads d-nofilters d-heic; do [ -f $W/$d ] && cp $W/$d "$REP/$d.diff"; done
+  for d in d-probe d-dec265 d-ffmpeg d-hash d-threads d-tiers d-nofilters d-heic; do [ -f $W/$d ] && cp $W/$d "$REP/$d.diff"; done
   rm -rf $W
   return $bad
 }
