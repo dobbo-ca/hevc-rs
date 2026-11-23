@@ -221,7 +221,7 @@ pub(crate) fn decode_slice_segment(
             as usize;
         let new_tile = pps.tiles_enabled && act.tile_id.get(ts) != act.tile_id.get(ts - 1);
         let new_row = pps.entropy_coding_sync_enabled
-            && (next % w == 0 || act.tile_id.get(ts) != tile(next - 1));
+            && (next.is_multiple_of(w) || act.tile_id.get(ts) != tile(next - 1));
         if new_tile || new_row {
             if !d.cabac.terminate()? {
                 return Err(Error::InvalidData("end_of_subset_one_bit is 0"));
@@ -256,7 +256,7 @@ impl Dec<'_, '_> {
         let w = act.sps.pic_width_in_ctbs_y as usize;
         let first_in_tile = ts == 0 || act.tile_id.get(ts) != act.tile_id.get(ts - 1);
         let row_start = act.pps.entropy_coding_sync_enabled
-            && (rs % w == 0
+            && (rs.is_multiple_of(w)
                 || act.tile_id.get(ts)
                     != act
                         .rs_to_ts

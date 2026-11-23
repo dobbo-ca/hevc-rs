@@ -61,6 +61,8 @@ const fn scan_array(kind: usize, log2: usize) -> [(u8, u8); 64] {
     out
 }
 
+// Evaluated at compile time like `scan_array`.
+#[allow(clippy::indexing_slicing)]
 const fn build_scans() -> [[[(u8, u8); 64]; 3]; 4] {
     let mut t = [[[(0u8, 0u8); 64]; 3]; 4];
     let mut l = 0;
@@ -389,7 +391,7 @@ fn sig_ctx_inc(
         let mut s = match prev_csbf {
             0 => match xp + yp {
                 0 => 2,
-                1 | 2 => 1,
+                1..=2 => 1,
                 _ => 0,
             },
             1 => 2usize.saturating_sub(yp),

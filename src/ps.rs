@@ -50,6 +50,7 @@ fn set_u32(v: &mut [u32], i: usize, val: u32) -> Result<()> {
 
 /// The only VPS field the decoder uses.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code, reason = "the VPS is parsed for validation only")]
 pub(crate) struct Vps {
     pub id: u8,
 }
@@ -328,6 +329,10 @@ pub(crate) struct Pcm {
 
 /// A validated sequence parameter set.
 #[derive(Debug, Clone)]
+#[allow(
+    dead_code,
+    reason = "inter-only and informative fields are parsed but never read"
+)]
 pub(crate) struct Sps {
     pub vps_id: u8,
     pub sps_id: u32,
@@ -618,6 +623,7 @@ pub(crate) fn parse_sps(rbsp: &[u8]) -> Result<Sps> {
 
 /// A validated picture parameter set. Fields that depend on the SPS are checked in `activate`.
 #[derive(Debug, Clone)]
+#[allow(dead_code, reason = "inter-only fields are parsed but never read")]
 pub(crate) struct Pps {
     pub pps_id: u32,
     pub sps_id: u32,
@@ -809,6 +815,10 @@ pub(crate) fn parse_pps(rbsp: &[u8]) -> Result<Pps> {
 
 /// The SPS and PPS of the current picture with the scan tables of 6.5.1 and 6.5.2.
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "col_bd and row_bd are only inputs of the scan tables"
+)]
 pub(crate) struct Active {
     pub sps: Arc<Sps>,
     pub pps: Arc<Pps>,

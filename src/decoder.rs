@@ -378,8 +378,14 @@ impl<'a> Decoder<'a> {
             }
             match nal.kind {
                 32..=34 => self.store.param_set(&nal, self.ledger)?,
-                // End of sequence / bitstream: the picture is complete and the DPB is flushed.
-                36 | 37 => {
+                // End of sequence: the picture is complete; the DPB is left alone, so the next
+                // IRAP's C.5.2.2 handling decides between discard and flush.
+                36 => {
+                    self.finish_picture()?;
+                    self.after_eos = true;
+                }
+                // End of bitstream: the picture is complete and the DPB is flushed.
+                37 => {
                     self.finish_picture()?;
                     self.flush()?;
                     self.after_eos = true;
@@ -468,7 +474,7 @@ impl<'a> Decoder<'a> {
             }
         };
         // prevTid0Pic: TemporalId 0, not RASL, RADL or a sub-layer non-reference picture.
-        let sub_layer_non_ref = kind <= 14 && kind % 2 == 0;
+        let sub_layer_non_ref = kind <= 14 && kind.is_multiple_of(2);
         if nal.temporal_id == 0 && !(6..=9).contains(&kind) && !sub_layer_non_ref {
             self.prev_tid0 = (lsb, msb);
         }
@@ -478,8 +484,7 @@ impl<'a> Decoder<'a> {
             return Err(Error::InvalidData("sub-layer ordering info"));
         };
         let freed = if irap && no_rasl && !self.first_pic {
-            // A CRA here follows an end of sequence (already flushed): NoOutputOfPriorPicsFlag
-            // is 1 for it.
+            // A CRA here follows an end of sequence: NoOutputOfPriorPicsFlag is 1 for it.
             if kind == 21 || sh.no_output_of_prior_pics {
                 self.discard_all();
                 Ok(())

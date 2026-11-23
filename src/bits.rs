@@ -73,6 +73,7 @@ impl<'a> BitReader<'a> {
     }
 
     /// Moves to the next byte boundary (no-op when aligned).
+    #[allow(dead_code, reason = "parsing helper of 7.2, kept for later syntax")]
     pub fn align(&mut self) {
         self.pos = (self.pos + 7) & !7;
     }
@@ -87,6 +88,7 @@ impl<'a> BitReader<'a> {
 
     /// more_rbsp_data() of 7.2: true when a bit before the rbsp_stop_one_bit (the last 1 bit of
     /// the RBSP) is still to be read.
+    #[allow(dead_code, reason = "parsing helper of 7.2, kept for later syntax")]
     pub fn more_rbsp_data(&self) -> bool {
         let Some(i) = self.data.iter().rposition(|&b| b != 0) else {
             return false;

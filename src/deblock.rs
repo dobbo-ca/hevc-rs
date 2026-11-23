@@ -243,7 +243,7 @@ fn luma_pass(frame: &mut Frame, act: &Active, vertical: bool, cancel: &AtomicBoo
                 (frame.edge_h_at(x, y), y)
             };
             // 8x8 grid only; the picture border is not an edge.
-            if along % 8 != 0 || along < 8 {
+            if !along.is_multiple_of(8) || along < 8 {
                 continue;
             }
             let bs = i32::from(bs.unwrap_or(0));
@@ -292,7 +292,7 @@ fn chroma_pass(
         check(cancel)?;
         for cx in (0..w).step_by(4) {
             let across = if vertical { cx } else { cy };
-            if across % 8 != 0 || across < 8 {
+            if !across.is_multiple_of(8) || across < 8 {
                 continue;
             }
             let (x, y) = (cx * 2, cy * 2);

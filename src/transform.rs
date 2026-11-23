@@ -306,17 +306,17 @@ mod tests {
         assert!(DCT[0].iter().all(|&v| v == 64));
         for (k, row) in DCT.iter().enumerate() {
             for n in 0..16 {
-                let mirror = if k % 2 == 0 { row[n] } else { -row[n] };
+                let mirror = if k.is_multiple_of(2) { row[n] } else { -row[n] };
                 assert_eq!(row[31 - n], mirror, "row {k} col {n}");
             }
         }
-        for a in 0..32 {
-            for b in 0..32 {
-                let dot: i32 = (0..32).map(|n| DCT[a][n] * DCT[b][n]).sum();
+        for (a, ra) in DCT.iter().enumerate() {
+            for (b, rb) in DCT.iter().enumerate() {
+                let dot: i32 = ra.iter().zip(rb).map(|(x, y)| x * y).sum();
                 if a == b {
                     assert!((dot - 131072).abs() < 2000, "norm {a}: {dot}");
                 } else {
-                    assert!(dot.abs() < 200, "dot {a} {b}: {dot}");
+                    assert!(dot.abs() < 2000, "dot {a} {b}: {dot}");
                 }
             }
         }

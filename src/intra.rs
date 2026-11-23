@@ -131,12 +131,10 @@ fn gather(
             .zip(usize::try_from(yn).ok())
             .and_then(|(x, y)| frame.sample(c, x, y));
         // Availability is per sample: simplest correct.
-        if let Some(v) = sample.filter(|_| frame.available(act, xt_y, yt_y, xn * sub_i, yn * sub_i))
-        {
-            if let (Some(a), Some(d)) = (avail.get_mut(i), p.r.get_mut(i)) {
-                *a = true;
-                *d = i32::from(v);
-            }
+        let usable = sample.filter(|_| frame.available(act, xt_y, yt_y, xn * sub_i, yn * sub_i));
+        if let (Some(v), Some(a), Some(d)) = (usable, avail.get_mut(i), p.r.get_mut(i)) {
+            *a = true;
+            *d = i32::from(v);
         }
     }
     let line = p.r.get_mut(..len).ok_or_else(bad)?;

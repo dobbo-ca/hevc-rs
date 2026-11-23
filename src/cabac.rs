@@ -465,10 +465,10 @@ mod tests {
             for _ in 0..n {
                 let r = lcg(&mut s);
                 // Skewed bins so that the contexts adapt and states move.
-                let bin = (r >> 8) % 7 == 0;
+                let bin = (r >> 8).is_multiple_of(7);
                 ops.push(match r % 8 {
                     0..=4 => Op::Ctx((r >> 12) as usize % 8, bin),
-                    5 | 6 => Op::Bypass((r >> 8) & 1 == 1),
+                    5..=6 => Op::Bypass((r >> 8) & 1 == 1),
                     _ => Op::Terminate0,
                 });
             }

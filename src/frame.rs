@@ -288,6 +288,7 @@ impl Frame {
     }
 
     /// Sets the sample at (x, y) of plane `c`; Err outside the plane.
+    #[allow(dead_code, reason = "used by the tests only")]
     pub(crate) fn set_sample(&mut self, c: usize, x: usize, y: usize, v: u16) -> Result<()> {
         let s = self
             .row_mut(c, x, y, 1)?
