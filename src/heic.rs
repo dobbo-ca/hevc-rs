@@ -411,7 +411,7 @@ where
         std::thread::scope(|sc| {
             for _ in 1..nw {
                 // A refused spawn only means fewer workers.
-                if std::thread::Builder::new().spawn_scoped(sc, &work).is_err() {
+                if std::thread::Builder::new().spawn_scoped(sc, work).is_err() {
                     break;
                 }
             }
@@ -1292,7 +1292,11 @@ mod tests {
             Err(Error::Unsupported(_))
         ));
         assert!(matches!(
-            compose_of(&overlay_of(0, 8, &[(0, 0)]), &[a.clone()], 1 << 20),
+            compose_of(
+                &overlay_of(0, 8, &[(0, 0)]),
+                std::slice::from_ref(&a),
+                1 << 20
+            ),
             Err(Error::InvalidData(_))
         ));
         let r = compose_of(&even, &[a.clone(), a], 100);
