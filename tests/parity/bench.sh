@@ -1,13 +1,22 @@
 #!/bin/sh
-# bench.sh <report-dir>: libde265 (dec265 -q -t1) and hevc-rs (hevc-bench --threads 1) decode the
-# intra prefix of every corpus stream, best of REPS runs (default 3); summary.md has the time per
-# stream, the totals and the ratio hevc-rs / dec265 (lower is better). Information only, no gate:
-# the status is 0 unless a tool fails to run or no stream was timed by both. Assumes hevc-bench
-# takes `--threads N <stream>` and decodes that Annex B file once.
+# bench.sh <report-dir>: decode time of hevc-rs against libde265 (dec265) and ffmpeg on the intra
+# prefix of every corpus stream, and against libheif (heic-oracle) on the HEIC corpus. Best of
+# REPS runs (default 3) per tool and stream. Information only, no gate: the status is 0 unless a
+# tool fails to run or no stream was timed.
+#
+# Columns: 1 thread (dec265 -t1, ffmpeg -threads 1, hevc-bench --threads 1) and default threads
+# (dec265 -t$(nproc), ffmpeg with no -threads, hevc-bench with no --threads), for the default build
+# of hevc-rs (runtime SIMD dispatch: the best tier of the host) and the x86-64-v4 build
+# (hevc-bench-v4, docs/benchmarks.md). The 1-thread hevc-rs time is also given for the forced
+# tiers HEVC_SIMD=scalar and avx2, so a kernel's gain is visible.
+#
+# Classes (from `hevc-oracle probe`): main (8-bit 4:2:0), main10 (10-bit 4:2:0), rext (the rest:
+# 12-bit, 4:0:0), heic (the HEIC corpus; examples/heic and heic-oracle, HEIC_THREADS=1 for the
+# 1-thread columns).
 set -u
 export LC_ALL=C
-REP=$1 reps=${REPS:-3} W=/work tab=$(printf '\t')
-rm -rf $W; mkdir -p "$REP" $W/in $W/prefix
+REP=$1 reps=${REPS:-3} W=/work NP=$(nproc)
+rm -rf $W; mkdir -p "$REP" $W/in $W/prefix $W/probe
 find /data/x -type f \( -iname '*.bit' -o -iname '*.bin' -o -iname '*.hevc' -o -iname '*.265' \) | sort |
 while IFS= read -r f; do
   rel=$(printf '%s' "${f#/data/x/}" | sed 's#/#__#g')
@@ -16,6 +25,7 @@ while IFS= read -r f; do
 done
 bad=0
 hevc-oracle prefix $W/in $W/prefix || bad=1
+hevc-oracle probe $W/prefix $W/probe || bad=1
 
 # best <cmd...>: the shortest wall time in ns of REPS runs; fails when a run fails.
 best() {
@@ -30,28 +40,95 @@ best() {
   echo "$b"
 }
 
+# class <probe-file>: main, main10 or rext.
+class() {
+  set -- $(cat "$1" 2>/dev/null) x x x x x
+  case "$3:$4" in
+    420:8) echo main ;;
+    420:10) echo main10 ;;
+    *) echo rext ;;
+  esac
+}
+
+# One line per stream: name class bytes, then the times in ns:
+#  4 dec265-1t 5 ffmpeg-1t 6 hevc-1t 7 hevc-v4-1t 8 hevc-scalar-1t 9 hevc-avx2-1t
+#  10 dec265-nt 11 ffmpeg-nt 12 hevc-nt 13 hevc-v4-nt
 : > $W/all.tsv; : > $W/skipped
 for p in $W/prefix/*.bit; do
   [ -f "$p" ] || continue
   b=${p##*/}; s=${b%.bit}
-  if c=$(best dec265 -q -t1 "$p") && r=$(best hevc-bench --threads 1 "$p"); then
-    printf '%s\t%s\t%s\t%s\n' "$s" "$(wc -c < "$p")" "$c" "$r" >> $W/all.tsv
+  if c1=$(best dec265 -q -t1 "$p") \
+    && f1=$(best ffmpeg -v error -nostdin -threads 1 -i "$p" -f null -) \
+    && r1=$(best hevc-bench --threads 1 "$p") \
+    && v1=$(best hevc-bench-v4 --threads 1 "$p") \
+    && s1=$(HEVC_SIMD=scalar best hevc-bench --threads 1 "$p") \
+    && a1=$(HEVC_SIMD=avx2 best hevc-bench --threads 1 "$p") \
+    && cn=$(best dec265 -q -t"$NP" "$p") \
+    && fn=$(best ffmpeg -v error -nostdin -i "$p" -f null -) \
+    && rn=$(best hevc-bench "$p") \
+    && vn=$(best hevc-bench-v4 "$p"); then
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$s" "$(class "$W/probe/$s.probe")" \
+      "$(wc -c < "$p")" "$c1" "$f1" "$r1" "$v1" "$s1" "$a1" "$cn" "$fn" "$rn" "$vn" >> $W/all.tsv
   else
     echo "$s" >> $W/skipped
   fi
 done
-files=$(wc -l < $W/all.tsv)
+
+# HEIC: one directory per file, so each process decodes one image. Columns as above, with
+# heic-oracle (libheif) in the dec265 place and no ffmpeg (0).
+: > $W/heic.tsv
+if [ -f /heic.list ]; then
+  i=0
+  while IFS= read -r f; do
+    i=$((i + 1)); d=$W/h/$i; mkdir -p $d/in
+    cp "/heic/x/${f#./}" $d/in/
+    n=$(printf '%s' "${f#./}" | sed 's#/#__#g')
+    if c1=$(HEIC_THREADS=1 best heic-oracle $d/in $d/o) && ls $d/o | grep -q '\.yuv$' \
+      && r1=$(HEIC_THREADS=1 best hevc-heic $d/in $d/r) && ls $d/r | grep -q '\.yuv$' \
+      && v1=$(HEIC_THREADS=1 best hevc-heic-v4 $d/in $d/r) \
+      && s1=$(HEVC_SIMD=scalar HEIC_THREADS=1 best hevc-heic $d/in $d/r) \
+      && a1=$(HEVC_SIMD=avx2 HEIC_THREADS=1 best hevc-heic $d/in $d/r) \
+      && cn=$(best heic-oracle $d/in $d/o) \
+      && rn=$(best hevc-heic $d/in $d/r) \
+      && vn=$(best hevc-heic-v4 $d/in $d/r); then
+      printf '%s\theic\t%s\t%s\t0\t%s\t%s\t%s\t%s\t%s\t0\t%s\t%s\n' "$n" "$(wc -c < "/heic/x/${f#./}")" \
+        "$c1" "$r1" "$v1" "$s1" "$a1" "$cn" "$rn" "$vn" >> $W/heic.tsv
+    else
+      echo "heic:$n" >> $W/skipped
+    fi
+    rm -rf $d
+  done < /heic.list
+fi
+
+files=$(cat $W/all.tsv $W/heic.tsv | wc -l)
 [ "$files" -gt 0 ] || bad=1
 {
-  echo "## hevc-rs vs libde265: decode time per stream, ms (lower is better)"; echo
-  echo "$files streams timed by both tools, best of $reps runs, 1 thread. Information only, no gate."
-  echo "$(wc -l < $W/skipped) streams skipped (a tool failed)."; echo
-  echo "| stream | bytes | dec265 | hevc-rs | hevc-rs / dec265 |"
-  echo "|---|---|---|---|---|"
-  awk -F'\t' '
-    { printf "| %s | %d | %.2f | %.2f | %.2f |\n", $1, $2, $3/1e6, $4/1e6, $4/$3; B += $2; C += $3; R += $4 }
-    END { if (C > 0) printf "| total | %d | %.2f | %.2f | %.2f |\n", B, C/1e6, R/1e6, R/C }' $W/all.tsv
+  echo "## hevc-rs vs libde265, ffmpeg and libheif: decode time, ms (lower is better)"; echo
+  echo "Best of $reps runs, $NP CPUs, SIMD tier of the host: $(hevc-bench --tier). Information only, no gate."
+  echo "$(wc -l < $W/skipped) inputs skipped (a tool failed or gave no picture)."; echo
+  echo "### Totals per class"; echo
+  echo "Reference: dec265 for main/main10/rext, libheif (with libde265) for heic. v4: hevc-rs built"
+  echo "with -C target-cpu=x86-64-v4 and the false-deps features. Ratio: hevc-rs / reference."; echo
+  echo "| class | n | ref 1t | ffmpeg 1t | hevc 1t | v4 1t | scalar 1t | avx2 1t | ratio 1t | ratio v4 1t | ref nt | ffmpeg nt | hevc nt | v4 nt | ratio nt | ratio v4 nt |"
+  echo "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+  cat $W/all.tsv $W/heic.tsv | awk -F'\t' '
+    function row(k) {
+      printf "| %s | %d | %.1f | %.1f | %.1f | %.1f | %.1f | %.1f | %.2f | %.2f | %.1f | %.1f | %.1f | %.1f | %.2f | %.2f |\n",
+        k, N[k], T[k,4]/1e6, T[k,5]/1e6, T[k,6]/1e6, T[k,7]/1e6, T[k,8]/1e6, T[k,9]/1e6,
+        T[k,6]/T[k,4], T[k,7]/T[k,4], T[k,10]/1e6, T[k,11]/1e6, T[k,12]/1e6, T[k,13]/1e6,
+        T[k,12]/T[k,10], T[k,13]/T[k,10]
+    }
+    { N[$2]++; for (i = 4; i <= 13; i++) T[$2,i] += $i
+      if ($2 != "heic") { N["all"]++; for (i = 4; i <= 13; i++) T["all",i] += $i } }
+    END { split("main main10 rext all heic", K, " ")
+      for (j = 1; j <= 5; j++) if (N[K[j]] > 0) row(K[j]) }'
+  echo; echo "### Per input (1 thread; ms)"; echo
+  echo "| input | class | bytes | ref | ffmpeg | hevc | v4 | scalar | avx2 | hevc / ref |"
+  echo "|---|---|---|---|---|---|---|---|---|---|"
+  cat $W/all.tsv $W/heic.tsv | awk -F'\t' '{ printf "| %s | %s | %d | %.2f | %.2f | %.2f | %.2f | %.2f | %.2f | %.2f |\n",
+    $1, $2, $3, $4/1e6, $5/1e6, $6/1e6, $7/1e6, $8/1e6, $9/1e6, $6/$4 }'
+  if [ -s $W/skipped ]; then echo; echo "Skipped:"; echo; sed 's/^/- /' $W/skipped; fi
 } > "$REP/summary.md"
-cp $W/all.tsv "$REP/all.tsv"
+cp $W/all.tsv "$REP/all.tsv"; cp $W/heic.tsv "$REP/heic.tsv"
 rm -rf $W
 exit $bad

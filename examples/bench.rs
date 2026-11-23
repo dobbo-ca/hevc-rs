@@ -1,4 +1,5 @@
-//! `bench [--threads N] <stream>`: decodes one Annex B file once. Exit status 0 when it yields a
+//! `bench [--threads N] <stream>`: decodes one Annex B file once (`bench --tier` prints the SIMD
+//! tier and exits). Exit status 0 when it yields a
 //! picture (`InterSlice` after a picture is not a failure), 1 otherwise, 2 on bad usage. The
 //! timing is done by `tests/parity/bench.sh` around the process.
 
@@ -10,7 +11,10 @@ fn main() {
     let mut file = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
-        if a == "--threads" {
+        if a == "--tier" {
+            println!("{}", hevc::simd_tier());
+            return;
+        } else if a == "--threads" {
             match args.next().and_then(|v| v.parse().ok()) {
                 Some(n) => limits.max_threads = n,
                 None => usage(),
