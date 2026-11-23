@@ -133,6 +133,44 @@ struct Store {
     sps: [Option<Arc<Sps>>; 16],
     pps: [Option<Arc<Pps>>; 64],
     prev: Option<SliceHeader>,
+    /// Bytes booked in the ledger for each stored set, released when the set is replaced.
+    sps_cost: [usize; 16],
+    pps_cost: [usize; 64],
+}
+
+/// Bytes an SPS holds: the struct, the `Arc` header and the heap vectors.
+fn sps_cost(s: &Sps) -> usize {
+    let st: usize = s
+        .st_rps
+        .iter()
+        .map(|r| size_of::<ps::StRps>() + r.delta_poc.len() * 4 + r.used.len())
+        .sum();
+    size_of::<Sps>()
+        + 2 * size_of::<usize>()
+        + s.ordering.len() * size_of::<SubLayerOrdering>()
+        + st
+        + s.lt_ref_pic_poc_lsb_sps.len() * 4
+        + s.used_by_curr_pic_lt_sps.len()
+}
+
+/// Bytes a PPS holds: the struct, the `Arc` header and the tile vectors.
+fn pps_cost(p: &Pps) -> usize {
+    size_of::<Pps>() + 2 * size_of::<usize>() + (p.column_width.len() + p.row_height.len()) * 4
+}
+
+/// Stores `set` in `slot`, booking `cost` bytes before the old set is dropped and releasing the
+/// old set's `held` bytes after.
+fn replace_set<T>(
+    slot: &mut Option<Arc<T>>,
+    held: &mut usize,
+    set: T,
+    cost: usize,
+    ledger: &Ledger,
+) -> Result<()> {
+    ledger.reserve(cost)?;
+    *slot = Some(Arc::new(set));
+    ledger.release(std::mem::replace(held, cost));
+    Ok(())
 }
 
 impl Store {
@@ -141,6 +179,8 @@ impl Store {
             sps: std::array::from_fn(|_| None),
             pps: std::array::from_fn(|_| None),
             prev: None,
+            sps_cost: [0; 16],
+            pps_cost: [0; 64],
         }
     }
 
@@ -162,13 +202,23 @@ impl Store {
                 let sps = ps::parse_sps(&r)?;
                 let id = usize::try_from(sps.sps_id).map_err(|_| Error::InvalidData("sps id"))?;
                 let slot = self.sps.get_mut(id).ok_or(Error::InvalidData("sps id"))?;
-                *slot = Some(Arc::new(sps));
+                let held = self
+                    .sps_cost
+                    .get_mut(id)
+                    .ok_or(Error::InvalidData("sps id"))?;
+                let cost = sps_cost(&sps);
+                replace_set(slot, held, sps, cost, ledger)?;
             }
             _ => {
                 let pps = ps::parse_pps(&r)?;
                 let id = usize::try_from(pps.pps_id).map_err(|_| Error::InvalidData("pps id"))?;
                 let slot = self.pps.get_mut(id).ok_or(Error::InvalidData("pps id"))?;
-                *slot = Some(Arc::new(pps));
+                let held = self
+                    .pps_cost
+                    .get_mut(id)
+                    .ok_or(Error::InvalidData("pps id"))?;
+                let cost = pps_cost(&pps);
+                replace_set(slot, held, pps, cost, ledger)?;
             }
         }
         Ok(())
@@ -318,6 +368,11 @@ fn to_picture(
             .and_then(|n| n.checked_add(total))
             .ok_or(Error::AllocLimit)?;
     }
+    // The `Picture` and its plane list, plus the slack of the caller's output `Vec` (its capacity
+    // is at most twice its length).
+    total = total
+        .checked_add(2 * size_of::<Picture>() + frame.num_planes() * size_of::<Plane>())
+        .ok_or(Error::AllocLimit)?;
     ledger.reserve(total)?;
     let planes = (0..frame.num_planes())
         .map(|c| {
@@ -682,6 +737,10 @@ impl<'a> Decoder<'a> {
             .copied()
             .ok_or(Error::InvalidData("sub-layer ordering info"))?;
         if cur.output {
+            // The hash and the crop below walk the whole picture without a check of their own.
+            if self.cancel.load(Ordering::Relaxed) {
+                return Err(Error::Cancelled);
+            }
             let hash_ok = cur.hash.as_ref().map(|h| hash_matches(&cur.frame, &sps, h));
             self.dpb.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
             let sei = std::mem::take(&mut cur.sei);
@@ -765,7 +824,19 @@ fn run<'n>(
     r
 }
 
-/// See [`crate::decode_into`].
+/// Decodes an Annex B byte stream like [`decode`]; the pictures output before an error stay in
+/// `out`.
+///
+/// Limits enforced: `max_alloc`, `max_width`, `max_height`, `max_pixels`, `max_pictures`;
+/// `max_metadata` drops SEI messages without an error. The cancel flag is read before every NAL
+/// unit and every CTU.
+///
+/// # Errors
+///
+/// [`Error::InvalidData`], [`Error::Unsupported`], [`Error::InterSlice`] (the pictures before
+/// the P or B slice are in `out`), [`Error::NoPicture`], [`Error::WidthLimit`],
+/// [`Error::HeightLimit`], [`Error::PixelLimit`], [`Error::PictureLimit`],
+/// [`Error::AllocLimit`], [`Error::OutOfMemory`] and [`Error::Cancelled`].
 pub fn decode_into(
     stream: &[u8],
     opts: &Options,
@@ -776,7 +847,19 @@ pub fn decode_into(
     run(nal::annexb(stream), opts, limits, cancel, out)
 }
 
-/// See [`crate::decode`].
+/// Decodes an Annex B byte stream: every intra picture, in output order, cropped to the
+/// conformance window.
+///
+/// Limits enforced: `max_alloc`, `max_width`, `max_height`, `max_pixels`, `max_pictures`;
+/// `max_metadata` drops SEI messages without an error. The cancel flag is read before every NAL
+/// unit and every CTU.
+///
+/// # Errors
+///
+/// [`Error::InvalidData`], [`Error::Unsupported`], [`Error::InterSlice`] (use [`decode_into`] to
+/// keep the earlier pictures), [`Error::NoPicture`], [`Error::WidthLimit`],
+/// [`Error::HeightLimit`], [`Error::PixelLimit`], [`Error::PictureLimit`],
+/// [`Error::AllocLimit`], [`Error::OutOfMemory`] and [`Error::Cancelled`].
 pub fn decode(
     stream: &[u8],
     opts: &Options,
@@ -788,7 +871,18 @@ pub fn decode(
     Ok(out)
 }
 
-/// See [`crate::decode_hvcc_into`].
+/// Decodes HEIF/MP4 samples like [`decode_hvcc`]; the pictures output before an error stay in
+/// `out`.
+///
+/// `config` is the `hvcC` box payload, `samples` the length-prefixed NAL units. Limits and
+/// errors are those of [`decode_into`]; a bad `hvcC` record is [`Error::InvalidData`].
+///
+/// # Errors
+///
+/// [`Error::InvalidData`], [`Error::Unsupported`], [`Error::InterSlice`], [`Error::NoPicture`],
+/// [`Error::WidthLimit`], [`Error::HeightLimit`], [`Error::PixelLimit`],
+/// [`Error::PictureLimit`], [`Error::AllocLimit`], [`Error::OutOfMemory`] and
+/// [`Error::Cancelled`].
 pub fn decode_hvcc_into(
     config: &[u8],
     samples: &[u8],
@@ -807,7 +901,19 @@ pub fn decode_hvcc_into(
     run(nals, opts, limits, cancel, out)
 }
 
-/// See [`crate::decode_hvcc`].
+/// Decodes HEIF/MP4 samples: `config` is the `hvcC` box payload, `samples` the length-prefixed
+/// NAL units. Every intra picture, in output order.
+///
+/// Limits enforced: `max_alloc`, `max_width`, `max_height`, `max_pixels`, `max_pictures`;
+/// `max_metadata` drops SEI messages without an error. The cancel flag is read before every NAL
+/// unit and every CTU.
+///
+/// # Errors
+///
+/// [`Error::InvalidData`], [`Error::Unsupported`], [`Error::InterSlice`], [`Error::NoPicture`],
+/// [`Error::WidthLimit`], [`Error::HeightLimit`], [`Error::PixelLimit`],
+/// [`Error::PictureLimit`], [`Error::AllocLimit`], [`Error::OutOfMemory`] and
+/// [`Error::Cancelled`].
 pub fn decode_hvcc(
     config: &[u8],
     samples: &[u8],
@@ -826,6 +932,7 @@ fn probe_nals<'a>(nals: impl Iterator<Item = Result<Nal<'a>>>, limits: &Limits) 
     let ledger = Ledger::default();
     ledger.reset(limits.max_alloc, 0)?;
     let mut sps_list: [Option<Sps>; 16] = Default::default();
+    let mut sps_held = [0usize; 16];
     let mut pps_sps: [Option<u32>; 64] = [None; 64];
     let mut first: Option<u32> = None;
     for nal in nals {
@@ -838,8 +945,13 @@ fn probe_nals<'a>(nals: impl Iterator<Item = Result<Nal<'a>>>, limits: &Limits) 
                 let (r, _held) = ps_rbsp(nal.payload, &ledger)?;
                 let sps = ps::parse_sps(&r)?;
                 first.get_or_insert(sps.sps_id);
-                if let Some(slot) = sps_list.get_mut(sps.sps_id as usize) {
+                let id = sps.sps_id as usize;
+                if let (Some(slot), Some(held)) = (sps_list.get_mut(id), sps_held.get_mut(id)) {
+                    // Booked before the old SPS is dropped, as in `replace_set`.
+                    let cost = sps_cost(&sps);
+                    ledger.reserve(cost)?;
                     *slot = Some(sps);
+                    ledger.release(std::mem::replace(held, cost));
                 }
             }
             34 => {
@@ -883,18 +995,42 @@ fn probe_nals<'a>(nals: impl Iterator<Item = Result<Nal<'a>>>, limits: &Limits) 
     info_of(sps)
 }
 
-/// See [`crate::probe`].
+/// Reads the first SPS of an Annex B byte stream and returns its [`Info`]; nothing is decoded.
+///
+/// Limits enforced: `max_alloc`, `max_width`, `max_height`, `max_pixels` (on the SPS size).
+///
+/// # Errors
+///
+/// [`Error::InvalidData`], [`Error::Unsupported`], [`Error::NoPicture`] (no SPS),
+/// [`Error::WidthLimit`], [`Error::HeightLimit`], [`Error::PixelLimit`], [`Error::AllocLimit`]
+/// and [`Error::OutOfMemory`].
 pub fn probe(stream: &[u8], limits: &Limits) -> Result<Info> {
     probe_nals(nal::annexb(stream), limits)
 }
 
-/// See [`crate::probe_hvcc`].
+/// Like [`probe`] for the parameter sets of an `hvcC` record.
+///
+/// Limits enforced and errors: those of [`probe`].
+///
+/// # Errors
+///
+/// [`Error::InvalidData`], [`Error::Unsupported`], [`Error::NoPicture`], [`Error::WidthLimit`],
+/// [`Error::HeightLimit`], [`Error::PixelLimit`], [`Error::AllocLimit`] and
+/// [`Error::OutOfMemory`].
 pub fn probe_hvcc(config: &[u8], limits: &Limits) -> Result<Info> {
     let hv = nal::parse_hvcc(config)?;
     probe_nals(hv.nals.iter().copied().map(nal::header), limits)
 }
 
-/// See [`crate::intra_prefix`].
+/// Test tooling for the parity oracle: the Annex B bytes of every layer 0 NAL unit before the
+/// first picture that holds a P or B slice. Nothing is decoded.
+///
+/// Limits enforced: `max_alloc` (the output is charged up front).
+///
+/// # Errors
+///
+/// [`Error::NoPicture`] when no intra picture is left, [`Error::InvalidData`],
+/// [`Error::AllocLimit`] and [`Error::OutOfMemory`].
 pub fn intra_prefix(stream: &[u8], limits: &Limits) -> Result<Vec<u8>> {
     let ledger = Ledger::default();
     ledger.reset(limits.max_alloc, 0)?;
@@ -1024,6 +1160,44 @@ mod tests {
         assert_eq!(pending.charged, 0);
         // The dropped message's charge is released.
         assert_eq!(before - ledger.left(), max);
+    }
+
+    #[test]
+    fn stored_parameter_sets_are_charged_and_released_on_replace() {
+        use crate::ps::tests::{pps_bits, sps_bits};
+        let sps_payload = sps_bits(64, 64);
+        let pps_payload = pps_bits(1);
+        fn nal(kind: u8, payload: &[u8]) -> Nal<'_> {
+            Nal {
+                kind,
+                layer_id: 0,
+                temporal_id: 0,
+                payload,
+            }
+        }
+        let ledger = Ledger::default();
+        ledger.reset(1 << 20, 0).unwrap();
+        let start = ledger.left();
+        let mut store = Store::new();
+        store.param_set(&nal(33, &sps_payload), &ledger).unwrap();
+        let one = start - ledger.left();
+        assert!(one >= size_of::<Sps>());
+        store.param_set(&nal(34, &pps_payload), &ledger).unwrap();
+        let both = start - ledger.left();
+        assert!(both > one);
+        // The same ids again: the old charge is released, the total does not grow.
+        store.param_set(&nal(33, &sps_payload), &ledger).unwrap();
+        store.param_set(&nal(34, &pps_payload), &ledger).unwrap();
+        assert_eq!(start - ledger.left(), both);
+        // A budget that cannot hold the set: AllocLimit, nothing stored.
+        let tiny = Ledger::default();
+        tiny.reset(crate::ledger::SMALL + 100, 0).unwrap();
+        let mut store = Store::new();
+        assert_eq!(
+            store.param_set(&nal(33, &sps_payload), &tiny).unwrap_err(),
+            Error::AllocLimit
+        );
+        assert!(store.sps[0].is_none());
     }
 
     #[test]

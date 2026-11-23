@@ -26,8 +26,6 @@ pub(crate) struct SliceHeader {
     pub beta_offset_div2: i32,
     pub tc_offset_div2: i32,
     pub loop_filter_across_slices: bool,
-    /// entry_point_offset_minus1 + 1 of each substream.
-    pub entry_points: Vec<u32>,
     /// Byte offset of slice_segment_data in the RBSP.
     pub data_offset: usize,
 }
@@ -110,8 +108,8 @@ pub(crate) fn parse(
     h.dependent = dependent;
     h.segment_address = segment_address;
 
-    // Entry points (7.3.6.1), bounded by the substream count the PPS allows.
-    h.entry_points = Vec::new();
+    // Entry points (7.3.6.1), bounded by the substream count the PPS allows. The offsets are not
+    // needed (the substreams are decoded in order), so they are skipped, not stored.
     if pps.tiles_enabled || pps.entropy_coding_sync_enabled {
         let tiles = pps.num_tile_columns.saturating_mul(pps.num_tile_rows);
         let rows = sps.pic_height_in_ctbs_y;
@@ -121,23 +119,7 @@ pub(crate) fn parse(
             _ => rows,
         }
         .saturating_sub(1);
-        let n = r.ue()?;
-        if n > max {
-            return Err(Error::InvalidData("too many entry points"));
-        }
-        if n > 0 {
-            let len = r.ue()?;
-            if len > 31 {
-                return Err(Error::InvalidData("offset_len_minus1 out of range"));
-            }
-            h.entry_points
-                .try_reserve_exact(n as usize)
-                .map_err(|_| Error::OutOfMemory)?;
-            for _ in 0..n {
-                let off = r.u(len + 1)?;
-                h.entry_points.push(off.saturating_add(1));
-            }
-        }
+        skip_entry_points(&mut r, max)?;
     }
 
     if pps.slice_segment_header_extension_present {
@@ -159,6 +141,23 @@ pub(crate) fn parse(
     }
     h.data_offset = r.bit_pos() / 8;
     Ok(h)
+}
+
+/// num_entry_point_offsets and the offsets (7.3.6.1), skipped. `max` comes from the PPS and an
+/// SPS that is not limit-checked yet, so the bits left in the RBSP bound the count too.
+fn skip_entry_points(r: &mut BitReader, max: u32) -> Result<()> {
+    let n = r.ue()?;
+    if n > max {
+        return Err(Error::InvalidData("too many entry points"));
+    }
+    if n > 0 {
+        let len = r.ue()?;
+        if len > 31 {
+            return Err(Error::InvalidData("offset_len_minus1 out of range"));
+        }
+        r.skip((n as usize).saturating_mul(len as usize + 1))?;
+    }
+    Ok(())
 }
 
 /// The fields present only in an independent slice segment.
@@ -303,7 +302,6 @@ fn parse_independent(r: &mut BitReader, nal_kind: u8, sps: &Sps, pps: &Pps) -> R
         beta_offset_div2,
         tc_offset_div2,
         loop_filter_across_slices,
-        entry_points: Vec::new(),
         data_offset: 0,
     })
 }
@@ -321,6 +319,23 @@ mod tests {
         assert_eq!(ceil_log2(4), 2);
         assert_eq!(ceil_log2(5), 3);
         assert_eq!(ceil_log2(u32::MAX), 32);
+    }
+
+    #[test]
+    fn entry_points_are_bounded_by_the_bits_left() {
+        // n = 2^28 - 1 with max = u32::MAX and no entry bits: nothing is reserved, it errors.
+        let mut r = BitReader::new(&[0, 0, 0, 8, 0, 0, 0, 0x40]);
+        assert!(skip_entry_points(&mut r, u32::MAX).is_err());
+        // n = 1 over max = 0.
+        let mut r = BitReader::new(&[0b0100_0000]);
+        assert!(matches!(
+            skip_entry_points(&mut r, 0),
+            Err(Error::InvalidData(_))
+        ));
+        // n = 2, offset_len_minus1 = 0, two 1-bit offsets, then a 1 bit.
+        let mut r = BitReader::new(&[0b0111_0011]);
+        skip_entry_points(&mut r, 5).unwrap();
+        assert!(r.flag().unwrap());
     }
 
     #[test]

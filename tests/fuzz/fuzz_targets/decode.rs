@@ -6,9 +6,16 @@ use libfuzzer_sys::fuzz_target;
 mod common;
 use common::{NO, limits};
 
-// Whatever the stream is, every picture that comes back has the planes its Info says.
+// Whatever the stream is, every picture that comes back has the planes its Info says. The low
+// 3 bits of the last byte pick deblocking, SAO and metadata; the stream is the whole input.
 fuzz_target!(|data: &[u8]| {
-    let Ok(pictures) = hevc::decode(data, &Options::default(), &limits(), &NO) else {
+    let bits = data.last().copied().unwrap_or(0);
+    let opts = Options {
+        deblocking: bits & 1 == 0,
+        sao: bits & 2 == 0,
+        metadata: bits & 4 == 0,
+    };
+    let Ok(pictures) = hevc::decode(data, &opts, &limits(), &NO) else {
         return;
     };
     for pic in &pictures {

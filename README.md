@@ -6,7 +6,7 @@ Dependency: `hevc = { git = "https://github.com/dobbo-ca/hevc-rs", rev = "<sha>"
 
 **PATENT CAUTION (owner):** HEVC is covered by patent pools. Low risk for a private app; the owner must review before Drive goes public.
 
-Status: phase 1. Parameter sets, SEI and slice headers are parsed and the limits are enforced; slice data decoding is not implemented yet (`Error::Unsupported`).
+Status: intra decoding works. Every I picture is decoded (CABAC, intra prediction, residual, deblocking, SAO), checked against its decoded picture hash SEI when present, and bit-exact with libde265 and ffmpeg on the JCT-VC HEVC_v1 intra prefixes in CI. P and B slices are rejected with `Error::InterSlice`.
 
 ## Quick start
 
@@ -33,7 +33,7 @@ There is no unlimited entry point. Every call takes a `Limits`.
 
 | Field | Default | Unit | Over it |
 |---|---|---|---|
-| `max_alloc` | 1 GiB | bytes, peak of one call | `Error::AllocLimit` (`Error::OutOfMemory` if the allocator fails) |
+| `max_alloc` | 1 GiB | bytes, peak of one call, all threads together | `Error::AllocLimit` (`Error::OutOfMemory` if the allocator fails) |
 | `max_threads` | `available_parallelism()` | threads, calling thread included | no error; 0 means 1 |
 | `max_width` | 16384 | luma samples (`pic_width_in_luma_samples`) | `Error::WidthLimit` |
 | `max_height` | 16384 | luma rows | `Error::HeightLimit` |
@@ -41,7 +41,7 @@ There is no unlimited entry point. Every call takes a `Limits`.
 | `max_pictures` | 4096 | decoded pictures per call | `Error::PictureLimit` |
 | `max_metadata` | 1 MiB | bytes of SEI messages kept per picture (payload plus the message struct) | no error; the message is dropped |
 
-- `max_alloc` is the enforced peak working memory of one call: allocations are charged before they are made and released on drop.
+- `max_alloc` is the enforced peak working memory of one call, all threads together: allocations are charged before they are made and released on drop. The stored parameter sets, the output pictures and the planes are charged one by one; 64 KiB is booked up front for the small fixed allocations, so a `max_alloc` below that is `Error::AllocLimit` at once.
 - Metadata (SEI messages, VUI) is kept by default and exposed raw; `Options { metadata: false, .. }` drops it. Kept SEI bytes are charged to `max_alloc` like the planes.
 - `max_threads = 1` spawns no thread. v1 is serial, so no value spawns one.
 - Cancellation: every decode takes `&AtomicBool`, read before each NAL unit and each CTU. When set, the call returns `Error::Cancelled`.

@@ -5,10 +5,12 @@ use crate::error::Error;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Booked at the start of every call for the small, short-lived allocations that do not scale
-/// with the input and are not charged one by one (for example the `Arc`s of the parameter set
-/// store and the iterator state of the NAL loop). A `max_alloc` below this is
-/// `Error::AllocLimit` at once.
-pub(crate) const SMALL: usize = 1024;
+/// with the input and are not charged one by one: the iterator state of the NAL loop, the NAL
+/// list of an `hvcC` record (at most 1024 slices of 16 bytes), and the one `Pps` copy that
+/// `ps::activate` makes per picture (at most about 17 KiB with its tile vectors and scaling
+/// list). 64 KiB covers them. The parameter set store, the output list and the pictures are
+/// charged one by one. A `max_alloc` below this is `Error::AllocLimit` at once.
+pub(crate) const SMALL: usize = 64 << 10;
 
 /// Bytes booked against `Limits::max_alloc`.
 #[derive(Debug, Default)]
@@ -29,7 +31,7 @@ impl Ledger {
     }
 
     /// What may still be charged.
-    #[allow(dead_code, reason = "used by the tests only")]
+    #[cfg(test)]
     pub(crate) fn left(&self) -> usize {
         let free = self
             .max
@@ -89,7 +91,7 @@ impl Drop for Held<'_> {
 
 /// Sets `v` to `n` zero bytes and books `n` bytes for the rest of the call. A buffer that is
 /// already big enough (a `Decoder` kept it) allocates nothing.
-#[allow(dead_code, reason = "reusable-buffer helper, no caller yet")]
+#[cfg(test)]
 pub(crate) fn zeroed(v: &mut Vec<u8>, n: usize, ledger: &Ledger) -> Result<(), Error> {
     ledger.reserve(n)?;
     v.clear();
@@ -101,10 +103,7 @@ pub(crate) fn zeroed(v: &mut Vec<u8>, n: usize, ledger: &Ledger) -> Result<(), E
 }
 
 /// A zeroed `Vec<u16>` of `len` samples (a picture plane), booked for the rest of the call.
-#[allow(
-    dead_code,
-    reason = "Frame::new books and fills its planes with `filled`"
-)]
+#[cfg(test)]
 pub(crate) fn alloc_u16_zeroed(len: usize, ledger: &Ledger) -> Result<Vec<u16>, Error> {
     ledger.reserve(len.checked_mul(2).ok_or(Error::AllocLimit)?)?;
     let mut v = Vec::new();
