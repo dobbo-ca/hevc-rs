@@ -347,15 +347,17 @@ fn residual_simd(tier: Tier, coeffs: &mut [i32], list: Option<&ScalingList>, p: 
 /// 8.6.7 for one row: adds `res` to the prediction in `row` and clips to [0, max].
 #[allow(unsafe_code)]
 fn add_row(tier: Tier, row: &mut [u16], res: &[i32], max: i32) {
+    // The kernels handle equal-length rows of 4, 8, 16 or 32 only; anything else runs scalar.
+    let simd_ok = row.len() == res.len() && matches!(row.len(), 4 | 8 | 16 | 32);
     match tier {
         #[cfg(target_arch = "x86_64")]
-        Tier::Avx2 | Tier::Avx512 if std::arch::is_x86_feature_detected!("avx2") => {
+        Tier::Avx2 | Tier::Avx512 if simd_ok && std::arch::is_x86_feature_detected!("avx2") => {
             // SAFETY: the guard above found AVX2 on this CPU (Avx512 implies it, see
             // src/simd/mod.rs); the kernel only reads and writes within the two slices.
             unsafe { avx2::add_row(row, res, max) }
         }
         #[cfg(target_arch = "aarch64")]
-        Tier::Neon if std::arch::is_aarch64_feature_detected!("neon") => {
+        Tier::Neon if simd_ok && std::arch::is_aarch64_feature_detected!("neon") => {
             // SAFETY: the guard above found NEON on this CPU (src/simd/mod.rs); the kernel only
             // reads and writes within the two slices.
             unsafe { neon::add_row(row, res, max) }

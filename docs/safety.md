@@ -52,7 +52,8 @@ on those two fns), plus the shared load/store helpers of `simd/x86.rs` and `simd
 - Four calls of a `#[target_feature]` kernel. Invariant: the CPU has the feature. Checked by the
   match guard right before the call (`is_x86_feature_detected!("avx2")` /
   `is_aarch64_feature_detected!("neon")`), so even `residual_block(tier, ..)` with a tier the CPU
-  lacks falls back to scalar. The kernels contain no `unsafe`: arrays come from slices with
+  lacks falls back to scalar. The detection is std's cached atomic load, not a CPUID per call.
+`add_row` also runs scalar unless both slices have the same length 4, 8, 16 or 32. The kernels contain no `unsafe`: arrays come from slices with
   `as_chunks`, `first_chunk` and `chunks_exact`.
 - Kernel inputs are validated in safe code before the call: `residual_block` checks size, bit
   depth, qP and the buffer length; `reconstruct` gets each frame row from `Frame::row_mut`.
