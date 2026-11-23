@@ -27,3 +27,13 @@ another crate) and on `workflow_dispatch`, never on push or pull request. The di
 
 There is no `fuzz-arm64` matrix yet: v1 has no SIMD, so the x86_64 run covers the same code. Add
 it with the SIMD phase.
+
+## Runs
+
+| Date | Ref | Targets x seconds | Crashes |
+|---|---|---|---|
+| 2026-11-23 | main 92cb413 | annexb, hvcc, params, probe, decode x 900 s | 0 |
+| 2026-11-23 | main 6dbe2a7 | heic x 900 s | 0 |
+
+Fuzz hours on main: 1.5 (6 targets x 900 s). `decode` runs slowly (about 5 exec/s: its seeds are whole
+pictures), the parsers run 2000-5600 exec/s.

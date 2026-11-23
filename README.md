@@ -2,7 +2,7 @@
 
 HEVC (H.265) decoding for intra pictures under strict resource limits, in Rust. It decodes Main, Main 10 and Main Still Picture streams (4:2:0 and 4:0:0, 8 to 12 bits per component) from an Annex B byte stream or from HEIF/MP4 samples plus an `hvcC` record, bit-exact with the spec; P and B slices are rejected with `Error::InterSlice`. It is a new crate written from the H.265 spec, not a port. Pure Rust, one dependency (isobmff-rs, for HEIC), no `unsafe`. Apache-2.0; see `NOTICE`.
 
-Dependency: `hevc = { git = "https://github.com/dobbo-ca/hevc-rs", rev = "<sha>" }`
+Dependency: `hevc = { git = "https://github.com/dobbo-ca/hevc-rs", rev = "6dbe2a71b2e147e507edbb29e0a68a082d17b7d4" }`
 
 **PATENT CAUTION (owner):** HEVC is covered by patent pools. Low risk for a private app; the owner must review before Drive goes public.
 

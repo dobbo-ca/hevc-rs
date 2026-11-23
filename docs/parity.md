@@ -70,23 +70,31 @@ All of this runs in CI only; nothing is built or run on a developer machine.
 
 ## Counts
 
-From the CI run of main with all gates green (HEVC_v1 intra prefixes):
+From the CI runs of 2026-11-23 with every gate green (main 6dbe2a7 and the PR runs before it):
 
 | Count | Value |
 |---|---|
-| streams (intra prefixes) | 147 |
-| equal to dec265 | 145 |
-| equal to ffmpeg | 145 |
-| pictures with hash ok | 244 |
-| pictures with hash bad | 0 |
+| bitstreams (148 HEVC_v1 + 9 RExt zips) | 157 inputs, 152 intra prefixes |
+| hevc-rs decoded / rejected (unsupported RExt tools) | 152 / 4 (`Bitdepth_A/B`, `IPCM_A/B_RExt`) |
+| pictures decoded | 307 |
+| streams equal to dec265 / ffmpeg | 150 / 149 (+1 by picture subset: `VPSSPSPPS_A`) |
+| pictures with decoded picture hash ok / none / bad | 249 / 58 / 0 |
+| streams confirmed (G2) | 152 / 152 |
+| explained oracle disagreements | 3 (`disagreements.txt`: ffmpeg on `SAODBLK_A`; ffmpeg drops 4 of 6 pictures of `VPSSPSPPS_A` at its size changes; ffprobe size of `VPSSPSPPS_A`) |
+| HEIC files / decoded by both / equal to libheif (yuv, alpha, info) | 176 / 56 / 56 (3 alpha planes) |
+| HEIC files libheif decodes and hevc-rs rejects (explained) | 6: overlay/identity primaries (C008, C014, C039), 4:4:4 (MIAF003), the `mini` form (lightning_mini, C71) |
 
-The live numbers are in each run's `summary.md`; update this table when the corpus changes.
+Two oracle settings matter: ffmpeg runs with `-flags unaligned -autoscale 0` (else it aligns the
+left crop and scales pictures that change size), and libheif with
+`output_image_nclx_profile_passthrough = 1` (else it converts limited-range YCbCr to full range).
+With the libheif default, a third witness (dec265 on the same item bytes) equalled hevc-rs on all
+45 single-item files.
 
 ## Corpus
 
-JCT-VC HEVC_v1 conformance streams (all 147 in `tests/parity/corpus.toml`, since each starts
-with an intra picture). RExt streams for the rejection classes are planned, not in the corpus
-yet; fuzz-grown files are added when present. Fetched in CI into a BuildKit cache mount
+JCT-VC HEVC_v1 conformance streams (all 148 in `tests/parity/corpus.toml`, since each starts
+with an intra picture), plus 9 RExt streams (4:0:0, 10/12-bit, PCM, bit depth) for 4:0:0 and
+depth coverage and the rejection classes; fuzz-grown files are added when present. Fetched in CI into a BuildKit cache mount
 (`id=hevc-rs-data`), never committed.
 
 HEIC corpus (`tests/parity/heic-corpus.toml`): the HEVC-coded HEIC/HEIF sources of isobmff-rs's
