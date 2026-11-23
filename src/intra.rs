@@ -202,15 +202,18 @@ fn arr<const N: usize>(a: &[i32], i: usize) -> Option<&[i32; N]> {
 
 /// Clamps the n x n block to the bit depth and narrows it.
 fn store(tier: Tier, pred: &Block, out: &mut Pred, n: usize, max: i32) {
-    if run(
-        tier,
-        Op::Store {
-            block: pred,
-            out: &mut *out,
-            n,
-            max,
-        },
-    ) {
+    // The vector store saturates to u16::MAX where the scalar tail gives 0, so only run it in range.
+    if max <= i32::from(u16::MAX)
+        && run(
+            tier,
+            Op::Store {
+                block: pred,
+                out: &mut *out,
+                n,
+                max,
+            },
+        )
+    {
         return;
     }
     for (src, dst) in pred.iter().zip(out.iter_mut()).take(n) {
