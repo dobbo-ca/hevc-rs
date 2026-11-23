@@ -632,12 +632,13 @@ pub enum Transform { Clap(Clap), Rotate(u16), Mirror(Axis) }   // own types, sam
   clipped to the canvas, chroma at half the offset; there is no blending (an HEVC input has no
   alpha). Inputs are coded or grid items and must share chroma format and bit depths, and have no
   transformative properties of their own (the pixels are not transformed here); in 4:2:0 every
-  offset must be even. Else `Unsupported` with the reason; an overlay with no input is
+  offset and every input width and height must be even. Else `Unsupported` with the reason; an overlay with no input is
   `Unsupported` too (no format to compose in). `sei`, `info.vui`, `poc` are the first input's,
   `hash_ok` is the merge over inputs as for grid tiles. An input wholly outside the canvas is
   still decoded (and so still checked for the format).
 - Overlay fill colour (R, G, B, A, 16 bits each, full range): the colour space is the `nclx`
-  `colr` of the first input item (`matrix_coefficients`, `full_range_flag`), else the VUI of the
+  `colr` of the `iovl` item itself, else of the first input item (`matrix_coefficients`,
+  `full_range_flag`), else the VUI of the
   first input's SPS (`matrix_coeffs`, `video_full_range_flag`; absent with `metadata` off),
   else BT.601 limited. With `E'R = R/65535` (same for G, B), `Kr`, `Kb` from the matrix
   (1: 0.2126, 0.0722; 4: 0.30, 0.11; 7: 0.212, 0.087; 9: 0.2627, 0.0593; anything else
@@ -647,7 +648,9 @@ pub enum Transform { Clap(Clap), Rotate(u16), Mirror(Axis) }   // own types, sam
   limited `Y = round(2^(b-8) (219 E'Y + 16))`, `C = round(2^(b-8) (224 E'P + 128))`;
   full `Y = round((2^b - 1) E'Y)`, `C = round((2^b - 1) E'P + 2^(b-1))`; all clipped to
   `0..2^b - 1`, `b` the luma depth for Y and the chroma depth for Cb, Cr. Matrix 0 (identity,
-  GBR): the planes are G, B, R, quantised like luma. A monochrome canvas takes only Y. The
+  GBR): the planes are G, B, R, quantised like luma. The fill R, G, B are sRGB in ISO/IEC
+  23008-12; only the matrix and range are applied here, not the primaries or transfer, so the
+  fill is approximate for BT.2020/PQ content (a known approximation). A monochrome canvas takes only Y. The
   alpha `A` is used when the overlay is an alpha image (luma-only canvas): `round(A / 65535 *
   (2^b - 1))`. libheif (from memory of its design, not read for this change) composes an `iovl`
   in interleaved RGB(A) and alpha-blends its inputs, so its output is RGB, not the inputs' YCbCr;

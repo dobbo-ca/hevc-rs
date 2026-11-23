@@ -54,9 +54,10 @@ pub enum Transform {
 /// The primary image of a HEIC file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeicImage {
-    /// The primary image: one coded `hvc1` item, or a grid of `hvc1` tiles assembled (tiles
-    /// row-major, each at `(col * tile_w, row * tile_h)`, cropped to the grid output size). Not
-    /// rotated, mirrored or `clap`-cropped: see [`HeicImage::transforms`]. `sei` and `info.vui`
+    /// The primary image: one coded `hvc1` item, a grid of `hvc1` tiles assembled (tiles
+    /// row-major, each at `(col * tile_w, row * tile_h)`, cropped to the grid output size), or an
+    /// `iden`/`iovl` of those (see [`decode_heic`]). Not rotated, mirrored or `clap`-cropped: see
+    /// [`HeicImage::transforms`]. `sei` and `info.vui`
     /// are those of the first tile (empty / `None` with [`Options::metadata`] false).
     pub image: Picture,
     /// The luma plane of the auxiliary alpha image (itself coded or a grid).
@@ -386,7 +387,7 @@ where
                     .and_then(|()| dec(i, budget, nw))
                     .and_then(|t| {
                         let mut g = cv.lock().unwrap_or_else(PoisonError::into_inner);
-                        place(&mut **g, &t.planes, col, row)?;
+                        place(&mut g, &t.planes, col, row)?;
                         Ok(t.hash_ok)
                     });
                 let s = match r {
@@ -424,7 +425,7 @@ where
             Some(Slot::Err(e)) => return Err(e.clone()),
             Some(Slot::Todo) | None => {
                 fill.cancelled()?;
-                let t = dec(i, fill.avail, 1)?;
+                let t = dec(i, spare, 1)?;
                 out.hash_ok = merge_hash(out.hash_ok, t.hash_ok);
                 let (col, row) = fill.cell(i);
                 place(&mut out.planes, &t.planes, col, row)?;
@@ -496,6 +497,17 @@ fn paint(out: &mut Picture, pic: &Picture, inp: isobmff::OverlayInput) -> Result
     if out.info.chroma_format == ChromaFormat::Yuv420 && out.planes.len() > 1 && (x | y) & 1 != 0 {
         return Err(Error::Unsupported("overlay offset is odd in a 4:2:0 image"));
     }
+    if out.info.chroma_format == ChromaFormat::Yuv420
+        && out.planes.len() > 1
+        && pic
+            .planes
+            .first()
+            .is_some_and(|p| (p.width | p.height) & 1 != 0)
+    {
+        return Err(Error::Unsupported(
+            "overlay input size is odd in a 4:2:0 image",
+        ));
+    }
     for (k, (c, p)) in out.planes.iter_mut().zip(&pic.planes).enumerate() {
         let (px, py) = if k == 0 { (x, y) } else { (x / 2, y / 2) };
         blit_at(c, p, px, py)?;
@@ -506,12 +518,24 @@ fn paint(out: &mut Picture, pic: &Picture, inp: isobmff::OverlayInput) -> Result
 /// A decoded overlay input and the `nclx` (matrix coefficients, full range) of its item.
 type Input = (Picture, Option<(u16, bool)>);
 
+/// The first `nclx` (matrix coefficients, full range) of a `colr` list.
+fn nclx_of(colour: &[Colour]) -> Option<(u16, bool)> {
+    colour.iter().find_map(|c| match *c {
+        Colour::Nclx {
+            matrix, full_range, ..
+        } => Some((matrix, full_range)),
+        _ => None,
+    })
+}
+
 /// Composes an `iovl` on a canvas of the overlay size, in the format of its inputs: the fill
 /// colour, then the inputs in order (later on top), clipped. `dec(i, held)` decodes input `i`
-/// with `held` bytes already taken. The colour of the fill is converted with the `nclx` of the
-/// first input, else the VUI of its SPS, else BT.601 limited range.
+/// with `held` bytes already taken. The colour of the fill is converted with `own` (the `nclx`
+/// of the overlay item), else the `nclx` of the first input, else the VUI of its SPS, else
+/// BT.601 limited range.
 fn compose<F>(
     o: &isobmff::Overlay,
+    own: Option<(u16, bool)>,
     rest: usize,
     held: usize,
     luma_only: bool,
@@ -531,7 +555,8 @@ where
     let (mut first, nclx) = dec(0, held)?;
     let (mut out, add) = canvas(rest, &mut first, o.width, o.height, luma_only, held)?;
     let held = held.saturating_add(add);
-    let cs = nclx
+    let cs = own
+        .or(nclx)
         .or_else(|| {
             first
                 .info
@@ -623,7 +648,7 @@ impl Ctx<'_> {
                 let inner = self.heif.image(*input).map_err(iso_err)?;
                 self.leaf(&inner, held, luma_only, what)
             }
-            ImageKind::Overlay(o) => self.overlay(o, held, luma_only, what),
+            ImageKind::Overlay(o) => self.overlay(o, &img.colour, held, luma_only, what),
             _ => self.leaf(&img, held, luma_only, what),
         }
     }
@@ -735,29 +760,36 @@ impl Ctx<'_> {
     fn overlay(
         &self,
         o: &isobmff::Overlay,
+        colour: &[Colour],
         held: usize,
         luma_only: bool,
         what: &'static str,
     ) -> Result<Picture> {
         check_size(o.width, o.height, self.limits)?;
-        compose(o, self.rest, held, luma_only, self.cancel, |i, held| {
-            let inp = o.inputs.get(i).ok_or(Error::InvalidData("overlay input"))?;
-            let img = self.heif.image(inp.id).map_err(iso_err)?;
-            // Pixels are not transformed here, so an input's own transforms cannot be applied
-            // before it is placed.
-            if !img.transforms.is_empty() {
-                return Err(Error::Unsupported(
-                    "overlay input with transformative properties",
-                ));
-            }
-            let nclx = img.colour.iter().find_map(|c| match *c {
-                Colour::Nclx {
-                    matrix, full_range, ..
-                } => Some((matrix, full_range)),
-                _ => None,
-            });
-            Ok((self.leaf(&img, held, luma_only, what)?, nclx))
-        })
+        let own = nclx_of(colour);
+        compose(
+            o,
+            own,
+            self.rest,
+            held,
+            luma_only,
+            self.cancel,
+            |i, held| {
+                let inp = o.inputs.get(i).ok_or(Error::InvalidData("overlay input"))?;
+                let img = self.heif.image(inp.id).map_err(iso_err)?;
+                // Pixels are not transformed here, so an input's own transforms cannot be applied
+                // before it is placed.
+                if !img.transforms.is_empty() {
+                    return Err(Error::Unsupported(
+                        "overlay input with transformative properties",
+                    ));
+                }
+                Ok((
+                    self.leaf(&img, held, luma_only, what)?,
+                    nclx_of(&img.colour),
+                ))
+            },
+        )
     }
 }
 
@@ -853,8 +885,8 @@ pub fn decode_heic(
 /// Limits: `max_alloc` is the peak of the call. An eighth of it goes to the isobmff item bytes
 /// (shared by the tile workers); the decoded pictures, the assembled planes and the decoder's working
 /// memory share the rest. `heif` itself is not charged: the caller holds it. `max_width`,
-/// `max_height` and `max_pixels` apply to every coded picture and to the output size of a grid.
-/// The cancel flag is read before each coded item and inside the decoder.
+/// `max_height` and `max_pixels` apply to every coded picture and to the output size of a grid or
+/// overlay. The cancel flag is read before each coded item and inside the decoder.
 ///
 /// # Errors
 ///
@@ -1173,7 +1205,7 @@ mod tests {
 
     fn compose_of(o: &isobmff::Overlay, pics: &[Picture], rest: usize) -> Result<Picture> {
         let cancel = AtomicBool::new(false);
-        compose(o, rest, 0, false, &cancel, |i, _| {
+        compose(o, None, rest, 0, false, &cancel, |i, _| {
             pics.get(i)
                 .cloned()
                 .map(|p| (p, None))
@@ -1235,6 +1267,13 @@ mod tests {
         // An odd offset is fine without chroma.
         let m = pic(4, 4, ChromaFormat::Mono, [1, 0, 0]);
         assert!(compose_of(&odd, &[m.clone(), m.clone()], 1 << 20).is_ok());
+        // An odd input size in 4:2:0.
+        let o3 = pic(3, 4, c, [1, 2, 3]);
+        let even0 = overlay_of(8, 8, &[(0, 0)]);
+        assert!(matches!(
+            compose_of(&even0, &[o3], 1 << 20),
+            Err(Error::Unsupported(_))
+        ));
         // Different formats.
         let even = overlay_of(8, 8, &[(0, 0), (2, 0)]);
         assert!(matches!(
@@ -1265,9 +1304,12 @@ mod tests {
         let o = overlay_of(4, 2, &[(1, 0)]);
         let m = pic(2, 2, ChromaFormat::Mono, [9, 0, 0]);
         let cancel = AtomicBool::new(false);
-        let out = compose(&o, 1 << 20, 0, true, &cancel, |_, _| Ok((m.clone(), None))).unwrap();
+        let out = compose(&o, None, 1 << 20, 0, true, &cancel, |_, _| {
+            Ok((m.clone(), None))
+        })
+        .unwrap();
         assert_eq!(out.planes.len(), 1);
-        assert_eq!(rows(&out.planes[0]), [vec![255, 9, 9, 255]; 2]);
+        assert_eq!(rows(&out.planes[0]), vec![vec![255, 9, 9, 255]; 2]);
     }
 
     /// The result of `fill_tiles` on tiles `1..12` of a 3 x 4 grid of 2 x 2 tiles (tile `i` is all

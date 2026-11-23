@@ -24,8 +24,9 @@ Overlays (`iovl`) and identity items (`iden`) decode their inputs one after the 
 calling thread.
 
 Known deviation from the conventions (lazy shared pool): there is no pool. A grid takes one
-`std::thread::scope` per call; a `decode_heic` call with a grid primary and a grid alpha opens
-two, one after the other, never nested, so the thread count never passes `max_threads`. A pool
+`std::thread::scope` per grid, and every grid (each grid input of an overlay, the primary, the
+alpha) opens its own, one after the other, never nested (up to 65 536 for one overlay, plus the
+alpha's), so the thread count never passes `max_threads`. A pool
 would pay only for many small grids; revisit with the decoder's own parallelism.
 
 Planned: parallel decode by tile and by wavefront row inside one picture, and parallel deblocking
