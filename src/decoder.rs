@@ -295,7 +295,7 @@ struct Waiting {
 /// the pictures waiting for output).
 fn must_bump(dpb: &[Waiting], o: &SubLayerOrdering, check_full: bool) -> bool {
     if dpb.is_empty() {
-        return Ok(false);
+        return false;
     }
     if dpb.len() > o.max_num_reorder_pics as usize {
         return true;

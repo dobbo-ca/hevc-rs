@@ -161,7 +161,7 @@ pub(crate) fn crop_plane_with(
 }
 
 /// Cross-tier check for the fuzz target: the input picks a window and fills a plane; true when
-/// every available tier returns what Scalar returns. Sizes are bounded (at most 3400 samples).
+/// every available tier returns what Scalar returns. Sizes are bounded (at most 2970 samples).
 pub(crate) fn fuzz_tiers(data: &[u8]) -> bool {
     let Some((hdr, rest)) = data.split_at_checked(5) else {
         return true;
@@ -238,7 +238,7 @@ mod tests {
                 .map(|i| match i % 7 {
                     0 => 0x00FF,
                     1 => 0x0100,
-                    2 => 0xFFFF & mask,
+                    2 => mask,
                     _ => xorshift(&mut s) as u16 & mask,
                 })
                 .collect();
