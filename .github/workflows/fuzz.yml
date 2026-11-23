@@ -1,11 +1,11 @@
 name: fuzz
 on:
-  # A new slot, Thursday 12:23 UTC, next to the other crates' slots.
-  schedule: [{ cron: '23 12 * * 4' }]
+  # A new slot, Tuesday 12:23 UTC (Thursday is av1-rs's), next to the other crates' slots.
+  schedule: [{ cron: '23 12 * * 2' }]
   workflow_dispatch:
     inputs:
       max_total_time:
-        description: Seconds per target
+        description: 'Seconds per target (at most 3000; the job times out at 60 minutes, image build included)'
         default: '600'
       only:
         description: Run only this target (empty = all)
@@ -25,7 +25,10 @@ jobs:
       - id: p
         env:
           ONLY: ${{ inputs.only }}
+          MAXT: ${{ inputs.max_total_time || '600' }}
         run: |
+          case "$MAXT" in *[!0-9]*|'') echo "max_total_time must be a number" >&2; exit 1 ;; esac
+          [ "$MAXT" -le 3000 ] || { echo "max_total_time over 3000 s would pass the job timeout" >&2; exit 1; }
           all="annexb hvcc params probe decode"
           case "$ONLY" in
             '') list=$all ;;
@@ -69,12 +72,12 @@ jobs:
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
           restore-keys: fuzz-corpus-${{ matrix.target }}-
       # docker create + start, not a RUN layer: a BuildKit cache hit would skip the fuzzing.
-      # Seeds: the hand-written streams of tests/fuzz/seeds (made in the image build) and the
-      # fuzz-grown files; new inputs go to the first corpus dir.
+      # Seeds: tests/fuzz/seeds/<target> (made in the image build, in the format of that target)
+      # and the fuzz-grown files; new inputs go to the first corpus dir.
       - run: |
           mkdir -p corpus/${{ matrix.target }}
           docker create --name fuzz -e MAX_TOTAL_TIME -e TARGET=${{ matrix.target }} hevc-fuzz:local \
-            sh -c 'mkdir -p tests/data/fuzz-grown && cargo +nightly fuzz run --fuzz-dir tests/fuzz $TARGET tests/fuzz/corpus/$TARGET tests/fuzz/seeds tests/data/fuzz-grown -- -max_total_time=$MAX_TOTAL_TIME -max_len=65536 -timeout=60 -rss_limit_mb=2048 -malloc_limit_mb=512'
+            sh -c 'mkdir -p tests/data/fuzz-grown && cargo +nightly fuzz run --fuzz-dir tests/fuzz $TARGET tests/fuzz/corpus/$TARGET tests/fuzz/seeds/$TARGET tests/data/fuzz-grown -- -max_total_time=$MAX_TOTAL_TIME -max_len=65536 -timeout=60 -rss_limit_mb=2048 -malloc_limit_mb=512'
           docker cp corpus fuzz:/src/tests/fuzz/
           docker start -a fuzz
       - if: failure()

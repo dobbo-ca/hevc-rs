@@ -10,11 +10,22 @@
 //!
 //! # Resource limits
 //!
-//! There is no unlimited entry point: every call takes a [`Limits`]. `max_alloc` is the enforced
-//! peak working memory of the call, charged before each allocation. `max_threads` caps the
-//! threads of the call (1 spawns none; v1 is serial anyway). `max_width`, `max_height` and
-//! `max_pixels` cap the coded picture size and `max_pictures` the pictures per call. The decode
-//! entry points also read a cancel flag before every NAL unit.
+//! There is no unlimited entry point: every call takes a [`Limits`].
+//!
+//! | Field | Default | Unit | Over it |
+//! |---|---|---|---|
+//! | `max_alloc` | 1 GiB | bytes, peak of one call, all threads together | [`Error::AllocLimit`] ([`Error::OutOfMemory`] if the allocator fails) |
+//! | `max_threads` | `available_parallelism()` | threads, calling thread included | no error; 0 means 1 |
+//! | `max_width` | 16384 | luma samples | [`Error::WidthLimit`] |
+//! | `max_height` | 16384 | luma rows | [`Error::HeightLimit`] |
+//! | `max_pixels` | 268 435 456 (`1 << 28`) | coded width x height | [`Error::PixelLimit`] |
+//! | `max_pictures` | 4096 | decoded pictures per call | [`Error::PictureLimit`] |
+//! | `max_metadata` | 1 MiB | bytes of SEI messages kept per picture | no error; the message is dropped |
+//!
+//! `max_alloc` is charged before each allocation and released on drop. `max_threads = 1` spawns
+//! no thread (v1 is serial anyway). The decode entry points read a cancel flag before every NAL
+//! unit and every CTU, and in deblocking and SAO per row; when it is set the call returns
+//! [`Error::Cancelled`].
 //!
 //! ```
 //! use hevc::{Error, Limits, Options};
@@ -219,19 +230,3 @@ pub struct Picture {
     /// false. Messages past [`Limits::max_metadata`] are dropped.
     pub sei: Vec<SeiMessage>,
 }
-
-// The entry points live in `decoder.rs` and are re-exported above:
-//
-// decode(stream, opts, limits, cancel) -> Result<Vec<Picture>, Error>
-//     Annex B byte stream, every intra picture in output order.
-// decode_into(stream, opts, limits, cancel, out) -> Result<(), Error>
-//     Same; pictures output before an error stay in `out`.
-// decode_hvcc(config, samples, opts, limits, cancel) -> Result<Vec<Picture>, Error>
-// decode_hvcc_into(config, samples, opts, limits, cancel, out) -> Result<(), Error>
-//     HEIF/MP4 form: `config` is the hvcC box payload, `samples` length-prefixed NAL units.
-// probe(stream, limits) -> Result<Info, Error>
-// probe_hvcc(config, limits) -> Result<Info, Error>
-//     Info of the first SPS, nothing decoded.
-// intra_prefix(stream, limits) -> Result<Vec<u8>, Error>
-//     Test tooling for the parity oracle: the Annex B bytes of every layer 0 NAL unit before the
-//     first picture that holds a P or B slice. `Error::NoPicture` when none is left.

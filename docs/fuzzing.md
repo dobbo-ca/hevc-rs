@@ -2,14 +2,26 @@
 
 `tests/fuzz/` is a cargo-fuzz crate with its own `Cargo.lock`. Run with `--fuzz-dir tests/fuzz`.
 
-| Target | What it checks |
+| Target | What it calls |
 |---|---|
-| `decode` | `decode_into` with small `Limits`; no panic, no allocation over the cap |
-| `decode_hvcc` | the length-prefixed path with a fuzzed `hvcC` record |
-| `probe` | `probe` and `intra_prefix` |
+| `annexb` | `intra_prefix`: the Annex B splitter, the parameter set store and slice header parsing, with a size bound on its output |
+| `hvcc` | `probe_hvcc` and `decode_hvcc`; the first byte splits the input into the `hvcC` record and the samples |
+| `params` | `probe` on one SPS and on one PPS NAL unit built from the input (start code and NAL header in front) |
+| `probe` | `probe` on arbitrary bytes; an Ok `Info` must stay inside the limits |
+| `decode` | `decode` with small `Limits`; the planes of every picture must match its `Info`. The low 3 bits of the last byte switch deblocking, SAO and metadata off |
 
 All targets run with `-rss_limit_mb=2048 -malloc_limit_mb=512`, so an allocation outside the
-limits is a crash. Seeds are the conformance streams, copied at build time, not kept in git.
+limits is a crash.
 
-`.github/workflows/fuzz.yml` runs weekly on Thursday at 12:23 UTC and on `workflow_dispatch`,
-never on push or pull request.
+Seeds are made in the image build (`.github/ci/Dockerfile`, stage `fuzz`), one directory per
+target, and are not kept in git. `annexb`, `probe` and `decode` get a hand-written VPS, the start
+of an SPS and an AUD, plus the first 64 KiB of the first 20 conformance streams from the data
+cache. `hvcc` gets one minimal `hvcC` record with a sample, `params` the SPS bytes alone. The
+workflow adds the files of `tests/data/fuzz-grown` and keeps each target's corpus between runs.
+
+`.github/workflows/fuzz.yml` runs weekly on Tuesday at 12:23 UTC (the slot is not shared with
+another crate) and on `workflow_dispatch`, never on push or pull request. The dispatch input
+`max_total_time` is at most 3000 s: the job times out at 60 minutes with the image build.
+
+There is no `fuzz-arm64` matrix yet: v1 has no SIMD, so the x86_64 run covers the same code. Add
+it with the SIMD phase.

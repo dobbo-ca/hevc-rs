@@ -64,8 +64,10 @@ pub struct Options {
     pub deblocking: bool,
     /// Run SAO (default true). Same note.
     pub sao: bool,
+    /// Keep the metadata (default true): `Picture::sei` and `Info::vui`. See "Metadata" below.
+    pub metadata: bool,
 }
-impl Default for Options { /* both true */ }
+impl Default for Options { /* all true */ }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChromaFormat { Mono, Yuv420 }
@@ -82,7 +84,17 @@ pub struct Info {
     pub bit_depth_chroma: u8,
     pub profile_idc: u8,       // general_profile_idc
     pub level_idc: u8,         // general_level_idc
+    pub vui: Option<Vui>,      // None when vui_parameters_present_flag = 0 (or Options::metadata false in pictures)
 }
+
+/// VUI colour, aspect ratio and display fields as coded (spec defaults when a flag is absent);
+/// see src/lib.rs for the fields. Timing, HRD and restrictions are parsed and dropped.
+pub struct Vui { /* aspect_ratio_idc, aspect_ratio, video_format, video_full_range,
+                    colour_primaries, transfer_characteristics, matrix_coeffs,
+                    chroma_sample_loc_type_top/bottom, default_display_window */ }
+
+/// One SEI message, raw: `{ suffix: bool, payload_type: u32, payload: Vec<u8> }`.
+pub struct SeiMessage { /* ... */ }
 
 /// Samples of one plane, tightly packed rows (stride = width of the plane).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +114,8 @@ pub struct Picture {
     /// Some(true/false) when a decoded picture hash SEI was present and checked (over the
     /// uncropped decoded picture); None when absent.
     pub hash_ok: Option<bool>,
+    /// Every SEI message of the access unit in bitstream order; empty when metadata is off.
+    pub sei: Vec<SeiMessage>,
 }
 
 /// Annex B byte stream (start codes). Every intra picture, in output order.
@@ -136,6 +150,7 @@ pub fn intra_prefix(stream: &[u8], limits: &Limits) -> Result<Vec<u8>, Error>;
 | `max_height: u32` | 16384 | `Error::HeightLimit` |
 | `max_pixels: u64` | `1 << 28` (coded width x height) | `Error::PixelLimit` |
 | `max_pictures: usize` | 4096 (decoded pictures per call) | `Error::PictureLimit` |
+| `max_metadata: usize` | 1 MiB (SEI bytes kept per picture, payload plus message struct) | no error; the message is dropped |
 
 `Error` (src/error.rs), `#[non_exhaustive]`, `Clone + PartialEq + Eq + Debug + Display + Error`:
 
@@ -246,8 +261,9 @@ loop_filter_disabled }> with 7.4.3.2 ranges: PCM bit depth <= component bit dept
 3..=Min(CtbLog2SizeY, 5)), st_ref_pic_sets (all num_short_term_ref_pic_sets <= 64, each parsed
 with inter RPS prediction so NumDeltaPocs is known; only NumDeltaPocs per set is kept),
 long_term_ref_pics_present + num_long_term_ref_pics_sps (<= 32) + lt_ref_pic_poc_lsb_sps,
-temporal_mvp_enabled, strong_intra_smoothing_enabled, VUI (parsed and dropped; must be parsed
-completely since extensions follow it; HRD parameters too), extension flags (range extension
+temporal_mvp_enabled, strong_intra_smoothing_enabled, VUI (colour, aspect ratio and display
+fields kept in `Info::vui`, see "Metadata"; the rest must be parsed completely since extensions
+follow it, HRD parameters too, and is dropped), extension flags (range extension
 parsed; unsupported tools rejected as in Scope).
 
 Derived on the struct: MinCbLog2SizeY, CtbLog2SizeY, CtbSizeY, PicWidthInCtbsY,
@@ -306,7 +322,6 @@ pub(crate) struct SliceHeader {
     pub deblocking_disabled: bool,
     pub beta_offset_div2: i32, pub tc_offset_div2: i32,
     pub loop_filter_across_slices: bool,
-    pub entry_points: Vec<u32>,    // offsets (minus1 + 1), count bounded by the CTB count
     pub data_offset: usize,        // byte offset of slice_segment_data in the RBSP
 }
 /// Parses one slice segment header. `prev` is the header of the previous independent slice
@@ -324,9 +339,11 @@ byte_alignment() (one 1 bit then 0 bits) must hold, else InvalidData.
 ### sei.rs
 
 Walks sei_message()s of prefix and suffix SEI NALs: payloadType/payloadSize with 0xFF
-continuation (each bounded to the NAL size). Only payloadType 132 (decoded_picture_hash, suffix)
-is read: hash_type 0 MD5 (16 bytes per component), 1 CRC (u16), 2 checksum (u32), for 1 or 3
-components. Every other payload is skipped; a malformed SEI is ignored (never an error).
+continuation (each bounded to the NAL size). payloadType 132 (decoded_picture_hash, suffix)
+is read for the check: hash_type 0 MD5 (16 bytes per component), 1 CRC (u16), 2 checksum (u32),
+for 1 or 3 components. Every payload (132 too) is also kept raw in `Picture::sei` unless
+`Options::metadata` is false, within `Limits::max_metadata`; a malformed SEI is ignored (never
+an error).
 `fn compute(kind, planes of the decoded (uncropped) picture, bit depths) -> hash values`
 per spec D.3.19 (MD5 of the samples as bytes, 1 byte per sample when bit depth <= 8 else 2
 little-endian bytes; CRC-CCITT as the spec pseudo-code; checksum with the xorMask formula).
@@ -384,8 +401,9 @@ at the minimum CB size and log2CbSize > MinTbLog2SizeY), last_sig_coeff suffix F
 
 Per CTU: end_of_slice_segment_flag (terminate); at a tile start or WPP row start inside the
 slice segment: end_of_subset_one_bit (terminate, must be 1), byte_alignment, CABAC re-init
-(contexts per WPP/tile rule). The entry point offsets are parsed and checked to be in range but
-the serial decoder follows the bit position; a mismatch between the two is not an error.
+(contexts per WPP/tile rule). The entry point offsets are skipped in the slice header (the count
+is bounded by the PPS and by the RBSP bits left, and nothing is stored): the serial decoder
+follows the bit position.
 When the slice data ends (end_of_slice_segment_flag = 1) the remaining bits must be
 rbsp_slice_segment_trailing_bits (checked; else InvalidData).
 
@@ -532,11 +550,13 @@ loop_filter_across_tiles_enabled_flag). bitDepth-based band shift = bitDepth - 5
   sets included, nuh_layer_id > 0 dropped): the input of the C oracles.
 - libde265 v1.0.15 `dec265` (built from the tag in CI) and Debian bookworm ffmpeg
   (`-f rawvideo`, native pix_fmt, `-fps_mode passthrough`) decode the same prefix files.
-- Gates: (1) hevc-rs `.yuv` == dec265 output for every stream; (2) == ffmpeg; (3) every
-  `.info` hash is ok or none; (4) `--threads 1` == default; (5) phase 3 diagnostic: with
-  `--no-filters` against dec265 with deblocking and SAO disabled.
-- Corpus: JCT-VC HEVC_v1 conformance streams (all, since every one starts with an intra
-  picture), selected RExt streams for rejection classes, public HEIC samples (later), fuzz-grown
+- Gates (`tests/parity/run.sh`, see `docs/parity.md`): G1 `probe` vs `ffprobe`; G2 every stream
+  hevc-rs decodes is confirmed (equal to dec265, or equal to ffmpeg, or every picture hash
+  ok); G4 no decoded picture hash is bad; G5 `--threads 1` == default; G6 report only: with
+  `--no-filters` against dec265 with deblocking and SAO disabled. G2 and G4 are soft: they gate
+  when `PARITY_DECODE=1` (the default).
+- Corpus: JCT-VC HEVC_v1 conformance streams (all 147, since every one starts with an intra
+  picture); RExt streams for rejection classes and public HEIC samples are planned; fuzz-grown
   files. Fetched in CI into a BuildKit cache mount (`id=hevc-rs-data`), never committed.
 
 ## Metadata (owner rule, 2026-11-19)

@@ -40,6 +40,8 @@ RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + && cargo test --locked --no-fail-fast
 RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + && HEVC_SIMD=scalar cargo test --locked --no-fail-fast
+# (Nothing reads HEVC_SIMD yet, so this second run repeats the first; it starts to count with the
+# SIMD phase and is kept so the scalar tier is wired from the start.)
 # The examples are built too, so the cross linker runs (a lib alone is not linked).
 RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + && cargo build --locked --release --target aarch64-unknown-linux-gnu --examples
@@ -108,8 +110,8 @@ RUN --mount=type=cache,id=hevc-rs-data,target=/data,sharing=locked,readonly \
 # pictures, decoded picture hashes, --threads 1 vs default threads. The stage does not fail on a
 # diff: the report (summary.md, *.diff, status) is the build output (target parity-report), and
 # the workflow fails on `status`, as the report is wanted most when the gate is red.
-# PARITY_DECODE=0: the picture gates (dec265, ffmpeg, hash) only report; the decoder does not
-# decode pictures yet. Build with --build-arg PARITY_DECODE=1 once it does.
+# PARITY_DECODE=1 (the default) gates the picture comparisons (dec265, ffmpeg, hash); 0 makes
+# them report only.
 FROM ffmpeg-oracle AS parity
 COPY . .
 COPY --from=c-oracle /usr/local/bin/dec265 /usr/local/bin/dec265
@@ -141,15 +143,27 @@ RUN rustup toolchain install nightly --profile minimal \
     && cargo install cargo-fuzz --locked --version 0.13.1
 ENV CARGO_NET_OFFLINE=true
 
-# Seeds: a few tiny hand-written Annex B streams (a VPS, the start of an SPS, an AUD). The
-# conformance corpus is not available at this build; fuzz-grown files are added by fuzz.yml.
-# No target reads an option byte at the end.
+# Seeds, one directory per target (the formats differ). annexb, probe and decode: a few tiny
+# hand-written Annex B streams (a VPS, the start of an SPS, an AUD) and the first 64 KiB (the
+# fuzz -max_len) of the first 20 conformance streams from the data cache, which hold the
+# parameter sets and the first intra slices. hvcc: a split byte, a minimal hvcC record with one
+# SPS array, and one length-prefixed AUD sample. params: the SPS bytes with no start code or NAL
+# header. Fuzz-grown files are added by fuzz.yml.
 FROM fuzz-tools AS fuzz
 COPY . .
-RUN mkdir -p tests/fuzz/seeds \
-    && printf '\000\000\000\001\100\001\014\001\377\377\001\140\000\000\003\000\220\000\000\003\000\000\003\000\135\254\131' > tests/fuzz/seeds/vps.bit \
-    && printf '\000\000\000\001\102\001\001\001\140\000\000\000\220\000\000\000\000\000\135\240\002\200\200\055\026\131\131\244' > tests/fuzz/seeds/sps.bit \
-    && printf '\000\000\001\106\001\120' > tests/fuzz/seeds/aud.bit \
+COPY --from=data /data.list /data.list
+RUN --mount=type=cache,id=hevc-rs-data,target=/data,sharing=locked,readonly \
+    mkdir -p tests/fuzz/seeds/annexb tests/fuzz/seeds/probe tests/fuzz/seeds/decode tests/fuzz/seeds/hvcc tests/fuzz/seeds/params \
+    && printf '\000\000\000\001\100\001\014\001\377\377\001\140\000\000\003\000\220\000\000\003\000\000\003\000\135\254\131' > tests/fuzz/seeds/annexb/vps.bit \
+    && printf '\000\000\000\001\102\001\001\001\140\000\000\000\220\000\000\000\000\000\135\240\002\200\200\055\026\131\131\244' > tests/fuzz/seeds/annexb/sps.bit \
+    && printf '\000\000\001\106\001\120' > tests/fuzz/seeds/annexb/aud.bit \
+    && printf '\001\001\140\000\000\000\220\000\000\000\000\000\135\240\002\200\200\055\026\131\131\244' > tests/fuzz/seeds/params/sps.bin \
+    && printf '\064\001\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\377\001\041\000\001\000\030\102\001\001\001\140\000\000\000\220\000\000\000\000\000\135\240\002\200\200\055\026\131\131\244\000\000\000\003\106\001\120' > tests/fuzz/seeds/hvcc/hvcc.bin \
+    && head -n 20 /data.list | while IFS= read -r f; do \
+         n=${f#./}; head -c 65536 "/data/x/$n" > "tests/fuzz/seeds/annexb/$(echo "$n" | tr / _)"; \
+       done \
+    && cp tests/fuzz/seeds/annexb/* tests/fuzz/seeds/probe/ \
+    && cp tests/fuzz/seeds/annexb/* tests/fuzz/seeds/decode/ \
     && cargo +nightly fuzz build --fuzz-dir tests/fuzz
 
 # Benchmark (bench.yml): libde265 (dec265) and examples/bench on the same corpus, in one
