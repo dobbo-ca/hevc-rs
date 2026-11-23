@@ -60,6 +60,11 @@ All of this runs in CI only; nothing is built or run on a developer machine.
      `inter`, ...), a file with an `.alpha` on one side only, or a file with no output on a side:
      a line of `d-heic.diff`, G7 fails.
 
+   An `iovl` primary decodes in the inputs' YCbCr, while libheif returns RGB for it (the oracle
+   token is `convert`, a libheif failure): such a file is listed in `heic-disagreements.txt`, not
+   compared. An `iden` primary is compared like any other (libheif runs with
+   `ignore_transformations`).
+
    Coverage: G7 also fails when fewer than `PARITY_MIN_HEIC` (default 20) files are decoded by
    both, so a libheif without a HEVC decoder cannot pass with nothing compared (the oracle image
    also checks that libde265 is linked, and `heic-oracle` exits 2 without a HEVC decoder). Two
@@ -84,7 +89,7 @@ From the CI runs of 2026-11-23 with every gate green (main 6dbe2a7 and the PR ru
 | streams confirmed (G2) | 152 / 152 |
 | explained oracle disagreements | 3 (`disagreements.txt`: ffmpeg on `SAODBLK_A`; ffmpeg drops 4 of 6 pictures of `VPSSPSPPS_A` at its size changes; ffprobe size of `VPSSPSPPS_A`) |
 | HEIC files / decoded by both / equal to libheif (yuv, alpha, info) | 176 / 56 / 56 (3 alpha planes) |
-| HEIC files libheif decodes and hevc-rs rejects (explained) | 6: overlay/identity primaries (C008, C014, C039), 4:4:4 (MIAF003), the `mini` form (lightning_mini, C71) |
+| HEIC files libheif decodes and hevc-rs rejects (explained) | 6 when measured: overlay/identity primaries (C008, C014, C039), 4:4:4 (MIAF003), the `mini` form (lightning_mini, C71); overlay and identity primaries are decoded since, re-measure |
 
 Two oracle settings matter: ffmpeg runs with `-flags unaligned -autoscale 0` (else it aligns the
 left crop and scales pictures that change size), and libheif with

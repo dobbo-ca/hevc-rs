@@ -9,9 +9,8 @@
 | `params` | `probe` on one SPS and on one PPS NAL unit built from the input (start code and NAL header in front) |
 | `probe` | `probe` on arbitrary bytes; an Ok `Info` must stay inside the limits |
 | `decode` | `decode` with small `Limits`; the planes of every picture must match its `Info`. The low 3 bits of the last byte switch deblocking, SAO and metadata off |
-
 | `sao_tiers` | `__fuzz_sao::tiers`: band/edge offset rows built from the input, every SIMD tier vs scalar, bit-exact |
-| `heic` | `decode_heic` with small `Limits`; an Ok image's luma plane must match its `Info` size |
+| `heic` | `decode_heic` with small `Limits` (grids, overlays, identity items); an Ok image's luma plane must match its `Info` size, and the result with `max_threads` 4 must equal the one with 1 |
 | `transform_tiers` | `__fuzz_transform::tiers_agree`: every SIMD tier equals scalar on one block of at most 32x32 built from the bytes |
 
 All targets run with `-rss_limit_mb=2048 -malloc_limit_mb=512`, so an allocation outside the

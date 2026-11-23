@@ -56,3 +56,14 @@ The cancel flag is read before each NAL unit and before each CTU; set means `Err
   ours.
 - isobmff limit errors other than alloc and pixels (boxes, items, grid tiles, ...) are
   `InvalidData("limit-<field>")`.
+- Grid tiles in parallel (`max_threads` above 1): after tile 0 and the canvas, the other
+  decodes split `max_alloc - max_alloc / 4 - held` (`held` = canvas, first tile's SEI, a small
+  result table of 24 bytes per tile) equally between the workers, and the isobmff item-bytes
+  share (`max_alloc / 8`) the same way, so the peak of all threads together is still within
+  `max_alloc`. A tile that does not fit its share is decoded again alone with all of
+  `max_alloc - max_alloc / 4 - held`: the result and the error never depend on `max_threads`.
+  The decoder inside a worker runs with `max_threads = 1`.
+- `iovl`: `max_width`, `max_height` and `max_pixels` are checked against the overlay output
+  size before any input is decoded; the canvas (all planes) is charged before it is allocated,
+  with the first input and its SEI still alive; each later input is decoded with what is left,
+  one at a time.

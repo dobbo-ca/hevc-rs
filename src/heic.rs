@@ -2,10 +2,13 @@
 //! decoder on top of the isobmff-rs item graph. See `docs/design.md`, "HEIC glue".
 
 use crate::error::{Error, Result};
-use crate::ledger::filled;
-use crate::{ChromaFormat, Limits, Options, Picture, Plane, Samples, SeiMessage, decode_hvcc_into};
-use isobmff::{Codec, CodecConfig, Heif, ImageKind, Limit};
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::ledger::{SMALL, filled};
+use crate::{
+    ChromaFormat, Info, Limits, Options, Picture, Plane, Samples, SeiMessage, decode_hvcc_into,
+};
+use isobmff::{Codec, CodecConfig, Colour, Heif, ImageKind, Limit};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 /// Mirror axis of an `imir` property.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +99,8 @@ fn transform(t: &isobmff::Transform) -> Transform {
     }
 }
 
-/// Copies `n` rows of `w` samples of `s` (row stride `sw`) into `d` (row stride `dw`) at `(x, y)`.
+/// Copies `n` rows of `w` samples of `s` (row stride `sw`, first sample at `s0`) into `d` (row
+/// stride `dw`) at `(x, y)`.
 fn copy_rows<T: Copy>(
     d: &mut [T],
     dw: usize,
@@ -104,10 +108,11 @@ fn copy_rows<T: Copy>(
     sw: usize,
     (x, y): (usize, usize),
     (w, n): (usize, usize),
+    s0: usize,
 ) -> Result<()> {
     for r in 0..n {
         let di = (y + r) * dw + x;
-        let si = r * sw;
+        let si = s0 + r * sw;
         match (d.get_mut(di..di + w), s.get(si..si + w)) {
             (Some(a), Some(b)) => a.copy_from_slice(b),
             _ => return Err(Error::InvalidData("plane size")),
@@ -125,9 +130,30 @@ fn blit(dst: &mut Plane, src: &Plane, x: usize, y: usize) -> Result<()> {
         return Ok(());
     }
     match (&mut dst.samples, &src.samples) {
-        (Samples::U8(d), Samples::U8(s)) => copy_rows(d, dw, s, sw, (x, y), (w, n)),
-        (Samples::U16(d), Samples::U16(s)) => copy_rows(d, dw, s, sw, (x, y), (w, n)),
+        (Samples::U8(d), Samples::U8(s)) => copy_rows(d, dw, s, sw, (x, y), (w, n), 0),
+        (Samples::U16(d), Samples::U16(s)) => copy_rows(d, dw, s, sw, (x, y), (w, n), 0),
         _ => Err(Error::InvalidData("grid tiles differ in sample size")),
+    }
+}
+
+/// Copies `src` into `dst` with its top-left sample at `(x, y)` (either may be negative), clipped
+/// to `dst`.
+fn blit_at(dst: &mut Plane, src: &Plane, x: i64, y: i64) -> Result<()> {
+    let (sx, sy) = ((-x).max(0), (-y).max(0));
+    let (dx, dy) = (x.max(0), y.max(0));
+    let w = (i64::from(src.width) - sx).min(i64::from(dst.width) - dx);
+    let n = (i64::from(src.height) - sy).min(i64::from(dst.height) - dy);
+    if w <= 0 || n <= 0 {
+        return Ok(());
+    }
+    let u = |v: i64| usize::try_from(v).map_err(|_| Error::InvalidData("overlay offset"));
+    let (sx, sy, dx, dy, w, n) = (u(sx)?, u(sy)?, u(dx)?, u(dy)?, u(w)?, u(n)?);
+    let (dw, sw) = (dst.width as usize, src.width as usize);
+    let s0 = sy * sw + sx;
+    match (&mut dst.samples, &src.samples) {
+        (Samples::U8(d), Samples::U8(s)) => copy_rows(d, dw, s, sw, (dx, dy), (w, n), s0),
+        (Samples::U16(d), Samples::U16(s)) => copy_rows(d, dw, s, sw, (dx, dy), (w, n), s0),
+        _ => Err(Error::InvalidData("overlay inputs differ in sample size")),
     }
 }
 
@@ -225,6 +251,325 @@ fn merge_hash(a: Option<bool>, b: Option<bool>) -> Option<bool> {
     }
 }
 
+/// Chroma format and bit depths: what the pieces of an assembled image must share.
+type Fmt = (ChromaFormat, u8, u8);
+
+fn fmt(i: &Info) -> Fmt {
+    (i.chroma_format, i.bit_depth_luma, i.bit_depth_chroma)
+}
+
+/// The canvas of an assembled image of `w` x `h`: blank planes in the format of `first` (luma
+/// only when `luma_only`), with its info (resized), POC, hash result and SEI messages (moved).
+/// Returns it and the bytes it adds to `held`. `first` is alive meanwhile, so the peak counts both.
+fn canvas(
+    rest: usize,
+    first: &mut Picture,
+    w: u32,
+    h: u32,
+    luma_only: bool,
+    held: usize,
+) -> Result<(Picture, usize)> {
+    let keep = if luma_only { 1 } else { first.planes.len() };
+    let bytes = canvas_bytes(&first.planes, keep, w, h);
+    let sei = sei_bytes(&first.sei);
+    let peak = [
+        held,
+        first.planes.iter().map(plane_bytes).sum::<usize>(),
+        sei,
+        bytes,
+    ]
+    .iter()
+    .try_fold(0usize, |a, &b| a.checked_add(b));
+    if peak.is_none_or(|p| p > rest) {
+        return Err(Error::AllocLimit);
+    }
+    let planes = first
+        .planes
+        .iter()
+        .take(keep)
+        .enumerate()
+        .map(|(k, p)| {
+            let (cw, ch) = canvas_dims(k, w, h);
+            blank(p, cw, ch)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut info = first.info.clone();
+    (info.width, info.height) = (w, h);
+    (info.coded_width, info.coded_height) = (w, h);
+    let out = Picture {
+        info,
+        planes,
+        poc: first.poc,
+        hash_ok: first.hash_ok,
+        sei: std::mem::take(&mut first.sei),
+    };
+    Ok((out, bytes.saturating_add(sei)))
+}
+
+/// What the tile workers of one grid are told.
+struct Fill<'a> {
+    /// Tile columns.
+    cols: usize,
+    /// Tiles in all; tile 0 is already on the canvas.
+    n: usize,
+    /// Bytes the decodes of the other tiles may hold together.
+    avail: usize,
+    /// A guess at what one tile decode needs; it only bounds the workers (a worker that runs
+    /// out of its share is redone alone with all of `avail`, so the result never depends on it).
+    per: usize,
+    /// `Limits::max_threads`, at least 1.
+    threads: usize,
+    cancel: &'a AtomicBool,
+}
+
+impl Fill<'_> {
+    fn cancelled(&self) -> Result<()> {
+        if self.cancel.load(Ordering::Relaxed) {
+            Err(Error::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Grid cell of tile `i`.
+    fn cell(&self, i: usize) -> (u32, u32) {
+        let cols = self.cols.max(1);
+        ((i % cols) as u32, (i / cols) as u32)
+    }
+}
+
+/// The outcome of one tile of the parallel pass.
+#[derive(Clone)]
+enum Slot {
+    /// Not done: skipped after an earlier error, or out of its share of the budget.
+    Todo,
+    /// Decoded and on the canvas; its hash result.
+    Done(Option<bool>),
+    Err(Error),
+}
+
+/// Decodes tiles `1..fill.n` with `dec(index, budget, workers)` and places them on `out`.
+///
+/// Up to `fill.threads` threads (the caller included) take tiles from a counter, each decode
+/// with `avail / workers` bytes, and place the tile on the canvas themselves (the tiles do not
+/// overlap, so the order does not matter). Then the results are read in tile order: the first
+/// error wins, and a tile left `Todo` is decoded alone with the whole budget, so the output and
+/// the error are those of the serial loop. One thread scope per call; no pool (see
+/// `docs/threading.md`).
+fn fill_tiles<F>(out: &mut Picture, fill: &Fill<'_>, dec: F) -> Result<()>
+where
+    F: Fn(usize, usize, usize) -> Result<Picture> + Sync,
+{
+    let n = fill.n;
+    let slot_bytes = n.saturating_mul(size_of::<Slot>());
+    let spare = fill.avail.saturating_sub(slot_bytes);
+    let nw = fill
+        .threads
+        .min(n.saturating_sub(1))
+        .min(spare / fill.per.max(1));
+    let mut slots = Vec::new();
+    if nw >= 2 {
+        let budget = spare / nw;
+        let next = AtomicUsize::new(1);
+        let stop = AtomicUsize::new(usize::MAX);
+        let shared = Mutex::new(filled(n, Slot::Todo)?);
+        let cv = Mutex::new(out.planes.as_mut_slice());
+        let work = || {
+            loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                if i >= n || i > stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let (col, row) = fill.cell(i);
+                let r = fill
+                    .cancelled()
+                    .and_then(|()| dec(i, budget, nw))
+                    .and_then(|t| {
+                        let mut g = cv.lock().unwrap_or_else(PoisonError::into_inner);
+                        place(&mut **g, &t.planes, col, row)?;
+                        Ok(t.hash_ok)
+                    });
+                let s = match r {
+                    Ok(h) => Slot::Done(h),
+                    // Out of its share: left for the serial pass, which has all of it.
+                    Err(Error::AllocLimit) => continue,
+                    Err(e) => {
+                        stop.fetch_min(i, Ordering::Relaxed);
+                        Slot::Err(e)
+                    }
+                };
+                if let Some(x) = shared
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .get_mut(i)
+                {
+                    *x = s;
+                }
+            }
+        };
+        std::thread::scope(|sc| {
+            for _ in 1..nw {
+                // A refused spawn only means fewer workers.
+                if std::thread::Builder::new().spawn_scoped(sc, &work).is_err() {
+                    break;
+                }
+            }
+            work();
+        });
+        slots = shared.into_inner().unwrap_or_else(PoisonError::into_inner);
+    }
+    for i in 1..n {
+        match slots.get(i) {
+            Some(Slot::Done(h)) => out.hash_ok = merge_hash(out.hash_ok, *h),
+            Some(Slot::Err(e)) => return Err(e.clone()),
+            Some(Slot::Todo) | None => {
+                fill.cancelled()?;
+                let t = dec(i, fill.avail, 1)?;
+                out.hash_ok = merge_hash(out.hash_ok, t.hash_ok);
+                let (col, row) = fill.cell(i);
+                place(&mut out.planes, &t.planes, col, row)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The Y, Cb and Cr sample values of the colour `rgb` (16 bits per channel, full range) for
+/// `(matrix_coefficients, full_range)` and the luma and chroma bit depths. See `docs/design.md`.
+fn fill_value(rgb: [u16; 3], (matrix, full): (u16, bool), bd_l: u8, bd_c: u8) -> [u32; 3] {
+    let [r, g, b] = rgb.map(|v| f64::from(v) / 65535.0);
+    let (kr, kb) = match matrix {
+        1 => (0.2126, 0.0722),
+        4 => (0.30, 0.11),
+        7 => (0.212, 0.087),
+        9 => (0.2627, 0.0593),
+        _ => (0.299, 0.114),
+    };
+    // `e` is in 0..=1 for luma and in -0.5..=0.5 for the colour differences.
+    let q = |e: f64, bd: u8, chroma: bool| -> u32 {
+        let bd = u32::from(bd.clamp(8, 16));
+        let max = f64::from((1u32 << bd) - 1);
+        let v = match (full, chroma) {
+            (true, false) => e * max,
+            (true, true) => e * max + f64::from(1u32 << (bd - 1)),
+            (false, false) => f64::from(1u32 << (bd - 8)) * (219.0 * e + 16.0),
+            (false, true) => f64::from(1u32 << (bd - 8)) * (224.0 * e + 128.0),
+        };
+        v.round().clamp(0.0, max) as u32
+    };
+    if matrix == 0 {
+        // Identity (GBR): the planes are G, B, R, quantised like luma.
+        return [q(g, bd_l, false), q(b, bd_c, false), q(r, bd_c, false)];
+    }
+    let y = kr * r + (1.0 - kr - kb) * g + kb * b;
+    [
+        q(y, bd_l, false),
+        q((b - y) / (2.0 * (1.0 - kb)), bd_c, true),
+        q((r - y) / (2.0 * (1.0 - kr)), bd_c, true),
+    ]
+}
+
+/// Fills the canvas planes with the `iovl` fill colour (R, G, B, A, 16 bits each). A luma-only
+/// canvas (an alpha plane) gets A scaled to the luma bit depth, a colour canvas gets R, G, B
+/// as [`fill_value`].
+fn fill_canvas(out: &mut Picture, rgba: [u16; 4], luma_only: bool, cs: (u16, bool)) {
+    let [r, g, b, a] = rgba;
+    let (bd_l, bd_c) = (out.info.bit_depth_luma, out.info.bit_depth_chroma);
+    let v = if luma_only {
+        let max = f64::from((1u32 << u32::from(bd_l.clamp(8, 16))) - 1);
+        [(f64::from(a) / 65535.0 * max).round() as u32, 0, 0]
+    } else {
+        fill_value([r, g, b], cs, bd_l, bd_c)
+    };
+    for (p, v) in out.planes.iter_mut().zip(v) {
+        match &mut p.samples {
+            Samples::U8(s) => s.fill(v as u8),
+            Samples::U16(s) => s.fill(v as u16),
+        }
+    }
+}
+
+/// Paints `pic` on the canvas at the offset of `inp`, chroma at half the offset, clipped. A
+/// 4:2:0 canvas with chroma needs even offsets.
+fn paint(out: &mut Picture, pic: &Picture, inp: isobmff::OverlayInput) -> Result<()> {
+    let (x, y) = (i64::from(inp.x), i64::from(inp.y));
+    if out.info.chroma_format == ChromaFormat::Yuv420 && out.planes.len() > 1 && (x | y) & 1 != 0 {
+        return Err(Error::Unsupported("overlay offset is odd in a 4:2:0 image"));
+    }
+    for (k, (c, p)) in out.planes.iter_mut().zip(&pic.planes).enumerate() {
+        let (px, py) = if k == 0 { (x, y) } else { (x / 2, y / 2) };
+        blit_at(c, p, px, py)?;
+    }
+    Ok(())
+}
+
+/// A decoded overlay input and the `nclx` (matrix coefficients, full range) of its item.
+type Input = (Picture, Option<(u16, bool)>);
+
+/// Composes an `iovl` on a canvas of the overlay size, in the format of its inputs: the fill
+/// colour, then the inputs in order (later on top), clipped. `dec(i, held)` decodes input `i`
+/// with `held` bytes already taken. The colour of the fill is converted with the `nclx` of the
+/// first input, else the VUI of its SPS, else BT.601 limited range.
+fn compose<F>(
+    o: &isobmff::Overlay,
+    rest: usize,
+    held: usize,
+    luma_only: bool,
+    cancel: &AtomicBool,
+    mut dec: F,
+) -> Result<Picture>
+where
+    F: FnMut(usize, usize) -> Result<Input>,
+{
+    if o.width == 0 || o.height == 0 {
+        return Err(Error::InvalidData("overlay size"));
+    }
+    let mut inputs = o.inputs.iter();
+    let Some(&first_in) = inputs.next() else {
+        return Err(Error::Unsupported("overlay without inputs"));
+    };
+    let (mut first, nclx) = dec(0, held)?;
+    let (mut out, add) = canvas(rest, &mut first, o.width, o.height, luma_only, held)?;
+    let held = held.saturating_add(add);
+    let cs = nclx
+        .or_else(|| {
+            first
+                .info
+                .vui
+                .map(|v| (u16::from(v.matrix_coeffs), v.video_full_range))
+        })
+        .unwrap_or((6, false));
+    fill_canvas(&mut out, o.fill, luma_only, cs);
+    paint(&mut out, &first, first_in)?;
+    drop(first);
+    let want = fmt(&out.info);
+    for (i, &inp) in inputs.enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Error::Cancelled);
+        }
+        let (pic, _) = dec(i + 1, held)?;
+        if fmt(&pic.info) != want {
+            return Err(Error::Unsupported(
+                "overlay inputs differ in chroma format or bit depth",
+            ));
+        }
+        out.hash_ok = merge_hash(out.hash_ok, pic.hash_ok);
+        paint(&mut out, &pic, inp)?;
+    }
+    Ok(out)
+}
+
+/// The transforms of `img` as returned: for an identity item, those of its input, then its own.
+fn transforms_of(heif: &Heif, img: &isobmff::Image) -> Result<Vec<Transform>> {
+    let mut v = Vec::new();
+    if let ImageKind::Identity { input } = &img.kind {
+        let inner = heif.image(*input).map_err(iso_err)?;
+        v.extend(inner.transforms.iter().map(transform));
+    }
+    v.extend(img.transforms.iter().map(transform));
+    Ok(v)
+}
+
 struct Ctx<'a> {
     heif: &'a Heif,
     file: &'a [u8],
@@ -269,17 +614,65 @@ impl Ctx<'_> {
         }
     }
 
-    /// A coded or grid image item; `what` is the `Unsupported` text for any other kind.
+    /// A coded, grid, identity or overlay image item; `what` is the `Unsupported` text for any
+    /// other kind (and for an identity or overlay input that is not coded or a grid).
     fn image(&self, id: u32, held: usize, luma_only: bool, what: &'static str) -> Result<Picture> {
         let img = self.heif.image(id).map_err(iso_err)?;
+        match &img.kind {
+            ImageKind::Identity { input } => {
+                let inner = self.heif.image(*input).map_err(iso_err)?;
+                self.leaf(&inner, held, luma_only, what)
+            }
+            ImageKind::Overlay(o) => self.overlay(o, held, luma_only, what),
+            _ => self.leaf(&img, held, luma_only, what),
+        }
+    }
+
+    /// A coded or grid image item.
+    fn leaf(
+        &self,
+        img: &isobmff::Image,
+        held: usize,
+        luma_only: bool,
+        what: &'static str,
+    ) -> Result<Picture> {
         match &img.kind {
             ImageKind::Coded {
                 codec: Codec::Hevc,
                 config: CodecConfig::Hevc(hv),
-            } => self.coded(id, hv, held),
+            } => self.coded(img.id, hv, held),
             ImageKind::Grid(g) => self.grid(g, held, luma_only),
             _ => Err(Error::Unsupported(what)),
         }
+    }
+
+    /// Grid tile `i`: a coded HEVC item that decodes to its `ispe` size, and that size.
+    fn grid_tile(&self, g: &isobmff::Grid, i: usize, held: usize) -> Result<(Picture, (u32, u32))> {
+        self.cancelled()?;
+        let tid = *g
+            .tiles
+            .get(i)
+            .ok_or(Error::InvalidData("grid tile count"))?;
+        let t = self.heif.image(tid).map_err(iso_err)?;
+        let ImageKind::Coded {
+            codec: Codec::Hevc,
+            config: CodecConfig::Hevc(hv),
+        } = &t.kind
+        else {
+            return Err(Error::Unsupported("grid tile is not HEVC"));
+        };
+        let tile = self.coded(tid, hv, held)?;
+        let (pw, ph) = tile
+            .planes
+            .first()
+            .map(|p| (p.width, p.height))
+            .ok_or(Error::InvalidData("tile has no plane"))?;
+        // The tile pitch is the `ispe` size (as in libheif); a decoded size that differs from
+        // it would place the tiles elsewhere.
+        if (pw, ph) != (t.width, t.height) {
+            return Err(Error::InvalidData("grid tile size differs from ispe"));
+        }
+        Ok((tile, (pw, ph)))
     }
 
     fn grid(&self, g: &isobmff::Grid, held: usize, luma_only: bool) -> Result<Picture> {
@@ -288,118 +681,117 @@ impl Ctx<'_> {
             return Err(Error::InvalidData("grid tile count"));
         }
         check_size(g.width, g.height, self.limits)?;
-        let mut held = held;
-        let mut out: Option<Picture> = None;
-        let (mut tw, mut th) = (0, 0);
-        for (i, &tid) in g.tiles.iter().enumerate() {
-            self.cancelled()?;
-            let t = self.heif.image(tid).map_err(iso_err)?;
-            let ImageKind::Coded {
-                codec: Codec::Hevc,
-                config: CodecConfig::Hevc(hv),
-            } = &t.kind
-            else {
-                return Err(Error::Unsupported("grid tile is not HEVC"));
-            };
-            let mut tile = self.coded(tid, hv, held)?;
-            let (col, row) = ((i % cols as usize) as u32, (i / cols as usize) as u32);
-            let (pw, ph) = tile
-                .planes
-                .first()
-                .map(|p| (p.width, p.height))
-                .ok_or(Error::InvalidData("tile has no plane"))?;
-            // The tile pitch is the `ispe` size (as in libheif); a decoded size that differs from
-            // it would place the tiles elsewhere.
-            if (pw, ph) != (t.width, t.height) {
-                return Err(Error::InvalidData("grid tile size differs from ispe"));
-            }
-            if out.is_none() {
-                (tw, th) = (pw, ph);
-                let covers = u64::from(cols) * u64::from(tw) >= u64::from(g.width)
-                    && u64::from(rows) * u64::from(th) >= u64::from(g.height);
-                if !covers {
-                    return Err(Error::InvalidData("grid tiles do not cover the output"));
-                }
-                let odd =
-                    (cols > 1 && !tw.is_multiple_of(2)) || (rows > 1 && !th.is_multiple_of(2));
-                if tile.info.chroma_format == ChromaFormat::Yuv420 && odd {
-                    return Err(Error::InvalidData("odd tile size in a 4:2:0 grid"));
-                }
-                let keep = if luma_only { 1 } else { tile.planes.len() };
-                let canvas = canvas_bytes(&tile.planes, keep, g.width, g.height);
-                let sei = sei_bytes(&tile.sei);
-                // The first tile is still alive while the canvas is allocated.
-                let peak = [
-                    held,
-                    tile.planes.iter().map(plane_bytes).sum::<usize>(),
-                    sei,
-                    canvas,
-                ]
-                .iter()
-                .try_fold(0usize, |a, &b| a.checked_add(b));
-                if peak.is_none_or(|p| p > self.rest) {
-                    return Err(Error::AllocLimit);
-                }
-                let planes = tile
-                    .planes
-                    .iter()
-                    .take(keep)
-                    .enumerate()
-                    .map(|(k, p)| {
-                        let (w, h) = canvas_dims(k, g.width, g.height);
-                        blank(p, w, h)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                held += canvas + sei;
-                let mut info = tile.info.clone();
-                (info.width, info.height) = (g.width, g.height);
-                (info.coded_width, info.coded_height) = (g.width, g.height);
-                out = Some(Picture {
-                    info,
-                    planes,
-                    poc: tile.poc,
-                    hash_ok: tile.hash_ok,
-                    sei: std::mem::take(&mut tile.sei),
-                });
-            } else if let Some(o) = out.as_mut() {
-                let same = tile.info.chroma_format == o.info.chroma_format
-                    && tile.info.bit_depth_luma == o.info.bit_depth_luma
-                    && tile.info.bit_depth_chroma == o.info.bit_depth_chroma
-                    && (pw, ph) == (tw, th);
-                if !same {
-                    return Err(Error::InvalidData("grid tiles differ in size or format"));
-                }
-                o.hash_ok = merge_hash(o.hash_ok, tile.hash_ok);
-            }
-            if let Some(o) = out.as_mut() {
-                place(&mut o.planes, &tile.planes, col, row)?;
-            }
+        let (mut first, (tw, th)) = self.grid_tile(g, 0, held)?;
+        let covers = u64::from(cols) * u64::from(tw) >= u64::from(g.width)
+            && u64::from(rows) * u64::from(th) >= u64::from(g.height);
+        if !covers {
+            return Err(Error::InvalidData("grid tiles do not cover the output"));
         }
-        out.ok_or(Error::InvalidData("grid tile count"))
+        let odd = (cols > 1 && !tw.is_multiple_of(2)) || (rows > 1 && !th.is_multiple_of(2));
+        if first.info.chroma_format == ChromaFormat::Yuv420 && odd {
+            return Err(Error::InvalidData("odd tile size in a 4:2:0 grid"));
+        }
+        let tile_bytes = first.planes.iter().map(plane_bytes).sum::<usize>();
+        let (mut out, add) = canvas(self.rest, &mut first, g.width, g.height, luma_only, held)?;
+        place(&mut out.planes, &first.planes, 0, 0)?;
+        drop(first);
+        let held = held.saturating_add(add);
+        let want = fmt(&out.info);
+        let one = Limits {
+            max_threads: 1,
+            ..*self.limits
+        };
+        // Tile `i` on `workers` threads of one call: each gets its share of the budget, of the
+        // isobmff item bytes, and no threads of its own.
+        let dec = |i: usize, budget: usize, workers: usize| -> Result<Picture> {
+            let iso = isobmff::Limits {
+                max_alloc: self.iso.max_alloc / workers.max(1),
+                ..*self.iso
+            };
+            let cx = Ctx {
+                iso: &iso,
+                rest: budget,
+                limits: if workers > 1 { &one } else { self.limits },
+                ..*self
+            };
+            let (tile, dims) = cx.grid_tile(g, i, 0)?;
+            if fmt(&tile.info) != want || dims != (tw, th) {
+                return Err(Error::InvalidData("grid tiles differ in size or format"));
+            }
+            Ok(tile)
+        };
+        let fill = Fill {
+            cols: cols as usize,
+            n: g.tiles.len(),
+            avail: self.rest.checked_sub(held).ok_or(Error::AllocLimit)?,
+            per: tile_bytes.saturating_mul(3).saturating_add(SMALL),
+            threads: self.limits.max_threads.max(1),
+            cancel: self.cancel,
+        };
+        fill_tiles(&mut out, &fill, dec)?;
+        Ok(out)
+    }
+
+    fn overlay(
+        &self,
+        o: &isobmff::Overlay,
+        held: usize,
+        luma_only: bool,
+        what: &'static str,
+    ) -> Result<Picture> {
+        check_size(o.width, o.height, self.limits)?;
+        compose(o, self.rest, held, luma_only, self.cancel, |i, held| {
+            let inp = o.inputs.get(i).ok_or(Error::InvalidData("overlay input"))?;
+            let img = self.heif.image(inp.id).map_err(iso_err)?;
+            // Pixels are not transformed here, so an input's own transforms cannot be applied
+            // before it is placed.
+            if !img.transforms.is_empty() {
+                return Err(Error::Unsupported(
+                    "overlay input with transformative properties",
+                ));
+            }
+            let nclx = img.colour.iter().find_map(|c| match *c {
+                Colour::Nclx {
+                    matrix, full_range, ..
+                } => Some((matrix, full_range)),
+                _ => None,
+            });
+            Ok((self.leaf(&img, held, luma_only, what)?, nclx))
+        })
     }
 }
 
 /// Decodes the primary image of a HEIC file, and its alpha plane when it has one.
 ///
-/// The primary item is one `hvc1` image or a `grid` of `hvc1` tiles; each coded item is decoded
+/// The primary item is one `hvc1` image, a `grid` of `hvc1` tiles, an `iden` (identity) item
+/// whose input is one of those, or an `iovl` (overlay) of those; each coded item is decoded
 /// with [`decode_hvcc_into`] and must hold exactly one picture. The metadata (SEI messages, VUI)
-/// is that of the first tile, kept unless [`Options::metadata`] is false. The result is not
-/// rotated, mirrored or cropped by the `irot`, `imir` and `clap` properties; they are returned
-/// raw in [`HeicImage::transforms`]. The alpha image (`urn:mpeg:hevc:2015:auxid:1` or
-/// `urn:mpeg:mpegB:cicp:systems:auxiliary:alpha`, or `urn:mpeg:avc:2015:auxid:1`) is decoded the
-/// same way and only its luma plane is kept.
+/// is that of the first tile (first input of an overlay), kept unless [`Options::metadata`] is
+/// false. The result is not rotated, mirrored or cropped by the `irot`, `imir` and `clap`
+/// properties; they are returned raw in [`HeicImage::transforms`] (for an `iden` item: those of
+/// its input, then its own). An overlay is composed in the YCbCr layout of its inputs: the canvas
+/// is filled with the `iovl` fill colour converted to YCbCr, the inputs are painted in order at
+/// their offsets (later on top, clipped, no blending); see `docs/design.md`. The alpha image
+/// (`urn:mpeg:hevc:2015:auxid:1` or `urn:mpeg:mpegB:cicp:systems:auxiliary:alpha`, or
+/// `urn:mpeg:avc:2015:auxid:1`) is decoded the same way and only its luma plane is kept.
 ///
 /// Limits: `max_alloc` is the peak of the whole call. A quarter of it goes to isobmff (an eighth
-/// for the parse, which stays alive, and an eighth for the item bytes of one item at a time);
-/// the decoded pictures, the assembled planes and the decoder's working memory share the rest.
-/// `max_threads` is 1 for isobmff. `max_width`, `max_height` and `max_pixels` apply to every coded
-/// picture and to the output size of a grid. The cancel flag is read before each coded item, so
+/// for the parse, which stays alive, and an eighth for the item bytes of the items being decoded
+/// at that moment, shared by the tile workers); the decoded pictures, the assembled planes and the
+/// decoder's working memory share the rest, the tile workers of a grid splitting what is left.
+/// `max_threads` is the number of threads that decode the tiles of a grid (the calling thread
+/// included; 1 spawns none) and is 1 for isobmff. The output and the error are the same for every
+/// thread count. `max_width`, `max_height` and `max_pixels` apply to every coded picture and to
+/// the output size of a grid or overlay. The cancel flag is read before each coded item, so
 /// between tiles, and inside the decoder.
 ///
 /// # Errors
 ///
-/// [`Error::Unsupported`] when the primary (or alpha) image is not HEVC or a grid of HEVC tiles,
-/// or when a coded item is protected (`protection_index` not 0); [`Error::InvalidData`] for a
+/// [`Error::Unsupported`] when the primary (or alpha) image is not HEVC, a grid of HEVC tiles or
+/// an identity or overlay of those, or when a coded item is protected (`protection_index` not 0),
+/// or for an overlay with no input, with an input that has transformative properties, whose
+/// inputs differ in chroma format or bit depth, or with an odd offset in a 4:2:0 image;
+/// [`Error::InvalidData`] for a
 /// container error (the text is the isobmff error class, for example `"truncated"`), an item that
 /// is not exactly one picture, or tiles that differ in size or format, do not cover the grid or
 /// decode to another size than their `ispe`; the errors of [`decode_hvcc_into`] (including
@@ -446,20 +838,20 @@ pub fn decode_heic(
     Ok(HeicImage {
         image,
         alpha,
-        transforms: primary.transforms.iter().map(transform).collect(),
+        transforms: transforms_of(&heif, &primary)?,
     })
 }
 
 /// Decodes image item `id` of `heif`, the parse of `file`, with no parse of its own.
 ///
-/// The item is one `hvc1` image or a `grid` of `hvc1` tiles, decoded as [`decode_heic`] decodes the
+/// The item is one `hvc1` image, a `grid`, an `iden` or an `iovl`, decoded as [`decode_heic`] decodes the
 /// primary image: each coded item must hold exactly one picture, and the metadata (SEI messages,
 /// VUI) is that of the first tile, kept unless [`Options::metadata`] is false. No alpha plane is
 /// decoded, and the `irot`, `imir` and `clap` properties are not applied; read them from
 /// `heif.image(id)`.
 ///
 /// Limits: `max_alloc` is the peak of the call. An eighth of it goes to the isobmff item bytes
-/// (one item at a time); the decoded pictures, the assembled planes and the decoder's working
+/// (shared by the tile workers); the decoded pictures, the assembled planes and the decoder's working
 /// memory share the rest. `heif` itself is not charged: the caller holds it. `max_width`,
 /// `max_height` and `max_pixels` apply to every coded picture and to the output size of a grid.
 /// The cancel flag is read before each coded item and inside the decoder.
@@ -467,8 +859,8 @@ pub fn decode_heic(
 /// # Errors
 ///
 /// [`Error::InvalidData`] for an `id` that is not an item (the text is `"no-such-item"`) and for
-/// the other errors of [`decode_heic`]; [`Error::Unsupported`] when the item is not HEVC or a grid
-/// of HEVC tiles, or is protected; the limit and cancel errors of [`decode_heic`].
+/// the other errors of [`decode_heic`]; [`Error::Unsupported`] when the item is not HEVC, a grid, an
+/// identity or an overlay of those, or is protected; the limit and cancel errors of [`decode_heic`].
 pub fn decode_heic_item(
     heif: &Heif,
     file: &[u8],
@@ -498,6 +890,7 @@ pub fn decode_heic_item(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ledger::Ledger;
 
     fn plane(w: u32, h: u32, v: u8) -> Plane {
         Plane {
@@ -692,5 +1085,403 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let r = decode_heic(&[0; 16], &Options::default(), &Limits::default(), &cancel);
         assert!(matches!(r, Err(Error::InvalidData(_))));
+    }
+
+    fn pic(w: u32, h: u32, cf: ChromaFormat, v: [u8; 3]) -> Picture {
+        let mut planes = vec![plane(w, h, v[0])];
+        if cf == ChromaFormat::Yuv420 {
+            planes.push(plane(w.div_ceil(2), h.div_ceil(2), v[1]));
+            planes.push(plane(w.div_ceil(2), h.div_ceil(2), v[2]));
+        }
+        Picture {
+            info: Info {
+                width: w,
+                height: h,
+                coded_width: w,
+                coded_height: h,
+                chroma_format: cf,
+                bit_depth_luma: 8,
+                bit_depth_chroma: 8,
+                profile_idc: 1,
+                level_idc: 93,
+                vui: None,
+            },
+            planes,
+            poc: 0,
+            hash_ok: Some(true),
+            sei: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn blit_at_clips_on_every_side() {
+        let mut c = blank(&plane(1, 1, 0), 4, 4).unwrap();
+        let src = Plane {
+            width: 3,
+            height: 3,
+            samples: Samples::U8((1..=9).collect()),
+        };
+        // Top-left at (-1, -2): only source (1, 2) and (2, 2) show, at (0, 0) and (1, 0).
+        blit_at(&mut c, &src, -1, -2).unwrap();
+        // Bottom-right corner: only source (0, 0).
+        blit_at(&mut c, &src, 3, 3).unwrap();
+        // Wholly outside.
+        for (x, y) in [(9, 0), (-3, 0), (0, 4), (0, -3)] {
+            blit_at(&mut c, &plane(3, 3, 5), x, y).unwrap();
+        }
+        assert_eq!(
+            rows(&c),
+            [vec![8, 9, 0, 0], vec![0; 4], vec![0; 4], vec![0, 0, 0, 1]]
+        );
+    }
+
+    #[test]
+    fn fill_colour_conversion() {
+        let w = [65535u16; 3];
+        // BT.601 limited, 8 bit: white, black.
+        assert_eq!(fill_value(w, (6, false), 8, 8), [235, 128, 128]);
+        assert_eq!(fill_value([0; 3], (6, false), 8, 8), [16, 128, 128]);
+        // 10 bit scales by 4.
+        assert_eq!(fill_value(w, (1, false), 10, 10), [940, 512, 512]);
+        assert_eq!(fill_value([0; 3], (1, false), 10, 10), [64, 512, 512]);
+        // Full range BT.601 red: Y = 0.299 * 255, Cb = 128 - 0.1687 * 255, Cr clipped at 255.
+        assert_eq!(fill_value([65535, 0, 0], (6, true), 8, 8), [76, 85, 255]);
+        // Identity: G, B, R.
+        assert_eq!(
+            fill_value([65535, 0, 32768], (0, true), 8, 8),
+            [0, 128, 255]
+        );
+        // The alpha of a luma-only canvas.
+        let mut a = pic(2, 2, ChromaFormat::Mono, [0; 3]);
+        fill_canvas(&mut a, [1, 2, 3, 65535], true, (6, false));
+        assert_eq!(rows(&a.planes[0]), [vec![255; 2], vec![255; 2]]);
+        fill_canvas(&mut a, [1, 2, 3, 0], true, (6, false));
+        assert_eq!(rows(&a.planes[0]), [vec![0; 2], vec![0; 2]]);
+    }
+
+    fn overlay_of(w: u32, h: u32, inputs: &[(i32, i32)]) -> isobmff::Overlay {
+        isobmff::Overlay {
+            fill: [65535; 4],
+            width: w,
+            height: h,
+            inputs: inputs
+                .iter()
+                .map(|&(x, y)| isobmff::OverlayInput { id: 0, x, y })
+                .collect(),
+        }
+    }
+
+    fn compose_of(o: &isobmff::Overlay, pics: &[Picture], rest: usize) -> Result<Picture> {
+        let cancel = AtomicBool::new(false);
+        compose(o, rest, 0, false, &cancel, |i, _| {
+            pics.get(i)
+                .cloned()
+                .map(|p| (p, None))
+                .ok_or(Error::InvalidData("input"))
+        })
+    }
+
+    #[test]
+    fn overlay_paints_in_order_clipped_in_yuv420() {
+        let o = overlay_of(8, 8, &[(0, 0), (2, 2), (6, -2)]);
+        let c = ChromaFormat::Yuv420;
+        let pics = [
+            pic(4, 4, c, [100, 50, 60]),
+            pic(4, 4, c, [200, 51, 61]),
+            pic(4, 4, c, [30, 52, 62]),
+        ];
+        let out = compose_of(&o, &pics, 1 << 20).unwrap();
+        assert_eq!((out.info.width, out.info.height), (8, 8));
+        assert_eq!((out.info.coded_width, out.info.coded_height), (8, 8));
+        let top = vec![100, 100, 100, 100, 235, 235, 30, 30];
+        let mid = vec![100, 100, 200, 200, 200, 200, 235, 235];
+        let low = vec![235, 235, 200, 200, 200, 200, 235, 235];
+        let rest = vec![235; 8];
+        assert_eq!(
+            rows(&out.planes[0]),
+            [
+                top.clone(),
+                top,
+                mid.clone(),
+                mid,
+                low.clone(),
+                low,
+                rest.clone(),
+                rest
+            ]
+        );
+        // The white fill is Cb = Cr = 128 in BT.601 limited range; chroma is at half offsets.
+        assert_eq!(
+            rows(&out.planes[1]),
+            [
+                vec![50, 50, 128, 52],
+                vec![50, 51, 51, 128],
+                vec![128, 51, 51, 128],
+                vec![128; 4]
+            ]
+        );
+        assert_eq!(out.planes[2].width, 4);
+    }
+
+    #[test]
+    fn overlay_refusals() {
+        let c = ChromaFormat::Yuv420;
+        let a = pic(4, 4, c, [1, 2, 3]);
+        let odd = overlay_of(8, 8, &[(0, 0), (1, 0)]);
+        assert!(matches!(
+            compose_of(&odd, &[a.clone(), a.clone()], 1 << 20),
+            Err(Error::Unsupported(_))
+        ));
+        // An odd offset is fine without chroma.
+        let m = pic(4, 4, ChromaFormat::Mono, [1, 0, 0]);
+        assert!(compose_of(&odd, &[m.clone(), m.clone()], 1 << 20).is_ok());
+        // Different formats.
+        let even = overlay_of(8, 8, &[(0, 0), (2, 0)]);
+        assert!(matches!(
+            compose_of(&even, &[a.clone(), m], 1 << 20),
+            Err(Error::Unsupported(_))
+        ));
+        let mut deep = a.clone();
+        deep.info.bit_depth_luma = 10;
+        assert!(matches!(
+            compose_of(&even, &[a.clone(), deep], 1 << 20),
+            Err(Error::Unsupported(_))
+        ));
+        // No input, no size, a canvas over the budget.
+        assert!(matches!(
+            compose_of(&overlay_of(8, 8, &[]), &[], 1 << 20),
+            Err(Error::Unsupported(_))
+        ));
+        assert!(matches!(
+            compose_of(&overlay_of(0, 8, &[(0, 0)]), &[a.clone()], 1 << 20),
+            Err(Error::InvalidData(_))
+        ));
+        let r = compose_of(&even, &[a.clone(), a], 100);
+        assert_eq!(r, Err(Error::AllocLimit));
+    }
+
+    #[test]
+    fn overlay_alpha_canvas_is_luma_only() {
+        let o = overlay_of(4, 2, &[(1, 0)]);
+        let m = pic(2, 2, ChromaFormat::Mono, [9, 0, 0]);
+        let cancel = AtomicBool::new(false);
+        let out = compose(&o, 1 << 20, 0, true, &cancel, |_, _| Ok((m.clone(), None))).unwrap();
+        assert_eq!(out.planes.len(), 1);
+        assert_eq!(rows(&out.planes[0]), [vec![255, 9, 9, 255]; 2]);
+    }
+
+    /// The result of `fill_tiles` on tiles `1..12` of a 3 x 4 grid of 2 x 2 tiles (tile `i` is all
+    /// `i + 1`), decoded by a fake that needs `need` bytes of its budget and books them in a
+    /// ledger; and what the fake saw: most decodes at once, most budget granted at once.
+    struct Run {
+        result: Result<()>,
+        out: Picture,
+        threads_seen: usize,
+        granted_seen: usize,
+        peak: u64,
+    }
+
+    fn run(threads: usize, avail: usize, per: usize, need: usize, fail: &[usize]) -> Run {
+        let cancel = AtomicBool::new(false);
+        run_with(&cancel, threads, avail, per, need, fail)
+    }
+
+    fn run_with(
+        cancel: &AtomicBool,
+        threads: usize,
+        avail: usize,
+        per: usize,
+        need: usize,
+        fail: &[usize],
+    ) -> Run {
+        let tile = |i: usize| {
+            let mut p = pic(2, 2, ChromaFormat::Mono, [i as u8 + 1, 0, 0]);
+            p.hash_ok = if i == 9 { Some(false) } else { Some(true) };
+            p
+        };
+        let mut out = pic(6, 8, ChromaFormat::Mono, [0; 3]);
+        place(&mut out.planes, &tile(0).planes, 0, 0).unwrap();
+        let ledger = Ledger::default();
+        ledger.reset(SMALL + avail, 0).unwrap();
+        let (active, active_max) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let (granted, granted_max) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let dec = |i: usize, budget: usize, _workers: usize| -> Result<Picture> {
+            active_max.fetch_max(active.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+            granted_max.fetch_max(
+                granted.fetch_add(budget, Ordering::SeqCst) + budget,
+                Ordering::SeqCst,
+            );
+            let r = if fail.contains(&i) {
+                Err(Error::InvalidData("tile"))
+            } else if budget < need {
+                Err(Error::AllocLimit)
+            } else {
+                // The booking is held until the end of the decode.
+                ledger.charge(need).map(|held| (held, tile(i)))
+            };
+            granted.fetch_sub(budget, Ordering::SeqCst);
+            active.fetch_sub(1, Ordering::SeqCst);
+            r.map(|(_held, t)| t)
+        };
+        let fill = Fill {
+            cols: 3,
+            n: 12,
+            avail,
+            per,
+            threads,
+            cancel,
+        };
+        let result = fill_tiles(&mut out, &fill, dec);
+        Run {
+            result,
+            out,
+            threads_seen: active_max.load(Ordering::SeqCst),
+            granted_seen: granted_max.load(Ordering::SeqCst),
+            peak: ledger.peak(),
+        }
+    }
+
+    #[test]
+    fn tiles_are_the_same_for_every_thread_count_and_budget() {
+        let need = 1000;
+        let fails: [&[usize]; 5] = [&[], &[5], &[7, 3], &[11], &[1]];
+        for fail in fails {
+            for avail in [need, 3 * need, 5 * need + 100, 40 * need] {
+                // Guesses of what a tile needs, from far under (many workers, every one out of
+                // budget and redone alone) to exact.
+                for per in [1, need, 2 * need] {
+                    let want = run(1, avail, per, need, fail);
+                    for threads in [0, 2, 4, 8] {
+                        let got = run(threads, avail, per, need, fail);
+                        assert_eq!(got.result, want.result, "{fail:?} {avail} {per} {threads}");
+                        if want.result.is_ok() {
+                            assert_eq!(got.out, want.out, "{fail:?} {avail} {per} {threads}");
+                        }
+                        assert!(got.threads_seen <= threads.max(1));
+                        assert!(got.granted_seen <= avail, "{} > {avail}", got.granted_seen);
+                        assert!(got.peak <= (SMALL + avail) as u64);
+                    }
+                }
+            }
+        }
+        let ok = run(4, 40 * need, need, need, &[]);
+        assert_eq!(ok.result, Ok(()));
+        // Every tile is on the canvas, and one tile failed its hash.
+        assert_eq!(
+            rows(&ok.out.planes[0]),
+            [
+                vec![1, 1, 2, 2, 3, 3],
+                vec![1, 1, 2, 2, 3, 3],
+                vec![4, 4, 5, 5, 6, 6],
+                vec![4, 4, 5, 5, 6, 6],
+                vec![7, 7, 8, 8, 9, 9],
+                vec![7, 7, 8, 8, 9, 9],
+                vec![10, 10, 11, 11, 12, 12],
+                vec![10, 10, 11, 11, 12, 12]
+            ]
+        );
+        assert_eq!(ok.out.hash_ok, Some(false));
+        // The first error in tile order wins, whichever thread met which first.
+        let two = run(4, 40 * need, need, need, &[7, 3]);
+        assert_eq!(two.result, Err(Error::InvalidData("tile")));
+    }
+
+    #[test]
+    fn tiles_that_never_fit_fail_like_serial() {
+        // One tile needs more than all that is available: AllocLimit with any thread count.
+        for threads in [1, 2, 4] {
+            let r = run(threads, 500, 1, 1000, &[]);
+            assert_eq!(r.result, Err(Error::AllocLimit), "{threads}");
+        }
+    }
+
+    #[test]
+    fn tiles_stop_on_cancel() {
+        let cancel = AtomicBool::new(true);
+        for threads in [1, 2, 4] {
+            let r = run_with(&cancel, threads, 1 << 20, 1, 1, &[]);
+            assert_eq!(r.result, Err(Error::Cancelled), "{threads}");
+        }
+    }
+
+    /// `hvc1` item 1 (junk payload, `imir`) and the `iden` item 2 (`irot`) that is the primary.
+    fn iden_file() -> Vec<u8> {
+        let hvcc = bx(
+            b"hvcC",
+            &[
+                &[
+                    1u8, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 93, 0xF0, 0, 0xFC, 0xFD, 0xF8, 0xF8, 0,
+                    0, 3, 1, 0xA0, 0, 1, 0, 3,
+                ][..],
+                &[0x40, 0x01, 0x02],
+            ]
+            .concat(),
+        );
+        let ispe = fbx(
+            b"ispe",
+            &[&64u32.to_be_bytes()[..], &48u32.to_be_bytes()].concat(),
+        );
+        let ftyp = bx(b"ftyp", b"heic\0\0\0\0heic");
+        let meta = |offset: u32| {
+            let hdlr = fbx(b"hdlr", &[&[0u8; 4][..], b"pict", &[0; 12], &[0]].concat());
+            let pitm = fbx(b"pitm", &[0, 2]);
+            let infe = |id: u8, kind: &[u8; 4]| {
+                bx(
+                    b"infe",
+                    &[&[2u8, 0, 0, 0, 0, id, 0, 0][..], kind, &[0]].concat(),
+                )
+            };
+            let iinf = fbx(
+                b"iinf",
+                &[&[0u8, 2][..], &infe(1, b"hvc1"), &infe(2, b"iden")].concat(),
+            );
+            let iloc = fbx(
+                b"iloc",
+                &[
+                    &[0x44u8, 0, 0, 1, 0, 1, 0, 0, 0, 1][..],
+                    &offset.to_be_bytes(),
+                    &4u32.to_be_bytes(),
+                ]
+                .concat(),
+            );
+            let iref = fbx(b"iref", &bx(b"dimg", &[0, 2, 0, 1, 0, 1]));
+            let ipco = bx(
+                b"ipco",
+                &[&ispe[..], &hvcc, &bx(b"irot", &[1]), &bx(b"imir", &[1])].concat(),
+            );
+            let ipma = fbx(
+                b"ipma",
+                &[0u8, 0, 0, 2, 0, 1, 3, 1, 0x82, 0x84, 0, 2, 1, 0x83],
+            );
+            let iprp = bx(b"iprp", &[&ipco[..], &ipma].concat());
+            fbx(
+                b"meta",
+                &[&hdlr[..], &pitm, &iinf, &iloc, &iref, &iprp].concat(),
+            )
+        };
+        let offset = (ftyp.len() + meta(0).len() + 8) as u32;
+        [ftyp, meta(offset), bx(b"mdat", &[1, 2, 3, 4])].concat()
+    }
+
+    #[test]
+    fn identity_decodes_its_input_and_appends_its_transforms() {
+        let file = iden_file();
+        let cancel = AtomicBool::new(false);
+        let iso = isobmff::Limits::default();
+        let heif = isobmff::parse(&file, &iso, &cancel).expect("hand-built file parses");
+        let img = heif.primary_image().unwrap();
+        assert!(matches!(img.kind, ImageKind::Identity { input: 1 }));
+        // The input's own transforms first, then the identity item's.
+        assert_eq!(
+            transforms_of(&heif, &img).unwrap(),
+            [Transform::Mirror(Axis::LeftRight), Transform::Rotate(90)]
+        );
+        // The input (junk) is decoded: the error comes from there, not from the item kind.
+        let r = decode_heic(&file, &Options::default(), &Limits::default(), &cancel);
+        assert!(r.is_err());
+        assert!(
+            !matches!(r, Err(Error::Unsupported("primary image is not HEVC"))),
+            "{r:?}"
+        );
     }
 }
