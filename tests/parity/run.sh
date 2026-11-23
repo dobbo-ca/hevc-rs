@@ -152,6 +152,13 @@ heic_part() {
         done
         d265=no-output; [ -f "$W/hd/$s.yuv" ] && { d265=neither; cmp -s "$W/hd/$s.yuv" "$r.yuv" && d265=hevc-rs; cmp -s "$W/hd/$s.yuv" "$l.yuv" && d265="$d265+libheif"; }
         echo "$s: yuv differs (dec265 on the item equals: $d265; hevc-rs $(wc -c < "$r.yuv") bytes, libheif $(wc -c < "$l.yuv") bytes; $nd bytes differ, first at byte $first, luma plane $((iw * ih * ib)) bytes; libheif equals hevc-rs with filters off:${same:- no variant})" >> $W/d-heic
+        # Diagnosis: the first 24 samples of each side for small files.
+        if [ "$(wc -c < "$r.yuv")" -le 20000 ]; then
+          for k in r:$r.yuv l:$l.yuv d:$W/hd/$s.yuv; do
+            [ -f "${k#*:}" ] && echo "    ${k%%:*} $(od -An -tu1 -N24 "${k#*:}" | tr -s ' \n' ' ')" >> $W/d-heic
+            [ -f "${k#*:}" ] && echo "    ${k%%:*} at luma end $(od -An -tu1 -j $((iw * ih * ib)) -N16 "${k#*:}" | tr -s ' \n' ' ')" >> $W/d-heic
+          done
+        fi
         hok=0
       fi
       if [ -f "$r.alpha" ] && [ -f "$l.alpha" ]; then
