@@ -49,7 +49,11 @@
 //! assert_eq!(r.unwrap_err(), Error::AllocLimit);
 //! ```
 
-#![forbid(unsafe_code)]
+#![deny(
+    unsafe_code,
+    unsafe_op_in_unsafe_fn,
+    clippy::undocumented_unsafe_blocks
+)]
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,

@@ -4,6 +4,15 @@
 //! `HEVC_SIMD=scalar|avx2|avx512|neon` (read once) forces a tier. A value that names a tier the
 //! CPU does not have, or an unknown value, selects the best detected tier.
 
+// Per-tier load/store helpers: the only `unsafe` besides the dispatch of each kernel family
+// (docs/safety.md). Unused until the kernels that call them land.
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code, dead_code)]
+pub(crate) mod arm;
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code, dead_code)]
+pub(crate) mod x86;
+
 use std::sync::OnceLock;
 
 /// A SIMD tier. `Avx512` means AVX-512 F, BW and VL (and AVX2).
