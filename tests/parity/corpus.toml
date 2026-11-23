@@ -885,3 +885,57 @@ path = "WPP_F_ericsson_MAIN_2.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/WPP_F_ericsson_MAIN_2.zip"
 size = 1900774
 sha256 = "39f5ffaa4c273c800b4e05715e2d4002e31b3bbe39505ea59b08c5fdabe6af21"
+
+[[file]]
+path = "GENERAL_8b_400_RExt_Sony_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/GENERAL_8b_400_RExt_Sony_1.zip"
+size = 11593
+sha256 = "TODO"
+
+[[file]]
+path = "GENERAL_12b_400_RExt_Sony_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/GENERAL_12b_400_RExt_Sony_1.zip"
+size = 39504
+sha256 = "TODO"
+
+[[file]]
+path = "GENERAL_8b_420_RExt_Sony_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/GENERAL_8b_420_RExt_Sony_1.zip"
+size = 15367
+sha256 = "TODO"
+
+[[file]]
+path = "GENERAL_10b_420_RExt_Sony_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/GENERAL_10b_420_RExt_Sony_1.zip"
+size = 31728
+sha256 = "TODO"
+
+[[file]]
+path = "GENERAL_12b_420_RExt_Sony_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/GENERAL_12b_420_RExt_Sony_1.zip"
+size = 58478
+sha256 = "TODO"
+
+[[file]]
+path = "Bitdepth_A_RExt_Sony_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/Bitdepth_A_RExt_Sony_1.zip"
+size = 35522
+sha256 = "TODO"
+
+[[file]]
+path = "Bitdepth_B_RExt_Sony_1.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/Bitdepth_B_RExt_Sony_1.zip"
+size = 35468
+sha256 = "TODO"
+
+[[file]]
+path = "IPCM_A_RExt_NEC_2.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/IPCM_A_RExt_NEC_2.zip"
+size = 5476
+sha256 = "TODO"
+
+[[file]]
+path = "IPCM_B_RExt_NEC.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/RExt/IPCM_B_RExt_NEC.zip"
+size = 6004
+sha256 = "TODO"

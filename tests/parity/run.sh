@@ -168,6 +168,10 @@ EOT
       got="err $(cat "$W/probe/$s.err" 2> /dev/null)"
     fi
     [ "$want" = "$got" ] && continue
+    if [ "$got" = "err unsupported" ]; then
+      echo "$s: probe: ffprobe='$want' hevc-rs='$got' (a tool outside the hevc-rs scope)" >> $W/probe-explained
+      continue
+    fi
     # A stream whose pictures change size: ffprobe reports another SPS than the one of the first
     # picture. Explained when the hevc-rs probe is the size of its first decoded picture.
     sizes=$(cut -d' ' -f2,3 "$W/rs1/$s.info" 2> /dev/null | sort -u | wc -l)
@@ -243,6 +247,8 @@ EOT
   gate "G5 1 thread vs default threads" $W/d-threads
   echo "| G6 (report only) dec265 vs hevc-rs, deblocking and SAO off | $(wc -l < $W/d-nofilters) diff lines |" >> "$REP/summary.md"
   [ -s $W/ffprobe-failed ] && { echo; echo "ffprobe failed (G1 skips them), first 50:"; echo; head -n 50 $W/ffprobe-failed | sed 's/^/    /'; } >> "$REP/summary.md"
+  # Streams hevc-rs rejects, with the error token (unsupported tools are expected; see docs/parity.md).
+  for e in $W/probe/*.err $W/rs1/*.err; do [ -f "$e" ] && echo "${e#$W/}: $(cat "$e")"; done > "$REP/errors.txt"
   for d in d-probe d-dec265 d-ffmpeg d-hash d-threads d-nofilters; do [ -f $W/$d ] && cp $W/$d "$REP/$d.diff"; done
   rm -rf $W
   return $bad
