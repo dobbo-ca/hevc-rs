@@ -209,7 +209,8 @@ mod armk {
 /// Edge offset on `out.len()` samples: `cur` are the samples, `a` and `b` their two neighbours
 /// along the class direction (all the same length). `tier` must come from `simd::tier()` or
 /// `simd::available()`.
-#[allow(unsafe_code)]
+// NEON is in the aarch64 baseline: the call may need no unsafe, so unused_unsafe is allowed.
+#[allow(unsafe_code, unused_unsafe)]
 pub(crate) fn eo_row(
     tier: Tier,
     cur: &[u16],
@@ -221,10 +222,9 @@ pub(crate) fn eo_row(
 ) {
     match tier {
         #[cfg(target_arch = "x86_64")]
-        Tier::Avx2 | Tier::Avx512 => {
-            // SAFETY: simd::tier() / simd::available() return Avx2 or Avx512 only when
-            // is_x86_feature_detected! found avx2 (src/simd/mod.rs); the kernel's slices are
-            // bounds-checked safe Rust.
+        Tier::Avx2 | Tier::Avx512 if std::arch::is_x86_feature_detected!("avx2") => {
+            // SAFETY: the match guard has just detected avx2, the only feature the kernel enables;
+            // the kernel's slices are bounds-checked safe Rust.
             unsafe { x86k::eo(cur, a, b, out, tab, max) }
         }
         #[cfg(target_arch = "aarch64")]
@@ -238,7 +238,8 @@ pub(crate) fn eo_row(
 }
 
 /// Band offset on `out.len()` samples of `cur` (same length). `tier` as for [`eo_row`].
-#[allow(unsafe_code)]
+// NEON is in the aarch64 baseline: the call may need no unsafe, so unused_unsafe is allowed.
+#[allow(unsafe_code, unused_unsafe)]
 pub(crate) fn bo_row(
     tier: Tier,
     cur: &[u16],
@@ -250,9 +251,9 @@ pub(crate) fn bo_row(
 ) {
     match tier {
         #[cfg(target_arch = "x86_64")]
-        Tier::Avx2 | Tier::Avx512 => {
-            // SAFETY: simd::tier() / simd::available() return Avx2 or Avx512 only when
-            // is_x86_feature_detected! found avx2 (src/simd/mod.rs).
+        Tier::Avx2 | Tier::Avx512 if std::arch::is_x86_feature_detected!("avx2") => {
+            // SAFETY: the match guard has just detected avx2, the only feature the kernel enables;
+            // simd::tier() lists Avx512 only on top of AVX2 (src/simd/mod.rs).
             unsafe { x86k::bo(cur, out, tab, band_pos, shift, max) }
         }
         #[cfg(target_arch = "aarch64")]
