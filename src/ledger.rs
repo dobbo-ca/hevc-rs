@@ -29,6 +29,7 @@ impl Ledger {
     }
 
     /// What may still be charged.
+    #[allow(dead_code, reason = "used by the tests only")]
     pub(crate) fn left(&self) -> usize {
         let free = self
             .max
@@ -88,6 +89,7 @@ impl Drop for Held<'_> {
 
 /// Sets `v` to `n` zero bytes and books `n` bytes for the rest of the call. A buffer that is
 /// already big enough (a `Decoder` kept it) allocates nothing.
+#[allow(dead_code, reason = "reusable-buffer helper, no caller yet")]
 pub(crate) fn zeroed(v: &mut Vec<u8>, n: usize, ledger: &Ledger) -> Result<(), Error> {
     ledger.reserve(n)?;
     v.clear();
@@ -99,12 +101,25 @@ pub(crate) fn zeroed(v: &mut Vec<u8>, n: usize, ledger: &Ledger) -> Result<(), E
 }
 
 /// A zeroed `Vec<u16>` of `len` samples (a picture plane), booked for the rest of the call.
+#[allow(
+    dead_code,
+    reason = "Frame::new books and fills its planes with `filled`"
+)]
 pub(crate) fn alloc_u16_zeroed(len: usize, ledger: &Ledger) -> Result<Vec<u16>, Error> {
     ledger.reserve(len.checked_mul(2).ok_or(Error::AllocLimit)?)?;
     let mut v = Vec::new();
     v.try_reserve_exact(len).map_err(|_| Error::OutOfMemory)?;
     v.resize(len, 0);
     Ok(v)
+}
+
+/// A `Vec` of `len` copies of `v`. Does not charge: the caller has already reserved
+/// `len * size_of::<T>()` bytes in the ledger (so one reservation can cover several buffers).
+pub(crate) fn filled<T: Clone>(len: usize, v: T) -> Result<Vec<T>, Error> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(len).map_err(|_| Error::OutOfMemory)?;
+    out.resize(len, v);
+    Ok(out)
 }
 
 #[cfg(test)]

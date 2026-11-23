@@ -4,8 +4,9 @@
 //! bits) from an Annex B byte stream or from HEIF/MP4 samples plus an `hvcC` record. P and B
 //! slices are rejected with [`Error::InterSlice`]. The build spec is `docs/design.md`.
 //!
-//! Status: phase 1. Parameter sets, SEI and slice headers are parsed and the limits are
-//! enforced; decoding slice data is not implemented yet and returns [`Error::Unsupported`].
+//! Status: intra decoding works. Every I picture is decoded (CABAC, intra prediction, residual,
+//! deblocking, SAO), checked against the decoded picture hash SEI when present, and output in
+//! order with the conformance window applied.
 //!
 //! # Resource limits
 //!
@@ -56,20 +57,25 @@
         clippy::indexing_slicing
     )
 )]
-// ponytail: phase 1 leaves parts of the parsing modules unused until slice decoding lands;
-// remove this allow with phase 2.
-#![allow(dead_code)]
 
 mod bits;
+mod cabac;
+mod ctu;
+mod deblock;
 mod decoder;
 mod error;
+mod frame;
+mod intra;
 mod ledger;
 mod limits;
 mod nal;
 mod ps;
+mod residual;
+mod sao;
 mod scaling;
 mod sei;
 mod slice;
+mod transform;
 
 pub use decoder::{
     decode, decode_hvcc, decode_hvcc_into, decode_into, intra_prefix, probe, probe_hvcc,

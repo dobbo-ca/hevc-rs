@@ -117,7 +117,7 @@ COPY --from=data /data.list /data.list
 RUN --mount=type=cache,id=hevc-rs-target-parity,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + \
     && cargo build --locked --release --example oracle && cp target/release/examples/oracle /usr/local/bin/hevc-oracle
-ARG PARITY_DECODE=0
+ARG PARITY_DECODE=1
 RUN --mount=type=cache,id=hevc-rs-data,target=/data,sharing=locked,readonly \
     mkdir -p /report && { PARITY_DECODE=$PARITY_DECODE sh tests/parity/run.sh full /report; echo $? > /report/status; }
 

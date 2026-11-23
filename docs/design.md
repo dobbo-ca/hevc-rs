@@ -507,7 +507,11 @@ loop_filter_across_tiles_enabled_flag). bitDepth-based band shift = bitDepth - 5
   POC). HighestTid = sps_max_sub_layers_minus1. After the picture is decoded (C.5.2.3), apply
   the latency count and the reorder/latency bumping again. At the end of the stream bump
   everything. Pictures with pic_output_flag = 0 (or RASL skipped) are not output. All pictures
-  are intra, so no picture is kept for reference.
+  are intra, so no picture is kept for reference. KNOWN DEVIATION: the C.5.2.2 fullness
+  condition counts only pictures waiting for output; pictures kept only as references by a
+  later picture's RPS (8.3.2) are not counted, so the fullness bump can fire later than in the
+  spec (observable only when a later IRAP discards the DPB). EOS (type 36) does not flush: the
+  next IRAP applies C.5.2.2 (CRA after EOS discards); EOB (37) and end of stream flush.
 - A picture is complete when the next picture starts, at EOS/EOB, or at the end of the stream.
   A picture whose CTBs are not all covered by slices → InvalidData.
 - Slices of the picture must use the same PPS id? (no: PPS may differ per slice only in
@@ -534,3 +538,12 @@ loop_filter_across_tiles_enabled_flag). bitDepth-based band shift = bitDepth - 5
 - Corpus: JCT-VC HEVC_v1 conformance streams (all, since every one starts with an intra
   picture), selected RExt streams for rejection classes, public HEIC samples (later), fuzz-grown
   files. Fetched in CI into a BuildKit cache mount (`id=hevc-rs-data`), never committed.
+
+## Metadata (owner rule, 2026-11-19)
+
+Keep metadata by default and expose it raw: SEI messages (for example mastering display colour
+volume, content light level) and the colour information of the VUI (colour_primaries,
+transfer_characteristics, matrix_coeffs, video_full_range_flag, chroma sample location). An
+option may drop them. To do: a raw `Metadata` on `Info` / `Picture` (payload type + bytes for
+each SEI message, the parsed VUI colour fields), an `Options` switch to drop it, and the bytes
+charged to the ledger with a cap.

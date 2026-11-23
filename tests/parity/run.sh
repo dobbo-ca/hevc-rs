@@ -61,6 +61,27 @@ gate() {
 
 run() { "$@" || { echo "FAILED: $*" >&2; bad=1; }; }
 
+# subseq <hevc-rs.yuv> <hevc-rs.info> <oracle.yuv>: true when the oracle output is the hevc-rs
+# output with some whole pictures left out (an oracle that drops pictures, e.g. ffmpeg at a size
+# change). Prints "<matched>/<pictures>". Frame sizes come from the .info lines
+# (poc W H chroma depthY depthC hash).
+subseq() {
+  sq_total=$(wc -c < "$3"); sq_o=0 sq_off=0 sq_m=0 sq_n=0
+  while read -r _ fw fh fc dy dc _; do
+    sq_n=$((sq_n + 1))
+    by=1; [ "$dy" -gt 8 ] && by=2
+    bc=1; [ "${dc:-8}" -gt 8 ] && bc=2
+    sz=$((fw * fh * by))
+    case $fc in 420) sz=$((sz + 2 * ((fw + 1) / 2) * ((fh + 1) / 2) * bc)) ;; esac
+    if [ $sq_o -lt "$sq_total" ] && cmp -s -n "$sz" -i "$sq_off:$sq_o" "$1" "$3"; then
+      sq_o=$((sq_o + sz)); sq_m=$((sq_m + 1))
+    fi
+    sq_off=$((sq_off + sz))
+  done < "$2"
+  echo "$sq_m/$sq_n"
+  [ $sq_m -gt 0 ] && [ $sq_o -eq "$sq_total" ]
+}
+
 # cmpyuv <dirA> <labelA> <dirB> <labelB> <diff-file> <stats-file> [names-file]: compare the .yuv
 # files of the two dirs by name (only the names listed in names-file, when given). A name with
 # output on one side only is a diff line. stats-file gets "<pairs compared> <bytes compared>".
@@ -81,7 +102,7 @@ cmpyuv() {
 
 full() {
   REP=$1 bad=0
-  rm -rf $W; mkdir -p "$REP" $W/prefix $W/de $W/ff $W/ffp
+  rm -rf $W; mkdir -p "$REP" $W/prefix $W/de $W/denf $W/ff $W/ffp
   gather $W/in
   n=$(ls $W/in | wc -l)
   [ "$n" -gt 0 ] || { echo "corpus is empty" >&2; bad=1; }
@@ -90,6 +111,7 @@ full() {
   run hevc-oracle probe $W/in $W/probe
   run hevc-oracle --threads 1 $W/prefix $W/rs1
   run hevc-oracle $W/prefix $W/rsn
+  run hevc-oracle --threads 1 --no-filters $W/prefix $W/rsnf
 
   # libde265 and ffmpeg on every prefix stream. ffmpeg's pix_fmt comes from the hevc-rs probe.
   : > $W/ffnames; : > $W/ffskip
@@ -97,6 +119,7 @@ full() {
     [ -f "$p" ] || continue
     b=${p##*/}; s=${b%.bit}
     dec265 -q -o "$W/de/$s.yuv" "$p" > /dev/null 2>&1 || { rm -f "$W/de/$s.yuv"; echo "dec265 failed" > "$W/de/$s.err"; }
+    dec265 -q --disable-deblocking --disable-sao -o "$W/denf/$s.yuv" "$p" > /dev/null 2>&1 || rm -f "$W/denf/$s.yuv"
     [ -f "$W/probe/$s.probe" ] || continue
     read -r w h c d dc _ < "$W/probe/$s.probe"
     case "$(norm "$c")/$d" in
@@ -108,7 +131,7 @@ full() {
     [ -z "$pf" ] || [ "${dc:-$d}" = "$d" ] || pf=
     if [ -z "$pf" ]; then echo "$s" >> $W/ffskip; continue; fi
     echo "$s" >> $W/ffnames
-    ffmpeg -nostdin -v error -i "$p" -f rawvideo -fps_mode passthrough -pix_fmt "$pf" "$W/ff/$s.yuv" > /dev/null 2>&1 \
+    ffmpeg -nostdin -v error -flags unaligned -i "$p" -autoscale 0 -f rawvideo -fps_mode passthrough -pix_fmt "$pf" "$W/ff/$s.yuv" > /dev/null 2>&1 \
       || { rm -f "$W/ff/$s.yuv"; echo "ffmpeg failed" > "$W/ff/$s.err"; }
   done
 
@@ -133,7 +156,7 @@ EOT
   done
 
   # G1: probe vs ffprobe.
-  : > $W/d-probe
+  : > $W/d-probe; : > $W/probe-explained
   for f in $W/ffp/*.ffprobe; do
     [ -f "$f" ] || continue
     b=${f##*/}; s=${b%.ffprobe}
@@ -144,12 +167,52 @@ EOT
     else
       got="err $(cat "$W/probe/$s.err" 2> /dev/null)"
     fi
-    [ "$want" = "$got" ] || echo "$s: ffprobe='$want' hevc-rs='$got'" >> $W/d-probe
+    [ "$want" = "$got" ] && continue
+    # A stream whose pictures change size: ffprobe reports another SPS than the one of the first
+    # picture. Explained when the hevc-rs probe is the size of its first decoded picture.
+    sizes=$(cut -d' ' -f2,3 "$W/rs1/$s.info" 2> /dev/null | sort -u | wc -l)
+    first=$(head -n 1 "$W/rs1/$s.info" 2> /dev/null | cut -d' ' -f2,3)
+    if [ "${sizes:-0}" -gt 1 ] && [ "$first" = "$w $h" ]; then
+      echo "$s: probe: ffprobe='$want' hevc-rs='$got' (the pictures change size; hevc-rs gives the first)" >> $W/probe-explained
+    else
+      echo "$s: ffprobe='$want' hevc-rs='$got'" >> $W/d-probe
+    fi
   done
 
   # G2, G3: pictures.
   cmpyuv $W/de dec265 $W/rs1 hevc-rs $W/d-dec265 $W/s-dec265
   cmpyuv $W/ff ffmpeg $W/rs1 hevc-rs $W/d-ffmpeg $W/s-ffmpeg $W/ffnames
+  # G6 (diagnostic): reconstruction without the in-loop filters.
+  cmpyuv $W/denf dec265-nofilters $W/rsnf hevc-rs-nofilters $W/d-nofilters $W/s-nofilters
+  # G2: every stream that hevc-rs decodes is confirmed: equal to dec265, or equal to ffmpeg, or
+  # every picture has a decoded picture hash SEI that matched. A stream with an oracle that
+  # differs while another check confirms hevc-rs is listed in disagreements.tsv (not a failure).
+  : > $W/d-confirm; printf 'stream\tdec265\tffmpeg\tpictures\thash ok\thash none\thash bad\n' > "$REP/streams.tsv"
+  : > $W/disagree; : > $W/ffsubset; nde=0 nff=0 nhash=0
+  for y in $W/rs1/*.yuv; do
+    [ -f "$y" ] || continue
+    b=${y##*/}; s=${b%.yuv}
+    de=failed; [ -f "$W/de/$s.yuv" ] && { cmp -s "$y" "$W/de/$s.yuv" && de=equal || de=differs; }
+    ff=failed; grep -Fxq "$s" $W/ffskip && ff=skipped
+    [ -f "$W/ff/$s.yuv" ] && { cmp -s "$y" "$W/ff/$s.yuv" && ff=equal || ff=differs; }
+    # ffmpeg may drop pictures (C.5.2.2 allows NoOutputOfPriorPicsFlag = 1 at a size change):
+    # every picture it does write must equal the matching hevc-rs picture.
+    if [ $ff = differs ] && part=$(subseq "$y" "$W/rs1/$s.info" "$W/ff/$s.yuv"); then
+      ff=equal
+      echo "$s: ffmpeg wrote $part of the hevc-rs pictures, each equal (it drops pictures at a size change)" >> $W/ffsubset
+    fi
+    pics=$(wc -l < "$W/rs1/$s.info"); ok=$(grep -cw ok "$W/rs1/$s.info"); none=$(grep -cw none "$W/rs1/$s.info")
+    hb=$((pics - ok - none))
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$s" "$de" "$ff" "$pics" "$ok" "$none" "$hb" >> "$REP/streams.tsv"
+    [ $de = equal ] && nde=$((nde + 1)); [ $ff = equal ] && nff=$((nff + 1))
+    full=no; [ "$pics" -gt 0 ] && [ "$ok" = "$pics" ] && { full=yes; nhash=$((nhash + 1)); }
+    if [ $de = equal ] || [ $ff = equal ] || [ $full = yes ]; then
+      [ $de = differs ] || [ $ff = differs ] && echo "$s: dec265 $de, ffmpeg $ff, hash ok $ok/$pics" >> $W/disagree
+    else
+      echo "$s: not confirmed (dec265 $de, ffmpeg $ff, hash ok $ok/$pics)" >> $W/d-confirm
+    fi
+  done
+  cat $W/ffsubset $W/probe-explained >> $W/disagree; cp $W/disagree "$REP/disagreements.txt"; mkdir -p "$REP/info" && cp $W/rs1/*.info "$REP/info/"
   # G4: decoded picture hash SEI.
   find $W/rs1 -type f -name '*.info' -exec grep -lw bad {} + 2> /dev/null | sed 's#.*/##; s#\.info$#: hash bad#' | sort > $W/d-hash
   # G5: threads.
@@ -169,15 +232,18 @@ EOT
     echo "| streams compared with dec265 | $cmpn |"
     echo "| bytes compared with dec265 | $cmpb |"
     echo "| ffprobe failed or unmapped | $(wc -l < $W/ffprobe-failed) |"
+    echo "| streams equal to dec265 / ffmpeg / with every picture hash ok | $nde / $nff / $nhash |"
+    echo "| pictures with hash ok / none / bad | $(cat $W/rs1/*.info | grep -cw ok) / $(cat $W/rs1/*.info | grep -cw none) / $(cat $W/rs1/*.info | grep -cw bad) |"
+    echo "| oracle disagreements explained (disagreements.txt) | $(wc -l < $W/disagree) |"
     echo; echo "| gate | result |"; echo "|---|---|"
   } > "$REP/summary.md"
   gate "G1 probe vs ffprobe (W H chroma depthY)" $W/d-probe
-  gate "G2 dec265 vs hevc-rs" $W/d-dec265 soft
-  gate "G3 ffmpeg vs hevc-rs" $W/d-ffmpeg soft
+  gate "G2 every stream confirmed (dec265 or ffmpeg equal, or every picture hash ok)" $W/d-confirm soft
   gate "G4 decoded picture hash (no bad)" $W/d-hash soft
   gate "G5 1 thread vs default threads" $W/d-threads
+  echo "| G6 (report only) dec265 vs hevc-rs, deblocking and SAO off | $(wc -l < $W/d-nofilters) diff lines |" >> "$REP/summary.md"
   [ -s $W/ffprobe-failed ] && { echo; echo "ffprobe failed (G1 skips them), first 50:"; echo; head -n 50 $W/ffprobe-failed | sed 's/^/    /'; } >> "$REP/summary.md"
-  for d in d-probe d-dec265 d-ffmpeg d-hash d-threads; do [ -f $W/$d ] && cp $W/$d "$REP/$d.diff"; done
+  for d in d-probe d-dec265 d-ffmpeg d-hash d-threads d-nofilters; do [ -f $W/$d ] && cp $W/$d "$REP/$d.diff"; done
   rm -rf $W
   return $bad
 }
