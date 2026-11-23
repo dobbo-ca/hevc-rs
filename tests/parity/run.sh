@@ -61,6 +61,27 @@ gate() {
 
 run() { "$@" || { echo "FAILED: $*" >&2; bad=1; }; }
 
+# subseq <hevc-rs.yuv> <hevc-rs.info> <oracle.yuv>: true when the oracle output is the hevc-rs
+# output with some whole pictures left out (an oracle that drops pictures, e.g. ffmpeg at a size
+# change). Prints "<matched>/<pictures>". Frame sizes come from the .info lines
+# (poc W H chroma depthY depthC hash).
+subseq() {
+  sq_total=$(wc -c < "$3"); sq_o=0 sq_off=0 sq_m=0 sq_n=0
+  while read -r _ fw fh fc dy dc _; do
+    sq_n=$((sq_n + 1))
+    by=1; [ "$dy" -gt 8 ] && by=2
+    bc=1; [ "${dc:-8}" -gt 8 ] && bc=2
+    sz=$((fw * fh * by))
+    case $fc in 420) sz=$((sz + 2 * ((fw + 1) / 2) * ((fh + 1) / 2) * bc)) ;; esac
+    if [ $sq_o -lt "$sq_total" ] && cmp -s -n "$sz" -i "$sq_off:$sq_o" "$1" "$3"; then
+      sq_o=$((sq_o + sz)); sq_m=$((sq_m + 1))
+    fi
+    sq_off=$((sq_off + sz))
+  done < "$2"
+  echo "$sq_m/$sq_n"
+  [ $sq_m -gt 0 ] && [ $sq_o -eq "$sq_total" ]
+}
+
 # cmpyuv <dirA> <labelA> <dirB> <labelB> <diff-file> <stats-file> [names-file]: compare the .yuv
 # files of the two dirs by name (only the names listed in names-file, when given). A name with
 # output on one side only is a diff line. stats-file gets "<pairs compared> <bytes compared>".
@@ -167,13 +188,19 @@ EOT
   # every picture has a decoded picture hash SEI that matched. A stream with an oracle that
   # differs while another check confirms hevc-rs is listed in disagreements.tsv (not a failure).
   : > $W/d-confirm; printf 'stream\tdec265\tffmpeg\tpictures\thash ok\thash none\thash bad\n' > "$REP/streams.tsv"
-  : > $W/disagree; nde=0 nff=0 nhash=0
+  : > $W/disagree; : > $W/ffsubset; nde=0 nff=0 nhash=0
   for y in $W/rs1/*.yuv; do
     [ -f "$y" ] || continue
     b=${y##*/}; s=${b%.yuv}
     de=failed; [ -f "$W/de/$s.yuv" ] && { cmp -s "$y" "$W/de/$s.yuv" && de=equal || de=differs; }
     ff=failed; grep -Fxq "$s" $W/ffskip && ff=skipped
     [ -f "$W/ff/$s.yuv" ] && { cmp -s "$y" "$W/ff/$s.yuv" && ff=equal || ff=differs; }
+    # ffmpeg may drop pictures (C.5.2.2 allows NoOutputOfPriorPicsFlag = 1 at a size change):
+    # every picture it does write must equal the matching hevc-rs picture.
+    if [ $ff = differs ] && part=$(subseq "$y" "$W/rs1/$s.info" "$W/ff/$s.yuv"); then
+      ff=equal
+      echo "$s: ffmpeg wrote $part of the hevc-rs pictures, each equal (it drops pictures at a size change)" >> $W/ffsubset
+    fi
     pics=$(wc -l < "$W/rs1/$s.info"); ok=$(grep -cw ok "$W/rs1/$s.info"); none=$(grep -cw none "$W/rs1/$s.info")
     hb=$((pics - ok - none))
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$s" "$de" "$ff" "$pics" "$ok" "$none" "$hb" >> "$REP/streams.tsv"
@@ -185,7 +212,7 @@ EOT
       echo "$s: not confirmed (dec265 $de, ffmpeg $ff, hash ok $ok/$pics)" >> $W/d-confirm
     fi
   done
-  cat $W/probe-explained >> $W/disagree; cp $W/disagree "$REP/disagreements.txt"; mkdir -p "$REP/info" && cp $W/rs1/*.info "$REP/info/"
+  cat $W/ffsubset $W/probe-explained >> $W/disagree; cp $W/disagree "$REP/disagreements.txt"; mkdir -p "$REP/info" && cp $W/rs1/*.info "$REP/info/"
   # G4: decoded picture hash SEI.
   find $W/rs1 -type f -name '*.info' -exec grep -lw bad {} + 2> /dev/null | sed 's#.*/##; s#\.info$#: hash bad#' | sort > $W/d-hash
   # G5: threads.
