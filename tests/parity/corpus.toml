@@ -509,6 +509,12 @@ size = 407388
 sha256 = "39058b857df8d60c92135e1ae32a5e09b1ee76be6ed06e19014d2dc18c6df778"
 
 [[file]]
+path = "PS_B_VIDYO_3.zip"
+url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/PS_B_VIDYO_3.zip"
+size = 18766
+sha256 = "TODO"
+
+[[file]]
 path = "RAP_A_docomo_6.zip"
 url = "https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1/RAP_A_docomo_6.zip"
 size = 111169
