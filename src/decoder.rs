@@ -717,20 +717,67 @@ pub fn decode_hvcc(
     Ok(out)
 }
 
-/// Info of the first SPS of layer 0 in `nals`; nothing is activated.
+/// Info of the SPS that the first slice of layer 0 uses (through its PPS), or of the first SPS
+/// when there is no slice (an hvcC config alone); nothing is activated.
 fn probe_nals<'a>(nals: impl Iterator<Item = Result<Nal<'a>>>, limits: &Limits) -> Result<Info> {
     let ledger = Ledger::default();
     ledger.reset(limits.max_alloc, 0)?;
+    let mut sps_list: [Option<Sps>; 16] = Default::default();
+    let mut pps_sps: [Option<u32>; 64] = [None; 64];
+    let mut first: Option<u32> = None;
     for nal in nals {
         let nal = nal?;
-        if nal.layer_id == 0 && nal.kind == 33 {
-            let (r, _held) = ps_rbsp(nal.payload, &ledger)?;
-            let sps = ps::parse_sps(&r)?;
-            sps.check_limits(limits)?;
-            return info_of(&sps);
+        if nal.layer_id != 0 {
+            continue;
+        }
+        match nal.kind {
+            33 => {
+                let (r, _held) = ps_rbsp(nal.payload, &ledger)?;
+                let sps = ps::parse_sps(&r)?;
+                first.get_or_insert(sps.sps_id);
+                if let Some(slot) = sps_list.get_mut(sps.sps_id as usize) {
+                    *slot = Some(sps);
+                }
+            }
+            34 => {
+                let (r, _held) = ps_rbsp(nal.payload, &ledger)?;
+                let pps = ps::parse_pps(&r)?;
+                if let Some(slot) = pps_sps.get_mut(pps.pps_id as usize) {
+                    *slot = Some(pps.sps_id);
+                }
+            }
+            0..=9 | 16..=21 => {
+                // 7.3.6.1: first_slice_segment_in_pic_flag, no_output_of_prior_pics_flag (IRAP),
+                // slice_pic_parameter_set_id. Three bytes of escaped payload are enough.
+                let mut head = Vec::new();
+                nal::unescape(nal.payload.get(..8).unwrap_or(nal.payload), &mut head);
+                let mut r = crate::bits::BitReader::new(&head);
+                r.flag()?;
+                if (16..=23).contains(&nal.kind) {
+                    r.flag()?;
+                }
+                let pps_id = r.ue()?;
+                let sps_id = pps_sps
+                    .get(pps_id as usize)
+                    .copied()
+                    .flatten()
+                    .ok_or(Error::InvalidData("slice refers to a missing PPS"))?;
+                let sps = sps_list
+                    .get(sps_id as usize)
+                    .and_then(Option::as_ref)
+                    .ok_or(Error::InvalidData("PPS refers to a missing SPS"))?;
+                sps.check_limits(limits)?;
+                return info_of(sps);
+            }
+            _ => {}
         }
     }
-    Err(Error::InvalidData("no SPS in the stream"))
+    let sps = first
+        .and_then(|id| sps_list.get(id as usize))
+        .and_then(Option::as_ref)
+        .ok_or(Error::InvalidData("no SPS in the stream"))?;
+    sps.check_limits(limits)?;
+    info_of(sps)
 }
 
 /// See [`crate::probe`].

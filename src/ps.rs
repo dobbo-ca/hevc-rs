@@ -550,7 +550,10 @@ pub(crate) fn parse_sps(rbsp: &[u8]) -> Result<Sps> {
         vui_parameters(&mut r, max_sub_layers_minus1)?;
     }
     let mut high_precision_offsets_enabled = false;
-    if r.flag()? {
+    // 7.4.3.2.1: in Main, Main 10 and Main Still Picture bitstreams the extension flags are 0,
+    // and a decoder for those profiles ignores whatever follows sps_extension_present_flag
+    // (version 1 streams carry sps_extension_data_flag bits there, e.g. PS_B_VIDYO_3).
+    if r.flag()? && !(1..=3).contains(&profile_idc) {
         let range = r.flag()?;
         let multilayer = r.flag()?;
         let ext_3d = r.flag()?;
@@ -666,6 +669,8 @@ pub(crate) struct Pps {
     pub slice_segment_header_extension_present: bool,
     pub log2_sao_offset_scale_luma: u32,
     pub log2_sao_offset_scale_chroma: u32,
+    /// An unsupported or malformed pps_extension; ignored for profiles 1..=3 (see `activate`).
+    pub extension_error: Option<Error>,
 }
 
 /// 7.3.2.3 pic_parameter_set_rbsp (with the range extension of 7.3.2.3.2).
@@ -742,31 +747,17 @@ pub(crate) fn parse_pps(rbsp: &[u8]) -> Result<Pps> {
     let lists_modification_present = r.flag()?;
     let log2_parallel_merge_level = ue_max(&mut r, 4, "log2_parallel_merge_level_minus2")? + 2;
     let slice_segment_header_extension_present = r.flag()?;
-    let mut log2_sao_offset_scale_luma = 0;
-    let mut log2_sao_offset_scale_chroma = 0;
+    // The PPS does not know the profile. The extension is parsed here and judged in `activate`:
+    // for profiles 1..=3 it is ignored (7.4.3.3.1), for others an error in it is returned there.
+    let (mut log2_sao_offset_scale_luma, mut log2_sao_offset_scale_chroma) = (0, 0);
+    let mut extension_error = None;
     if r.flag()? {
-        let range = r.flag()?;
-        let multilayer = r.flag()?;
-        let ext_3d = r.flag()?;
-        let scc = r.flag()?;
-        let ext_4bits = r.u(4)?;
-        if multilayer || ext_3d || scc || ext_4bits != 0 {
-            return Err(Error::Unsupported("pps multilayer, 3d or scc extension"));
-        }
-        if range {
-            if transform_skip_enabled && r.ue()? != 0 {
-                return Err(Error::Unsupported(
-                    "log2_max_transform_skip_block_size_minus2",
-                ));
+        match pps_extension(&mut r, transform_skip_enabled) {
+            Ok((luma, chroma)) => {
+                log2_sao_offset_scale_luma = luma;
+                log2_sao_offset_scale_chroma = chroma;
             }
-            if r.flag()? {
-                return Err(Error::Unsupported("cross_component_prediction"));
-            }
-            if r.flag()? {
-                return Err(Error::Unsupported("chroma_qp_offset_list"));
-            }
-            log2_sao_offset_scale_luma = ue_max(&mut r, 6, "log2_sao_offset_scale_luma")?;
-            log2_sao_offset_scale_chroma = ue_max(&mut r, 6, "log2_sao_offset_scale_chroma")?;
+            Err(e) => extension_error = Some(e),
         }
     }
     Ok(Pps {
@@ -807,7 +798,38 @@ pub(crate) fn parse_pps(rbsp: &[u8]) -> Result<Pps> {
         slice_segment_header_extension_present,
         log2_sao_offset_scale_luma,
         log2_sao_offset_scale_chroma,
+        extension_error,
     })
+}
+
+/// pps_extension_4bits etc. and pps_range_extension (7.3.2.3.2): the SAO offset scales, or the
+/// error for an unsupported tool.
+fn pps_extension(r: &mut BitReader, transform_skip_enabled: bool) -> Result<(u32, u32)> {
+    let range = r.flag()?;
+    let multilayer = r.flag()?;
+    let ext_3d = r.flag()?;
+    let scc = r.flag()?;
+    let ext_4bits = r.u(4)?;
+    if multilayer || ext_3d || scc || ext_4bits != 0 {
+        return Err(Error::Unsupported("pps multilayer, 3d or scc extension"));
+    }
+    if !range {
+        return Ok((0, 0));
+    }
+    if transform_skip_enabled && r.ue()? != 0 {
+        return Err(Error::Unsupported(
+            "log2_max_transform_skip_block_size_minus2",
+        ));
+    }
+    if r.flag()? {
+        return Err(Error::Unsupported("cross_component_prediction"));
+    }
+    if r.flag()? {
+        return Err(Error::Unsupported("chroma_qp_offset_list"));
+    }
+    let luma = ue_max(r, 6, "log2_sao_offset_scale_luma")?;
+    let chroma = ue_max(r, 6, "log2_sao_offset_scale_chroma")?;
+    Ok((luma, chroma))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -900,6 +922,23 @@ pub(crate) fn activate(
         return bad("pps refers to another sps");
     }
     sps.check_limits(limits)?;
+    // 7.4.3.3.1: a Main / Main 10 / Main Still Picture decoder ignores the PPS extension.
+    let pps = if (1..=3).contains(&sps.profile_idc)
+        && (pps.extension_error.is_some()
+            || pps.log2_sao_offset_scale_luma != 0
+            || pps.log2_sao_offset_scale_chroma != 0)
+    {
+        Arc::new(Pps {
+            extension_error: None,
+            log2_sao_offset_scale_luma: 0,
+            log2_sao_offset_scale_chroma: 0,
+            ..(*pps).clone()
+        })
+    } else if let Some(e) = &pps.extension_error {
+        return Err(e.clone());
+    } else {
+        pps
+    };
     // init_qp_minus26 in -(26 + QpBdOffsetY)..=25.
     if !(-sps.qp_bd_offset_y..=51).contains(&pps.init_qp) {
         return bad("init_qp_minus26");
