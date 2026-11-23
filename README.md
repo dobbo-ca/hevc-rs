@@ -39,8 +39,10 @@ There is no unlimited entry point. Every call takes a `Limits`.
 | `max_height` | 16384 | luma rows | `Error::HeightLimit` |
 | `max_pixels` | 268 435 456 (`1 << 28`) | coded width x height | `Error::PixelLimit` |
 | `max_pictures` | 4096 | decoded pictures per call | `Error::PictureLimit` |
+| `max_metadata` | 1 MiB | bytes of SEI messages kept per picture (payload plus the message struct) | no error; the message is dropped |
 
 - `max_alloc` is the enforced peak working memory of one call: allocations are charged before they are made and released on drop.
+- Metadata (SEI messages, VUI) is kept by default and exposed raw; `Options { metadata: false, .. }` drops it. Kept SEI bytes are charged to `max_alloc` like the planes.
 - `max_threads = 1` spawns no thread. v1 is serial, so no value spawns one.
 - Cancellation: every decode takes `&AtomicBool`, read before each NAL unit and each CTU. When set, the call returns `Error::Cancelled`.
 

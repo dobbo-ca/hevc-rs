@@ -10,6 +10,7 @@ Every entry point takes `&Limits` (`src/limits.rs`); there is no unlimited call.
 | `max_height` | 16384 | `Error::HeightLimit` |
 | `max_pixels` | `1 << 28` | `Error::PixelLimit` |
 | `max_pictures` | 4096 | `Error::PictureLimit` |
+| `max_metadata` | 1 MiB | no error; the SEI message is dropped |
 
 ## Charging
 
@@ -19,8 +20,15 @@ fixed amount for allocations that are not charged one by one, so `max_alloc` bel
 once. Allocation uses `try_reserve_exact`; a refusal inside the limit is `Error::OutOfMemory`.
 
 Charged: the unescaped RBSP of each NAL unit, the sample planes and metadata grids of a picture,
-the output pictures, and the buffer of `intra_prefix`. Parameter set NAL units over 1 MiB are
+the output pictures (planes and their SEI messages), and the buffer of `intra_prefix`. Parameter set NAL units over 1 MiB are
 `Error::InvalidData`.
+
+## Metadata
+
+`max_metadata` caps the SEI bytes kept per picture: each kept message counts its payload plus
+`size_of::<SeiMessage>()`. A message that would pass the cap is dropped, with no error (later,
+smaller messages may still fit). The kept bytes are charged to `max_alloc` when the message is
+collected and stay booked with the output picture. `Options::metadata = false` keeps nothing.
 
 ## Size checks
 

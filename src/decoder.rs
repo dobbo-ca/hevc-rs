@@ -10,7 +10,7 @@ use crate::nal::{self, Nal};
 use crate::ps::{self, Active, Pps, Sps, SubLayerOrdering};
 use crate::sei::{self, PictureHash};
 use crate::slice::{self, SliceHeader};
-use crate::{ChromaFormat, Info, Options, Picture, Plane, Samples, deblock, sao};
+use crate::{ChromaFormat, Info, Options, Picture, Plane, Samples, SeiMessage, deblock, sao};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -64,7 +64,68 @@ fn info_of(sps: &Sps) -> Result<Info> {
         bit_depth_chroma: sps.bit_depth_chroma as u8,
         profile_idc: sps.profile_idc,
         level_idc: sps.level_idc,
+        vui: sps.vui,
     })
+}
+
+/// The SEI messages collected for one access unit, with the bytes booked for them in the ledger
+/// (`charged`; handed on with the pictures, so only released when the set is dropped unused).
+#[derive(Default)]
+struct SeiSet {
+    msgs: Vec<SeiMessage>,
+    /// Bytes counted against `Limits::max_metadata`; equals `charged`.
+    charged: usize,
+}
+
+impl SeiSet {
+    /// Keeps one message. A message that would take the set past `max` bytes (payload plus
+    /// `size_of::<SeiMessage>()`) is dropped without error.
+    fn add(
+        &mut self,
+        suffix: bool,
+        payload_type: u32,
+        payload: &[u8],
+        max: usize,
+        ledger: &Ledger,
+    ) -> Result<()> {
+        let cost = payload.len().saturating_add(size_of::<SeiMessage>());
+        if self.charged.saturating_add(cost) > max {
+            return Ok(());
+        }
+        ledger.reserve(cost)?;
+        let mut v = Vec::new();
+        let r = v
+            .try_reserve_exact(payload.len())
+            .and_then(|()| self.msgs.try_reserve_exact(1));
+        if r.is_err() {
+            ledger.release(cost);
+            return Err(Error::OutOfMemory);
+        }
+        v.extend_from_slice(payload);
+        self.msgs.push(SeiMessage {
+            suffix,
+            payload_type,
+            payload: v,
+        });
+        self.charged += cost;
+        Ok(())
+    }
+
+    /// Moves the messages of `other` to the end of this set, in order. A message that would pass
+    /// `max` (or cannot get memory) is dropped and its charge released.
+    fn append(&mut self, other: &mut SeiSet, max: usize, ledger: &Ledger) {
+        for m in std::mem::take(&mut other.msgs) {
+            let cost = m.payload.len().saturating_add(size_of::<SeiMessage>());
+            // `other` already holds the charge for `m`: it moves with the message or is released.
+            if self.charged.saturating_add(cost) > max || self.msgs.try_reserve_exact(1).is_err() {
+                ledger.release(cost);
+                continue;
+            }
+            self.msgs.push(m);
+            self.charged += cost;
+        }
+        other.charged = 0;
+    }
 }
 
 /// Parameter sets seen so far, and the last independent slice segment header of the picture.
@@ -158,10 +219,13 @@ struct Cur<'a> {
     slice_addr_rs: u32,
     /// The decoded picture hash of the suffix SEI that followed the VCL NAL units.
     hash: Option<PictureHash>,
+    /// The SEI messages of the access unit so far (moved to the output picture).
+    sei: SeiSet,
 }
 
 impl Drop for Cur<'_> {
     fn drop(&mut self) {
+        self.ledger.release(self.sei.charged);
         self.ledger.release(self.frame.charged);
         self.ledger.release(self.act.charged);
     }
@@ -233,6 +297,7 @@ fn to_picture(
     sps: &Sps,
     poc: i32,
     hash_ok: Option<bool>,
+    sei: Vec<SeiMessage>,
     ledger: &Ledger,
 ) -> Result<(Picture, usize)> {
     let info = info_of(sps)?;
@@ -294,6 +359,7 @@ fn to_picture(
         planes,
         poc,
         hash_ok,
+        sei,
     };
     Ok((pic, total))
 }
@@ -340,6 +406,8 @@ struct Decoder<'a> {
     skip_rasl: bool,
     /// (slice_pic_order_cnt_lsb, PicOrderCntMsb) of prevTid0Pic.
     prev_tid0: (i64, i64),
+    /// Prefix SEI messages seen since the last picture started: they belong to the next one.
+    pending: SeiSet,
 }
 
 impl<'a> Decoder<'a> {
@@ -364,6 +432,7 @@ impl<'a> Decoder<'a> {
             after_eos: false,
             skip_rasl: false,
             prev_tid0: (0, 0),
+            pending: SeiSet::default(),
         }
     }
 
@@ -390,7 +459,8 @@ impl<'a> Decoder<'a> {
                     self.flush()?;
                     self.after_eos = true;
                 }
-                40 => self.suffix_sei(&nal)?,
+                39 => self.sei_nal(&nal, false)?,
+                40 => self.sei_nal(&nal, true)?,
                 k if is_vcl(k) => self.vcl(&nal)?,
                 _ => {}
             }
@@ -403,17 +473,36 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
-    /// Suffix SEI (7.3.2.4): the decoded picture hash belongs to the current picture. A malformed
-    /// SEI is ignored.
-    fn suffix_sei(&mut self, nal: &Nal<'_>) -> Result<()> {
-        if self.cur.is_none() {
+    /// Prefix (type 39) or suffix (type 40) SEI (7.3.2.4). A suffix SEI belongs to the current
+    /// picture (its decoded picture hash is checked); a prefix SEI waits for the next picture.
+    /// With `Options::metadata`, every message is kept raw. A malformed SEI is ignored (the
+    /// messages before the error are kept).
+    fn sei_nal(&mut self, nal: &Nal<'_>, suffix: bool) -> Result<()> {
+        if suffix && self.cur.is_none() || !suffix && !self.opts.metadata {
             return Ok(());
         }
         let (r, _held) = rbsp(nal.payload, self.ledger)?;
-        if let (Some(h), Some(cur)) = (sei::parse(&r), self.cur.as_mut()) {
-            cur.hash = Some(h);
+        let set = match self.cur.as_mut() {
+            Some(cur) if suffix => {
+                if let Some(h) = sei::parse(&r) {
+                    cur.hash = Some(h);
+                }
+                &mut cur.sei
+            }
+            _ => &mut self.pending,
+        };
+        if self.opts.metadata {
+            for (ty, payload) in sei::walk(&r) {
+                set.add(suffix, ty, payload, self.limits.max_metadata, self.ledger)?;
+            }
         }
         Ok(())
+    }
+
+    /// Drops the pending prefix SEI messages (their picture is not decoded).
+    fn clear_pending(&mut self) {
+        self.ledger.release(self.pending.charged);
+        self.pending = SeiSet::default();
     }
 
     /// One slice segment NAL unit.
@@ -421,6 +510,7 @@ impl<'a> Decoder<'a> {
         // 8.1: RASL pictures of an IRAP with NoRaslOutputFlag = 1 are not decoded (the previous
         // picture is complete, so a suffix SEI of the skipped picture cannot reach it).
         if matches!(nal.kind, 8 | 9) && self.skip_rasl {
+            self.clear_pending();
             return self.finish_picture();
         }
         let (r, _held) = rbsp(nal.payload, self.ledger)?;
@@ -432,6 +522,10 @@ impl<'a> Decoder<'a> {
         let sh = self.store.slice_header(&r, nal.kind)?;
         if sh.first_slice_segment_in_pic {
             self.start_picture(nal, &sh)?;
+        } else if let Some(cur) = self.cur.as_mut() {
+            // A prefix SEI between two slice segments belongs to this picture (7.4.2.4.4).
+            cur.sei
+                .append(&mut self.pending, self.limits.max_metadata, self.ledger);
         }
         self.slice(&sh, &r)
     }
@@ -521,6 +615,7 @@ impl<'a> Decoder<'a> {
             pps_id: sh.pps_id,
             slice_addr_rs: sh.segment_address,
             hash: None,
+            sei: std::mem::take(&mut self.pending),
         });
         Ok(())
     }
@@ -589,7 +684,15 @@ impl<'a> Decoder<'a> {
         if cur.output {
             let hash_ok = cur.hash.as_ref().map(|h| hash_matches(&cur.frame, &sps, h));
             self.dpb.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
-            let (pic, charged) = to_picture(&cur.frame, &sps, cur.poc, hash_ok, self.ledger)?;
+            let sei = std::mem::take(&mut cur.sei);
+            let sei_charged = sei.charged;
+            let (mut pic, charged) =
+                to_picture(&cur.frame, &sps, cur.poc, hash_ok, sei.msgs, self.ledger)
+                    .inspect_err(|_| self.ledger.release(sei_charged))?;
+            let charged = charged + sei.charged;
+            if !self.opts.metadata {
+                pic.info.vui = None;
+            }
             // C.5.2.3: latency counts of the pictures that follow the current one in output order.
             for w in &mut self.dpb {
                 if w.pic.poc > cur.poc {
@@ -872,6 +975,55 @@ mod tests {
             decode(&s, &opts, &limits, &cancel).unwrap_err(),
             Error::Cancelled
         );
+    }
+
+    #[test]
+    fn sei_set_drops_past_max_metadata_and_charges() {
+        let ledger = Ledger::default();
+        ledger.reset(1 << 20, 0).unwrap();
+        let before = ledger.left();
+        let cost = |n: usize| n + size_of::<SeiMessage>();
+        let max = cost(10) + cost(4);
+        let mut s = SeiSet::default();
+        s.add(false, 137, &[1; 10], max, &ledger).unwrap();
+        // Would pass the cap: dropped, no error, nothing charged.
+        s.add(true, 132, &[2; 5], max, &ledger).unwrap();
+        s.add(true, 144, &[3; 4], max, &ledger).unwrap();
+        let kept: Vec<_> = s.msgs.iter().map(|m| (m.suffix, m.payload_type)).collect();
+        assert_eq!(kept, [(false, 137), (true, 144)]);
+        assert_eq!(s.charged, max);
+        assert_eq!(before - ledger.left(), max);
+        // Over the ledger: AllocLimit, and nothing is kept.
+        let small = Ledger::default();
+        small.reset(crate::ledger::SMALL + 10, 0).unwrap();
+        let mut t = SeiSet::default();
+        assert_eq!(
+            t.add(false, 137, &[0; 10], usize::MAX, &small).unwrap_err(),
+            Error::AllocLimit
+        );
+        assert!(t.msgs.is_empty());
+    }
+
+    #[test]
+    fn sei_set_append_keeps_order_and_charges() {
+        let ledger = Ledger::default();
+        ledger.reset(1 << 20, 0).unwrap();
+        let before = ledger.left();
+        let cost = |n: usize| n + size_of::<SeiMessage>();
+        let max = cost(3) + cost(2);
+        let mut cur = SeiSet::default();
+        cur.add(false, 137, &[1; 3], max, &ledger).unwrap();
+        let mut pending = SeiSet::default();
+        pending.add(false, 130, &[2; 2], max, &ledger).unwrap();
+        pending.add(false, 144, &[3; 4], max, &ledger).unwrap();
+        cur.append(&mut pending, max, &ledger);
+        let kept: Vec<_> = cur.msgs.iter().map(|m| m.payload_type).collect();
+        assert_eq!(kept, [137, 130]);
+        assert_eq!(cur.charged, max);
+        assert!(pending.msgs.is_empty());
+        assert_eq!(pending.charged, 0);
+        // The dropped message's charge is released.
+        assert_eq!(before - ledger.left(), max);
     }
 
     #[test]

@@ -542,8 +542,26 @@ loop_filter_across_tiles_enabled_flag). bitDepth-based band shift = bitDepth - 5
 ## Metadata (owner rule, 2026-11-19)
 
 Keep metadata by default and expose it raw: SEI messages (for example mastering display colour
-volume, content light level) and the colour information of the VUI (colour_primaries,
-transfer_characteristics, matrix_coeffs, video_full_range_flag, chroma sample location). An
-option may drop them. To do: a raw `Metadata` on `Info` / `Picture` (payload type + bytes for
-each SEI message, the parsed VUI colour fields), an `Options` switch to drop it, and the bytes
-charged to the ledger with a cap.
+volume, content light level) and the colour information of the VUI. An option may drop them.
+Implemented:
+
+- `Options::metadata` (default true). false: `Picture::sei` is empty and `Info::vui` is `None`
+  in the pictures. `probe` takes no options and always returns the VUI.
+- `Info::vui: Option<Vui>`: `None` when `vui_parameters_present_flag` is 0. `Vui` holds
+  aspect_ratio_idc (and `(sar_width, sar_height)` when it is 255), video_format,
+  video_full_range, colour_primaries, transfer_characteristics, matrix_coeffs, the two chroma
+  sample location types and the default display window offsets as coded; an absent flag gives
+  the E.2.1 default (video_format 5, colour description 2, the rest 0 / false / `None`). The
+  timing, HRD and restriction parts are parsed and dropped.
+- `Picture::sei: Vec<SeiMessage>`: every sei_message() of the access unit in bitstream order,
+  all payload types: prefix SEI NAL units (type 39) seen since the previous picture's last VCL
+  NAL unit (those before the first VCL NAL unit of the picture, and those between its slice
+  segments), and suffix SEI NAL units (type 40) up to the next picture. `SeiMessage { suffix, payload_type, payload }`, payload without emulation
+  prevention bytes. Prefix SEI before a skipped RASL picture is dropped. The decoded picture
+  hash (132) is also kept in the list; it is checked as before.
+- A malformed SEI keeps the messages parsed before the error and never fails the decode
+  (`sei::walk`).
+- `Limits::max_metadata` (default 1 MiB): payload bytes plus `size_of::<SeiMessage>()` per
+  message kept per picture; a message that would pass it is dropped, no error. The bytes are
+  charged to the ledger when collected and stay booked with the output picture, like its planes
+  (the ledger refusing is `Error::AllocLimit`).

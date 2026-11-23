@@ -1,9 +1,11 @@
 //! Parameter sets: VPS (id only), SPS (7.3.2.2), PPS (7.3.2.3), `profile_tier_level` (7.3.3),
-//! `st_ref_pic_set` (7.3.7), VUI and HRD (E.2.1 to E.2.3, parsed and dropped), and activation
+//! `st_ref_pic_set` (7.3.7), VUI and HRD (E.2.1 to E.2.3; the VUI colour and display fields are
+//! kept, the rest is parsed and dropped), and activation
 //! (6.5.1 and 6.5.2 scan tables).
 
 use std::sync::Arc;
 
+use crate::Vui;
 use crate::bits::BitReader;
 use crate::error::{Error, Result};
 use crate::ledger::Ledger;
@@ -263,29 +265,46 @@ fn hrd_parameters(r: &mut BitReader, max_sub_layers_minus1: u32) -> Result<()> {
     Ok(())
 }
 
-/// E.2.1 vui_parameters, read completely and dropped (the extension flags follow it).
-fn vui_parameters(r: &mut BitReader, max_sub_layers_minus1: u32) -> Result<()> {
-    if r.flag()? && r.u(8)? == 255 {
-        r.skip(32)?; // sar_width, sar_height
+/// E.2.1 vui_parameters, read completely (the extension flags follow it). Returns the colour and
+/// display fields; the timing, HRD and bitstream restriction parts are parsed and dropped.
+fn vui_parameters(r: &mut BitReader, max_sub_layers_minus1: u32) -> Result<Vui> {
+    let mut vui = Vui {
+        aspect_ratio_idc: 0,
+        aspect_ratio: None,
+        video_format: 5,
+        video_full_range: false,
+        colour_primaries: 2,
+        transfer_characteristics: 2,
+        matrix_coeffs: 2,
+        chroma_sample_loc_type_top: 0,
+        chroma_sample_loc_type_bottom: 0,
+        default_display_window: None,
+    };
+    if r.flag()? {
+        vui.aspect_ratio_idc = r.u(8)? as u8;
+        if vui.aspect_ratio_idc == 255 {
+            vui.aspect_ratio = Some((r.u(16)? as u16, r.u(16)? as u16));
+        }
     }
     if r.flag()? {
         r.skip(1)?; // overscan_appropriate_flag
     }
     if r.flag()? {
-        r.skip(4)?; // video_format, video_full_range_flag
+        vui.video_format = r.u(3)? as u8;
+        vui.video_full_range = r.flag()?;
         if r.flag()? {
-            r.skip(24)?; // colour primaries, transfer, matrix
+            vui.colour_primaries = r.u(8)? as u8;
+            vui.transfer_characteristics = r.u(8)? as u8;
+            vui.matrix_coeffs = r.u(8)? as u8;
         }
     }
     if r.flag()? {
-        r.ue()?;
-        r.ue()?;
+        vui.chroma_sample_loc_type_top = u8::try_from(r.ue()?).unwrap_or(u8::MAX);
+        vui.chroma_sample_loc_type_bottom = u8::try_from(r.ue()?).unwrap_or(u8::MAX);
     }
     r.skip(3)?; // neutral_chroma_indication, field_seq, frame_field_info_present
     if r.flag()? {
-        for _ in 0..4 {
-            r.ue()?;
-        }
+        vui.default_display_window = Some([r.ue()?, r.ue()?, r.ue()?, r.ue()?]);
     }
     if r.flag()? {
         r.skip(64)?; // num_units_in_tick, time_scale
@@ -302,7 +321,7 @@ fn vui_parameters(r: &mut BitReader, max_sub_layers_minus1: u32) -> Result<()> {
             r.ue()?;
         }
     }
-    Ok(())
+    Ok(vui)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -368,6 +387,7 @@ pub(crate) struct Sps {
     pub temporal_mvp_enabled: bool,
     pub strong_intra_smoothing_enabled: bool,
     pub high_precision_offsets_enabled: bool,
+    pub vui: Option<Vui>,
     // Derived values (7.4.3.2).
     pub min_cb_log2_size_y: u32,
     pub ctb_log2_size_y: u32,
@@ -546,9 +566,11 @@ pub(crate) fn parse_sps(rbsp: &[u8]) -> Result<Sps> {
     }
     let temporal_mvp_enabled = r.flag()?;
     let strong_intra_smoothing_enabled = r.flag()?;
-    if r.flag()? {
-        vui_parameters(&mut r, max_sub_layers_minus1)?;
-    }
+    let vui = if r.flag()? {
+        Some(vui_parameters(&mut r, max_sub_layers_minus1)?)
+    } else {
+        None
+    };
     let mut high_precision_offsets_enabled = false;
     // 7.4.3.2.1: in Main, Main 10 and Main Still Picture bitstreams the extension flags are 0,
     // and a decoder for those profiles ignores whatever follows sps_extension_present_flag
@@ -605,6 +627,7 @@ pub(crate) fn parse_sps(rbsp: &[u8]) -> Result<Sps> {
         temporal_mvp_enabled,
         strong_intra_smoothing_enabled,
         high_precision_offsets_enabled,
+        vui,
         min_cb_log2_size_y,
         ctb_log2_size_y,
         ctb_size_y: 1 << ctb_log2_size_y,
@@ -1103,6 +1126,11 @@ pub(crate) mod tests {
 
     /// A Main profile SPS: CTB 32, min CB 8, TB 4..32, 4:2:0 8 bit, crop of 2 columns and rows.
     pub(crate) fn sps_bits(w: u32, h: u32) -> Vec<u8> {
+        sps_bits_with(w, h, |b| b.flag(false)) // no vui
+    }
+
+    /// `sps_bits` with the vui_parameters_present_flag and the VUI written by `vui`.
+    fn sps_bits_with(w: u32, h: u32, vui: impl FnOnce(&mut W)) -> Vec<u8> {
         let mut b = W::default();
         b.u(4, 0); // vps id
         b.u(3, 0); // max_sub_layers_minus1
@@ -1143,7 +1171,7 @@ pub(crate) mod tests {
         b.flag(false); // long term
         b.flag(false);
         b.flag(true); // strong intra smoothing
-        b.flag(false); // vui
+        vui(&mut b);
         b.flag(false); // extension
         b.bytes()
     }
@@ -1222,6 +1250,77 @@ pub(crate) mod tests {
         assert!(pps.sign_data_hiding_enabled && !pps.tiles_enabled);
         assert_eq!((pps.num_tile_columns, pps.num_tile_rows), (1, 1));
         assert_eq!(pps.log2_parallel_merge_level, 2);
+    }
+
+    #[test]
+    fn vui_colour_description() {
+        let bits = sps_bits_with(64, 48, |b| {
+            b.flag(true); // vui_parameters_present_flag
+            b.flag(true); // aspect_ratio_info_present_flag
+            b.u(8, 255);
+            b.u(16, 4);
+            b.u(16, 3);
+            b.flag(false); // overscan_info_present_flag
+            b.flag(true); // video_signal_type_present_flag
+            b.u(3, 1);
+            b.flag(true); // full range
+            b.flag(true); // colour_description_present_flag
+            b.u(8, 9);
+            b.u(8, 16);
+            b.u(8, 10);
+            b.flag(true); // chroma_loc_info_present_flag
+            b.ue(1);
+            b.ue(2);
+            b.u(3, 0);
+            b.flag(true); // default_display_window_flag
+            for v in [1, 2, 3, 4] {
+                b.ue(v);
+            }
+            b.flag(false); // timing
+            b.flag(false); // bitstream restriction
+        });
+        let vui = parse_sps(&bits).unwrap().vui.unwrap();
+        assert_eq!(
+            vui,
+            Vui {
+                aspect_ratio_idc: 255,
+                aspect_ratio: Some((4, 3)),
+                video_format: 1,
+                video_full_range: true,
+                colour_primaries: 9,
+                transfer_characteristics: 16,
+                matrix_coeffs: 10,
+                chroma_sample_loc_type_top: 1,
+                chroma_sample_loc_type_bottom: 2,
+                default_display_window: Some([1, 2, 3, 4]),
+            }
+        );
+        // Only the flags: the spec defaults.
+        let bits = sps_bits_with(64, 48, |b| {
+            b.flag(true);
+            for _ in 0..4 {
+                b.flag(false); // aspect, overscan, video signal, chroma loc
+            }
+            b.u(3, 0);
+            for _ in 0..3 {
+                b.flag(false); // display window, timing, restriction
+            }
+        });
+        let vui = parse_sps(&bits).unwrap().vui.unwrap();
+        assert_eq!(
+            (vui.aspect_ratio_idc, vui.aspect_ratio, vui.video_format),
+            (0, None, 5)
+        );
+        assert_eq!(
+            (
+                vui.colour_primaries,
+                vui.transfer_characteristics,
+                vui.matrix_coeffs
+            ),
+            (2, 2, 2)
+        );
+        assert_eq!(vui.default_display_window, None);
+        assert!(parse_sps(&sps_bits(64, 48)).unwrap().vui.is_none());
     }
 
     #[test]
