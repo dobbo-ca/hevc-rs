@@ -1,13 +1,16 @@
 //! CABAC arithmetic decoding engine (9.3.4.3) and context variable initialisation (9.3.2.2) for
 //! I slices (initType 0).
 //!
-//! The engine follows the spec model literally: `ivlCurrRange` is 9 bits, `ivlOffset` is read as
-//! 9 bits at initialisation and one bit per renormalisation step, through a [`BitReader`] over
-//! the slice segment RBSP. The bit position is therefore exact at every moment. After a
-//! terminate bin equal to 1 the reader has consumed every bit the encoder flushed (9.3.5.6),
-//! including the final 1 bit (rbsp_stop_one_bit or alignment_bit_equal_to_one). The caller then
-//! reads the pcm_alignment_zero_bits / byte_alignment zero bits through [`Cabac::reader`], reads
-//! raw PCM samples the same way and calls [`Cabac::reinit`] (9.3.2.6) to restart the engine.
+//! The engine is the spec model (`ivlCurrRange` 9 bits, `ivlOffset` 9 bits at initialisation and
+//! one more bit per renormalisation step, over a [`BitReader`] on the slice segment RBSP) with
+//! the offset kept scaled in a 64-bit register that is refilled 32 bits at a time. The spec bit
+//! position stays exact, and so does the point where reading past the end of the data fails.
+//! After a terminate bin equal to 1 the reader has consumed every bit the encoder flushed
+//! (9.3.5.6), including the final 1 bit (rbsp_stop_one_bit or alignment_bit_equal_to_one). The
+//! caller then reads the pcm_alignment_zero_bits / byte_alignment zero bits through
+//! [`Cabac::reader`], reads raw PCM samples the same way and calls [`Cabac::reinit`] (9.3.2.6)
+//! to restart the engine. The straightforward one-bit-at-a-time engine lives on in the tests as
+//! the reference.
 
 use crate::bits::BitReader;
 use crate::error::{Error, Result};
@@ -88,11 +91,36 @@ const TRANS_IDX_LPS: [u8; 64] = [
     33, 33, 34, 34, 35, 35, 35, 36, 36, 36, 37, 37, 37, 38, 38, 63,
 ];
 
-/// One context variable: `pStateIdx` (0..=62 after initialisation) and `valMps` (0 or 1).
+/// State transitions of 9.3.4.3.2.2 for the packed context byte `pStateIdx << 1 | valMps`:
+/// (after an MPS, after an LPS). transIdxMps is pStateIdx + 1 except 62 -> 62 and 63 -> 63;
+/// an LPS in state 0 flips valMps.
+#[allow(clippy::indexing_slicing)] // evaluated at compile time
+const fn build_next() -> ([u8; 128], [u8; 128]) {
+    let mut mps = [0u8; 128];
+    let mut lps = [0u8; 128];
+    let mut s = 0usize;
+    while s < 64 {
+        let mut m = 0usize;
+        while m < 2 {
+            let up = if s < 62 { s + 1 } else { s };
+            mps[(s << 1) | m] = ((up << 1) | m) as u8;
+            let nm = if s == 0 { m ^ 1 } else { m };
+            lps[(s << 1) | m] = (((TRANS_IDX_LPS[s] as usize) << 1) | nm) as u8;
+            m += 1;
+        }
+        s += 1;
+    }
+    (mps, lps)
+}
+
+static NEXT_MPS: [u8; 128] = build_next().0;
+static NEXT_LPS: [u8; 128] = build_next().1;
+
+/// One context variable: `pStateIdx` (0..=62 after initialisation) and `valMps` (0 or 1),
+/// packed as `pStateIdx << 1 | valMps`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Ctx {
-    state: u8,
-    mps: u8,
+    s: u8,
 }
 
 impl Ctx {
@@ -106,45 +134,62 @@ impl Ctx {
         let mps = pre > 63;
         let state = if mps { pre - 64 } else { 63 - pre };
         Self {
-            state: state as u8,
-            mps: u8::from(mps),
+            s: ((state as u8) << 1) | u8::from(mps),
         }
     }
 
-    /// The state transition of 9.3.4.3.2.2 after decoding `bin`.
+    /// valMps.
+    fn mps(self) -> bool {
+        self.s & 1 == 1
+    }
+
+    /// The state transition of 9.3.4.3.2.2 after decoding `bin` (the engine inlines this; the
+    /// tests' encoder and reference decoder use it).
+    #[cfg(test)]
     fn update(&mut self, bin: bool) {
-        if bin == (self.mps == 1) {
-            // transIdxMps: pStateIdx + 1, except 62 -> 62 and 63 -> 63.
-            if self.state < 62 {
-                self.state += 1;
-            }
+        let t = if bin == self.mps() {
+            &NEXT_MPS
         } else {
-            if self.state == 0 {
-                self.mps ^= 1;
-            }
-            self.state = TRANS_IDX_LPS
-                .get(usize::from(self.state))
-                .copied()
-                .unwrap_or(63);
-        }
+            &NEXT_LPS
+        };
+        self.s = t.get(usize::from(self.s & 127)).copied().unwrap_or(self.s);
     }
 
     /// rangeTabLps[pStateIdx][qRangeIdx] (9-65).
-    fn lps_range(&self, q_range_idx: u32) -> u32 {
+    fn lps_range(self, q_range_idx: u32) -> u32 {
         RANGE_TAB_LPS
-            .get(usize::from(self.state))
+            .get(usize::from((self.s >> 1) & 63))
             .and_then(|row| row.get(q_range_idx as usize))
             .map_or(2, |&v| u32::from(v))
     }
 }
 
+const TRUNCATED: Error = Error::InvalidData("truncated");
+
 /// The arithmetic decoding engine over a slice segment's RBSP.
+///
+/// Same arithmetic as the spec model (9.3.4.3), with the 9-bit `ivlOffset` kept scaled inside a
+/// wide register: `value = ivlOffset << k | next k bits of the stream`. Comparing the offset
+/// with a range is then `value >= range << k`, renormalisation is just `k -= shift` and the
+/// bits are fetched 32 at a time. `r` sits at the end of the fetched bits, so the spec's bit
+/// position (what the model would have read) is `r.bit_pos() - k`.
+///
+/// Fetching past the end of the data supplies zero bits; the model would fail at the first
+/// renormalisation bit beyond the end, which is detected exactly: the bits fetched beyond the
+/// end are `floor`, and `k < floor` means the model has consumed one of them.
 pub(crate) struct Cabac<'a> {
     r: BitReader<'a>,
     /// ivlCurrRange, 256..=510 between bins.
     range: u32,
-    /// ivlOffset.
-    offset: u32,
+    /// `ivlOffset << k | look-ahead bits`.
+    value: u64,
+    /// Look-ahead bits in `value`; at least 7 between bins (a renormalisation shifts by at
+    /// most 7).
+    k: u32,
+    /// Bits fetched beyond the end of the data.
+    floor: u32,
+    /// `max(floor, 7)`: below this `k` needs attention ([`Cabac::settle`]).
+    lim: u32,
 }
 
 impl<'a> Cabac<'a> {
@@ -154,7 +199,10 @@ impl<'a> Cabac<'a> {
         let mut c = Self {
             r,
             range: 510,
-            offset: 0,
+            value: 0,
+            k: 0,
+            floor: 0,
+            lim: 7,
         };
         c.reinit()?;
         Ok(c)
@@ -162,53 +210,95 @@ impl<'a> Cabac<'a> {
 
     /// 9.3.2.6 again: ivlCurrRange = 510, ivlOffset = read_bits(9). For a new substream (tile,
     /// WPP row) after the byte_alignment() and for the data after PCM samples; the reader must
-    /// already be at the right bit.
+    /// already be at the right bit (see [`Cabac::reader`]).
     pub(crate) fn reinit(&mut self) -> Result<()> {
         self.range = 510;
-        self.offset = self.r.u(9)?;
+        self.value = u64::from(self.r.u(9)?);
+        self.k = 0;
+        self.refill();
         Ok(())
     }
 
     /// The underlying reader, for pcm_alignment_zero_bit, PCM samples and byte_alignment()
-    /// after a terminate bin equal to 1.
+    /// after a terminate bin equal to 1. It is moved to the spec bit position first and the
+    /// look-ahead is dropped, so the engine must be re-initialised with [`Cabac::reinit`]
+    /// (or abandoned) before the next bin.
     pub(crate) fn reader(&mut self) -> &mut BitReader<'a> {
+        self.r.rewind(self.k as usize);
+        self.value >>= self.k;
+        self.k = 0;
+        self.floor = 0;
         &mut self.r
     }
 
-    /// 9.3.4.3.3 renormalisation.
-    fn renorm(&mut self) -> Result<()> {
-        while self.range < 256 {
-            self.range <<= 1;
-            self.offset = (self.offset << 1) | self.r.u(1)?;
+    /// The spec bit position, for the tests.
+    #[cfg(test)]
+    pub(crate) fn spec_pos(&self) -> usize {
+        self.r.bit_pos() - self.k as usize
+    }
+
+    /// Fetches 32 more look-ahead bits. Called with `k < 16`, so `value` (below
+    /// `range << k`, 9 bits more than `k`) stays below 2^56.
+    fn refill(&mut self) {
+        self.value = (self.value << 32) | u64::from(self.r.load32());
+        self.k += 32;
+        self.floor = u32::try_from(self.r.overrun()).unwrap_or(u32::MAX);
+        self.lim = self.floor.max(7);
+    }
+
+    /// Slow path after a bin left `k < lim`: the model read a bit beyond the end of the data
+    /// (error), or the look-ahead is running low.
+    #[cold]
+    #[inline(never)]
+    fn settle(&mut self) -> Result<()> {
+        if self.k < self.floor {
+            return Err(TRUNCATED);
+        }
+        if self.k < 7 {
+            self.refill();
         }
         Ok(())
     }
 
     /// 9.3.4.3.2 DecodeDecision with the context `ctx`, which is updated.
     pub(crate) fn decode(&mut self, ctx: &mut Ctx) -> Result<bool> {
-        let lps = ctx.lps_range((self.range >> 6) & 3);
-        self.range = self.range.saturating_sub(lps);
-        let bin = if self.offset >= self.range {
-            self.offset -= self.range;
-            self.range = lps;
-            ctx.mps == 0
+        let s = *ctx;
+        let lps = s.lps_range((self.range >> 6) & 3);
+        // range >= 256 > lps.
+        let mps_range = self.range - lps;
+        let scaled = u64::from(mps_range) << self.k;
+        let bin = if self.value < scaled {
+            self.range = mps_range;
+            ctx.s = NEXT_MPS.get(usize::from(s.s & 127)).copied().unwrap_or(s.s);
+            s.mps()
         } else {
-            ctx.mps == 1
+            self.value -= scaled;
+            self.range = lps;
+            ctx.s = NEXT_LPS.get(usize::from(s.s & 127)).copied().unwrap_or(s.s);
+            !s.mps()
         };
-        ctx.update(bin);
-        self.renorm()?;
+        // Renormalisation: shift until the range is >= 256 (at most 7 bits).
+        let sh = self.range.leading_zeros().saturating_sub(23);
+        self.range <<= sh;
+        self.k -= sh;
+        if self.k < self.lim {
+            self.settle()?;
+        }
         Ok(bin)
     }
 
     /// 9.3.4.3.4 DecodeBypass.
     pub(crate) fn bypass(&mut self) -> Result<bool> {
-        self.offset = (self.offset << 1) | self.r.u(1)?;
-        if self.offset >= self.range {
-            self.offset -= self.range;
-            Ok(true)
-        } else {
-            Ok(false)
+        self.k -= 1;
+        let scaled = u64::from(self.range) << self.k;
+        let bin = self.value >= scaled;
+        if bin {
+            self.value -= scaled;
         }
+        if self.k < self.lim {
+            self.settle()?;
+        }
+        Ok(bin)
     }
 
     /// `n` bypass bins (n <= 32), the first one as the most significant bit.
@@ -216,21 +306,94 @@ impl<'a> Cabac<'a> {
         if n > 32 {
             return Err(Error::InvalidData("bypass_bits over 32"));
         }
-        let mut v = 0u64;
-        for _ in 0..n {
-            v = (v << 1) | u64::from(self.bypass()?);
+        Ok(self.bypass_wide(n)? as u32)
+    }
+
+    /// `n` bypass bins (n <= 64), the first one as the most significant bit. Up to 16 bins at
+    /// a time: the bins are the quotient of the scaled value by `range << (k - m)` (long
+    /// division, as the sequential compare-and-subtract of 9.3.4.3.4 does).
+    pub(crate) fn bypass_wide(&mut self, n: u32) -> Result<u64> {
+        let mut out = 0u64;
+        let mut left = n.min(64);
+        while left > 0 {
+            let m = left.min(16);
+            if self.k < m {
+                self.refill();
+            }
+            self.k -= m;
+            let scaled = u64::from(self.range) << self.k;
+            let q = if m <= 3 {
+                let mut q = 0u64;
+                let mut sh = m;
+                while sh > 0 {
+                    sh -= 1;
+                    let s = u64::from(self.range) << (self.k + sh);
+                    let bit = u64::from(self.value >= s);
+                    self.value -= s * bit;
+                    q = (q << 1) | bit;
+                }
+                q
+            } else {
+                let q = self.value / scaled;
+                self.value -= q * scaled;
+                q & ((1u64 << m) - 1)
+            };
+            out = (out << m) | q;
+            left -= m;
+            if self.k < self.lim {
+                self.settle()?;
+            }
         }
-        Ok(v as u32)
+        Ok(out)
+    }
+
+    /// Counts consecutive bypass bins equal to 1 up to the first 0 (consumed). `Some(count)`
+    /// with `count <= max`, or `None` when `max + 1` ones were read (the model reads bins
+    /// one at a time and gives up at the `max + 1`-th one; no 0 is read then).
+    pub(crate) fn bypass_ones(&mut self, max: u32) -> Result<Option<u32>> {
+        let mut count = 0u32;
+        loop {
+            // Bins that may still be read: count <= max here, so at least 1.
+            let m = (max + 1 - count).clamp(1, 16);
+            if self.k < m {
+                self.refill();
+            }
+            let scaled = u64::from(self.range) << (self.k - m);
+            let q = ((self.value / scaled) & ((1u64 << m) - 1)) as u32;
+            // Ones at the top of the m-bit group; the zero-filled low bits end the run.
+            let lead = (q << (32 - m)).leading_ones();
+            let used = if lead < m { lead + 1 } else { m };
+            // Commit `used` bins only: the quotient of their prefix.
+            self.k -= used;
+            let qc = u64::from(q >> (m - used));
+            self.value -= qc * (u64::from(self.range) << self.k);
+            if self.k < self.lim {
+                self.settle()?;
+            }
+            if lead < m {
+                return Ok(Some(count + lead));
+            }
+            count += m;
+            if count > max {
+                return Ok(None);
+            }
+        }
     }
 
     /// 9.3.4.3.5 DecodeTerminate (end_of_slice_segment_flag, end_of_subset_one_bit, pcm_flag).
     /// On true there is no renormalisation: the last bit read was the stop / alignment 1 bit.
     pub(crate) fn terminate(&mut self) -> Result<bool> {
-        self.range = self.range.saturating_sub(2);
-        if self.offset >= self.range {
+        self.range -= 2;
+        if self.value >= u64::from(self.range) << self.k {
             return Ok(true);
         }
-        self.renorm()?;
+        if self.range < 256 {
+            self.range <<= 1;
+            self.k -= 1;
+            if self.k < self.lim {
+                self.settle()?;
+            }
+        }
         Ok(false)
     }
 }
@@ -331,6 +494,199 @@ const GREATER1: [u8; 24] = [
 mod tests {
     use super::*;
 
+    fn ctx_of(state: u8, mps: u8) -> Ctx {
+        Ctx {
+            s: (state << 1) | mps,
+        }
+    }
+
+    /// The one-bit-at-a-time engine of the spec model (9.3.4.3): the reference for [`Cabac`].
+    struct RefCabac<'a> {
+        r: BitReader<'a>,
+        range: u32,
+        offset: u32,
+    }
+
+    impl<'a> RefCabac<'a> {
+        fn new(r: BitReader<'a>) -> Result<Self> {
+            let mut c = Self {
+                r,
+                range: 510,
+                offset: 0,
+            };
+            c.reinit()?;
+            Ok(c)
+        }
+
+        fn reinit(&mut self) -> Result<()> {
+            self.range = 510;
+            self.offset = self.r.u(9)?;
+            Ok(())
+        }
+
+        fn renorm(&mut self) -> Result<()> {
+            while self.range < 256 {
+                self.range <<= 1;
+                self.offset = (self.offset << 1) | self.r.u(1)?;
+            }
+            Ok(())
+        }
+
+        fn decode(&mut self, ctx: &mut Ctx) -> Result<bool> {
+            let lps = ctx.lps_range((self.range >> 6) & 3);
+            self.range = self.range.saturating_sub(lps);
+            let bin = if self.offset >= self.range {
+                self.offset -= self.range;
+                self.range = lps;
+                !ctx.mps()
+            } else {
+                ctx.mps()
+            };
+            ctx.update(bin);
+            self.renorm()?;
+            Ok(bin)
+        }
+
+        fn bypass(&mut self) -> Result<bool> {
+            self.offset = (self.offset << 1) | self.r.u(1)?;
+            if self.offset >= self.range {
+                self.offset -= self.range;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
+
+        fn wide(&mut self, n: u32) -> Result<u64> {
+            let mut v = 0u64;
+            for _ in 0..n {
+                v = (v << 1) | u64::from(self.bypass()?);
+            }
+            Ok(v)
+        }
+
+        /// The unary prefix loop of coeff_abs_level_remaining as it was written with `bypass`.
+        fn ones(&mut self, max: u32) -> Result<Option<u32>> {
+            let mut count = 0u32;
+            while self.bypass()? {
+                count += 1;
+                if count > max {
+                    return Ok(None);
+                }
+            }
+            Ok(Some(count))
+        }
+
+        fn terminate(&mut self) -> Result<bool> {
+            self.range = self.range.saturating_sub(2);
+            if self.offset >= self.range {
+                return Ok(true);
+            }
+            self.renorm()?;
+            Ok(false)
+        }
+    }
+
+    /// One random operation on both engines (and their contexts); the two results.
+    fn step(
+        r: u32,
+        rf: &mut RefCabac,
+        nw: &mut Cabac,
+        a: &mut [Ctx],
+        b: &mut [Ctx],
+    ) -> (Result<u64>, Result<u64>) {
+        let i = (r >> 8) as usize % a.len();
+        let n = (r >> 12) % 41;
+        match r % 8 {
+            0..=2 => (
+                rf.decode(&mut a[i]).map(u64::from),
+                nw.decode(&mut b[i]).map(u64::from),
+            ),
+            3 => (rf.bypass().map(u64::from), nw.bypass().map(u64::from)),
+            4 => (rf.wide(n.min(32)), nw.bypass_bits(n.min(32)).map(u64::from)),
+            5 => (rf.wide(n), nw.bypass_wide(n)),
+            6 => (
+                rf.ones(n.min(33)).map(|o| o.map_or(u64::MAX, u64::from)),
+                nw.bypass_ones(n.min(33))
+                    .map(|o| o.map_or(u64::MAX, u64::from)),
+            ),
+            _ => (rf.terminate().map(u64::from), nw.terminate().map(u64::from)),
+        }
+    }
+
+    #[test]
+    fn matches_reference_engine_on_random_streams() {
+        for seed in 1..400u64 {
+            let mut s = seed;
+            let len = (lcg(&mut s) % 48) as usize + if seed % 5 == 0 { 600 } else { 0 };
+            let mut data: Vec<u8> = (0..len).map(|_| (lcg(&mut s) >> 5) as u8).collect();
+            // 9.3.2.5: ivlOffset must start below 510; keep the top bit of the stream clear.
+            if let Some(b) = data.first_mut() {
+                *b &= 0x7F;
+            }
+            let a0 = RefCabac::new(BitReader::new(&data));
+            let b0 = Cabac::new(BitReader::new(&data));
+            assert_eq!(a0.is_err(), b0.is_err(), "seed {seed}");
+            let (Ok(mut rf), Ok(mut nw)) = (a0, b0) else {
+                continue;
+            };
+            let qp = (lcg(&mut s) % 52) as i32;
+            let mut a: Vec<Ctx> = [153u8, 200, 139, 63, 79, 227, 91, 154]
+                .iter()
+                .map(|&v| Ctx::init(v, qp))
+                .collect();
+            let mut b = a.clone();
+            for st in 0..800 {
+                let r = lcg(&mut s);
+                if r % 61 == 0 {
+                    // PCM style: reader at the spec position, then re-initialisation.
+                    assert_eq!(
+                        rf.r.bit_pos(),
+                        nw.reader().bit_pos(),
+                        "seed {seed} step {st}"
+                    );
+                    let (x, y) = (rf.reinit(), nw.reinit());
+                    assert_eq!(x, y, "seed {seed} step {st}");
+                    if x.is_err() || rf.offset >= 510 {
+                        break;
+                    }
+                    continue;
+                }
+                let (x, y) = step(r, &mut rf, &mut nw, &mut a, &mut b);
+                assert_eq!(x, y, "seed {seed} step {st}");
+                if x.is_err() {
+                    break;
+                }
+                assert_eq!(a, b, "seed {seed} step {st}");
+                assert_eq!(rf.r.bit_pos(), nw.spec_pos(), "seed {seed} step {st}");
+                if r % 8 == 7 && x == Ok(1) {
+                    break;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bypass_ones_long_runs() {
+        for run in [0u32, 1, 15, 16, 17, 31, 32, 33, 35] {
+            let mut e = Enc::new();
+            for _ in 0..run {
+                e.bypass(true);
+            }
+            e.bypass(false);
+            e.bypass(true);
+            e.terminate(true);
+            let data = e.bytes();
+            for max in [0u32, 5, 16, 32, 40] {
+                let mut rf = RefCabac::new(BitReader::new(&data)).unwrap();
+                let mut nw = Cabac::new(BitReader::new(&data)).unwrap();
+                assert_eq!(rf.ones(max), nw.bypass_ones(max), "run {run} max {max}");
+                assert_eq!(rf.r.bit_pos(), nw.spec_pos(), "run {run} max {max}");
+                assert_eq!(rf.bypass(), nw.bypass(), "run {run} max {max}");
+            }
+        }
+    }
+
     /// The arithmetic encoder of 9.3.5 (informative), writing bits into a `Vec<bool>`.
     struct Enc {
         bits: Vec<bool>,
@@ -385,7 +741,7 @@ mod tests {
         fn decision(&mut self, ctx: &mut Ctx, bin: bool) {
             let lps = ctx.lps_range((self.range >> 6) & 3);
             self.range -= lps;
-            if bin != (ctx.mps == 1) {
+            if bin != ctx.mps() {
                 self.low += self.range;
                 self.range = lps;
             }
@@ -553,24 +909,24 @@ mod tests {
     fn init_values_by_hand() {
         // sao_type_idx, initValue 200: slopeIdx 12, offsetIdx 8, m = 15, n = 48.
         // QP 26: (15 * 26) >> 4 = 24, + 48 = 72 -> valMps 1, pStateIdx 8.
-        assert_eq!(Ctx::init(200, 26), Ctx { state: 8, mps: 1 });
+        assert_eq!(Ctx::init(200, 26), ctx_of(8, 1));
         // QP 51: (15 * 51) >> 4 = 47, + 48 = 95 -> valMps 1, pStateIdx 31.
-        assert_eq!(Ctx::init(200, 51), Ctx { state: 31, mps: 1 });
+        assert_eq!(Ctx::init(200, 51), ctx_of(31, 1));
         // split_cu_flag ctx 0, initValue 139: slopeIdx 8, offsetIdx 11, m = -5, n = 72.
         // QP 26: (-130) >> 4 = -9, + 72 = 63 -> valMps 0, pStateIdx 0.
-        assert_eq!(Ctx::init(139, 26), Ctx { state: 0, mps: 0 });
+        assert_eq!(Ctx::init(139, 26), ctx_of(0, 0));
         // QP 51: (-255) >> 4 = -16, + 72 = 56 -> valMps 0, pStateIdx 7.
-        assert_eq!(Ctx::init(139, 51), Ctx { state: 7, mps: 0 });
+        assert_eq!(Ctx::init(139, 51), ctx_of(7, 0));
         // SliceQpY is clipped to 0..=51. QP -7 acts as 0: (-5 * 0) >> 4 = 0, + 72 = 72 ->
         // valMps 1, pStateIdx 8. QP 60 acts as 51.
-        assert_eq!(Ctx::init(139, -7), Ctx { state: 8, mps: 1 });
+        assert_eq!(Ctx::init(139, -7), ctx_of(8, 1));
         assert_eq!(Ctx::init(139, 60), Ctx::init(139, 51));
         // initValue 154 (m = 0, n = 64): valMps 1, pStateIdx 0 for every QP.
-        assert_eq!(Ctx::init(154, 33), Ctx { state: 0, mps: 1 });
+        assert_eq!(Ctx::init(154, 33), ctx_of(0, 1));
         // The struct init uses the same tables.
         let c = Contexts::init(26);
         assert_eq!(c.sao_type_idx, Ctx::init(200, 26));
-        assert_eq!(c.split_cu_flag[0], Ctx { state: 0, mps: 0 });
+        assert_eq!(c.split_cu_flag[0], ctx_of(0, 0));
         assert_eq!(c.sig_coeff_flag.len(), 44);
     }
 

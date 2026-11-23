@@ -82,6 +82,32 @@ impl<'a> BitReader<'a> {
         self.pos
     }
 
+    /// The next 32 bits from the current position, zero padded past the end of the data, and
+    /// advances 32 bits (also past the end; see [`BitReader::overrun`]). For the CABAC engine's
+    /// look-ahead.
+    pub fn load32(&mut self) -> u32 {
+        let byte = self.pos >> 3;
+        let w = match self.data.get(byte..).and_then(|s| s.first_chunk::<8>()) {
+            Some(c) => u64::from_be_bytes(*c),
+            None => (0..8).fold(0u64, |a, i| {
+                (a << 8) | u64::from(self.data.get(byte + i).copied().unwrap_or(0))
+            }),
+        };
+        let sh = self.pos & 7;
+        self.pos += 32;
+        ((w << sh) >> 32) as u32
+    }
+
+    /// Bits the position is beyond the end of the data (0 while inside it).
+    pub fn overrun(&self) -> usize {
+        self.pos.saturating_sub(self.data.len().saturating_mul(8))
+    }
+
+    /// Moves the position back by `n` bits (to 0 at most).
+    pub fn rewind(&mut self, n: usize) {
+        self.pos = self.pos.saturating_sub(n);
+    }
+
     pub fn bits_left(&self) -> usize {
         self.data.len().saturating_mul(8).saturating_sub(self.pos)
     }
@@ -160,6 +186,22 @@ mod tests {
         assert_eq!(r.se().unwrap(), -i32::MAX);
         let mut r = BitReader::new(&[0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0xFC]);
         assert_eq!(r.se().unwrap(), i32::MAX);
+    }
+
+    #[test]
+    fn load32_pads_and_tracks_overrun() {
+        let data = [0x12u8, 0x34, 0x56, 0x78, 0x9A, 0xBC];
+        let mut r = BitReader::new(&data);
+        r.skip(4).unwrap();
+        assert_eq!(r.load32(), 0x2345_6789);
+        assert_eq!(r.bit_pos(), 36);
+        assert_eq!(r.overrun(), 0);
+        // 12 bits left (ABC) then zero padding.
+        assert_eq!(r.load32(), 0xABC0_0000);
+        assert_eq!(r.overrun(), 68 - 48);
+        r.rewind(20);
+        assert_eq!(r.overrun(), 0);
+        assert_eq!(r.bit_pos(), 48);
     }
 
     #[test]

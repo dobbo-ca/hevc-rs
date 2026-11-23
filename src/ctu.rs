@@ -872,7 +872,6 @@ impl Dec<'_, '_> {
             .coeffs
             .get_mut(..n * n)
             .ok_or(Error::InvalidData("transform size"))?;
-        coeffs.fill(0);
         let pps = &self.act.pps;
         let bypass = self.cu.bypass;
         let p = ResidualParams {
