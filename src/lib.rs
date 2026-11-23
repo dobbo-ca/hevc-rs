@@ -90,6 +90,7 @@ mod nal;
 mod ps;
 mod residual;
 mod sao;
+mod sao_simd;
 mod scaling;
 mod sei;
 mod simd;
@@ -264,5 +265,15 @@ pub mod __fuzz_deblock {
     /// the scalar one. True when all outputs are equal.
     pub fn tiers(data: &[u8]) -> bool {
         crate::deblock::fuzz_tiers(data)
+    }
+}
+
+/// Cross-tier fuzz entry for the SAO row kernels. Not public API.
+#[doc(hidden)]
+pub mod __fuzz_sao {
+    /// Builds rows from `data`, runs every SIMD tier of this CPU and returns whether all equal
+    /// the scalar tier.
+    pub fn tiers(data: &[u8]) -> bool {
+        crate::sao_simd::fuzz_tiers(data)
     }
 }

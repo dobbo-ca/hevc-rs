@@ -29,7 +29,7 @@ jobs:
         run: |
           case "$MAXT" in *[!0-9]*|'') echo "max_total_time must be a number" >&2; exit 1 ;; esac
           [ "$MAXT" -le 3000 ] || { echo "max_total_time over 3000 s would pass the job timeout" >&2; exit 1; }
-          all="annexb hvcc params probe decode heic transform_tiers deblock_tiers"
+          all="annexb hvcc params probe decode heic transform_tiers deblock_tiers sao_tiers"
           case "$ONLY" in
             '') list=$all ;;
             *) case " $all " in *" $ONLY "*) list=$ONLY ;; *) echo "unknown target $ONLY" >&2; exit 1 ;; esac ;;
