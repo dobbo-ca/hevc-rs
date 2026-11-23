@@ -67,3 +67,37 @@ sum for samples of at most 16 bits.
 Tests: `transform::tests::tiers_match_scalar` (all sizes, depths 8/10/12/16, qP range, DCT, DST,
 skip, bypass, flat and default scaling lists, extreme coefficients) and `fuzz_tiers_random_bytes`.
 Fuzz: `tests/fuzz/fuzz_targets/transform_tiers.rs` calls `hevc::__fuzz_transform::tiers_agree`.
+## SIMD: intra prediction (`src/intra.rs`, `src/intra/{x86,arm}.rs`)
+
+Scalar is the oracle and the `Scalar` tier. The vector kernels work on 8 (AVX2) or 4 (NEON)
+lanes of i32 over the same `[[i32; 32]; 32]` block the scalar code fills, so every tier gives the
+same bits, including for out-of-range reference samples. They are safe `#[target_feature]` fns
+with no `unsafe`; arrays come from slices with `chunks_exact` / `try_from` in safe code, loads
+and stores are the `simd::{x86,arm}` helpers.
+
+| Kernel | Does | Scalar left as is |
+|---|---|---|
+| `smooth` | the [1 2 1] reference filter | strong bilinear filter, gather and substitution, DC and its edge filter, boundary filters of modes 10 and 26 |
+| `planar` | 8.4.4.2.4 | |
+| `angular` | the (32-f)*a + f*b + 16 >> 5 interpolation | building `ref[]` (invAngle), the transpose of horizontal modes |
+| `store` | clamp to the bit depth, narrow to u16 | |
+
+Tiers: Avx2 (x86 AVX2), Avx512 runs the AVX2 kernels (a block is at most 32 wide, 16 i32 lanes
+would not fill), Neon. `run` is the one dispatch.
+
+`unsafe` inventory (besides the helpers of `simd/`): two blocks, both in `intra::run`, the calls of `x86::run` and
+`arm::run`. Invariant: the CPU has AVX2 / NEON; checked by `is_x86_feature_detected!("avx2")` /
+`is_aarch64_feature_detected!("neon")` in the match guard right before the call, so even a tier
+value that was not taken from `simd::available()` falls back to scalar.
+
+Bounds: block size is validated in `predict` (log2 2..=5, block inside the plane); the reference
+line has 7 slots of zero padding after the 129 samples and `ref[]` has room for the 8-lane
+loads, so the loads past the last sample stay inside the arrays. `arr` returns None instead of
+reading out of range. Samples are u16 so the i32 arithmetic cannot overflow (at most 64 * 65535).
+
+The reference gather asks 6.4.1 once per run of samples in the same min-TB cell instead of once
+per sample; `tests::gather_matches_per_sample` checks it against the per-sample version.
+
+Tests: `tiers_match_scalar` (all sizes, modes, bit depths 8/10/12/16, extreme and over-range
+samples), `frames_match_scalar` (whole frames, luma and chroma, every aligned position),
+`fuzz_entry`. Fuzz target `intra_tiers` (`__fuzz_intra::run`).

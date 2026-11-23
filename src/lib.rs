@@ -256,3 +256,13 @@ pub mod __fuzz_transform {
         crate::transform::fuzz_tiers(data)
     }
 }
+
+/// Fuzzing entry points (tests/fuzz); not part of the API.
+#[doc(hidden)]
+pub mod __fuzz_intra {
+    /// Builds one intra prediction block from `data`, runs it on every SIMD tier this CPU has and
+    /// returns true when all of them give the scalar result.
+    pub fn run(data: &[u8]) -> bool {
+        crate::intra::fuzz_tiers(data)
+    }
+}
