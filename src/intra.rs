@@ -23,6 +23,25 @@ type Block = [[i32; 32]; 32];
 /// A predicted block, [y][x]; the columns at and past the block size are scratch.
 type Pred = [[u16; 32]; 32];
 
+/// Block buffers of [`predict`], kept by the caller across calls so that no 4 KiB array is
+/// zeroed per prediction. Every mode writes the whole n x n part of each buffer it reads.
+pub(crate) struct Scratch {
+    pred: Block,
+    /// The transposed result of a horizontal angular mode.
+    t: Block,
+    out: Pred,
+}
+
+impl Default for Scratch {
+    fn default() -> Self {
+        Self {
+            pred: [[0; 32]; 32],
+            t: [[0; 32]; 32],
+            out: [[0; 32]; 32],
+        }
+    }
+}
+
 /// intraPredAngle (Table 8-5) for predModeIntra 2..=34, index = mode - 2.
 const INTRA_PRED_ANGLE: [i32; 33] = [
     32, 26, 21, 17, 13, 9, 5, 2, 0, -2, -5, -9, -13, -17, -21, -26, -32, -26, -21, -17, -13, -9,
@@ -64,7 +83,9 @@ impl Refs {
 
 /// 8.4.4.2: predicts the `1 << log2_size` square block at (x0, y0) of component `c_idx` and
 /// writes it into the frame. `mode` is IntraPredModeY or IntraPredModeC.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn predict(
+    s: &mut Scratch,
     frame: &mut Frame,
     act: &Active,
     c_idx: usize,
@@ -73,13 +94,31 @@ pub(crate) fn predict(
     log2_size: u32,
     mode: u32,
 ) -> Result<()> {
-    predict_with(simd::tier(), frame, act, c_idx, x0, y0, log2_size, mode)
+    predict_in(simd::tier(), s, frame, act, c_idx, x0, y0, log2_size, mode)
 }
 
-/// `predict` on an explicit tier (tests run every available one).
+/// `predict` on an explicit tier with its own scratch (tests run every available tier).
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn predict_with(
     tier: Tier,
+    frame: &mut Frame,
+    act: &Active,
+    c_idx: usize,
+    x0: usize,
+    y0: usize,
+    log2_size: u32,
+    mode: u32,
+) -> Result<()> {
+    let mut s = Scratch::default();
+    predict_in(tier, &mut s, frame, act, c_idx, x0, y0, log2_size, mode)
+}
+
+/// `predict` on an explicit tier.
+#[allow(clippy::too_many_arguments)]
+fn predict_in(
+    tier: Tier,
+    s: &mut Scratch,
     frame: &mut Frame,
     act: &Active,
     c_idx: usize,
@@ -104,8 +143,17 @@ fn predict_with(
     gather(frame, act, c_idx, x0, y0, n, sub, bit_depth, &mut p)?;
 
     let strong = act.sps.strong_intra_smoothing_enabled;
-    let pred = compute(tier, &mut p, mode, log2_size, c_idx == 0, strong, bit_depth)?;
-    for (y, row) in pred.iter().take(n).enumerate() {
+    compute_into(
+        tier,
+        s,
+        &mut p,
+        mode,
+        log2_size,
+        c_idx == 0,
+        strong,
+        bit_depth,
+    )?;
+    for (y, row) in s.out.iter().take(n).enumerate() {
         let dst = frame.row_mut(c_idx, x0, y0 + y, n)?;
         for (d, &v) in dst.iter_mut().zip(row) {
             *d = v;
@@ -126,19 +174,34 @@ fn compute(
     strong: bool,
     bit_depth: u32,
 ) -> Result<Pred> {
+    let mut s = Scratch::default();
+    compute_into(tier, &mut s, p, mode, log2, luma, strong, bit_depth)?;
+    Ok(s.out)
+}
+
+/// [`compute`] into `s.out`, with the block buffers of `s`.
+#[allow(clippy::too_many_arguments)]
+fn compute_into(
+    tier: Tier,
+    s: &mut Scratch,
+    p: &mut Refs,
+    mode: u32,
+    log2: u32,
+    luma: bool,
+    strong: bool,
+    bit_depth: u32,
+) -> Result<()> {
     if luma {
         filter(tier, p, mode, strong, bit_depth);
     }
     let max = (1i32 << bit_depth) - 1;
-    let mut pred: Block = [[0; 32]; 32]; // [y][x]
     match mode {
-        0 => planar_with(tier, p, &mut pred, log2),
-        1 => dc(p, &mut pred, log2, luma),
-        _ => angular(tier, p, &mut pred, mode, luma, max)?,
+        0 => planar_with(tier, p, &mut s.pred, log2),
+        1 => dc(p, &mut s.pred, log2, luma),
+        _ => angular(tier, p, &mut s.pred, &mut s.t, mode, luma, max)?,
     }
-    let mut out: Pred = [[0; 32]; 32];
-    store(tier, &pred, &mut out, p.n, max);
-    Ok(out)
+    store(tier, &s.pred, &mut s.out, p.n, max);
+    Ok(())
 }
 
 /// One vector kernel call, for `run`.
@@ -409,7 +472,16 @@ fn dc(p: &Refs, pred: &mut Block, log2: u32, luma: bool) {
 }
 
 /// 8.4.4.2.6.
-fn angular(tier: Tier, p: &Refs, pred: &mut Block, mode: u32, luma: bool, max: i32) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn angular(
+    tier: Tier,
+    p: &Refs,
+    pred: &mut Block,
+    t: &mut Block,
+    mode: u32,
+    luma: bool,
+    max: i32,
+) -> Result<()> {
     let n = p.n;
     let ni = n as i32;
     let idx = usize::try_from(mode - 2).map_err(|_| bad())?;
@@ -459,14 +531,13 @@ fn angular(tier: Tier, p: &Refs, pred: &mut Block, mode: u32, luma: bool, max: i
             },
         )
     } else {
-        let mut t: Block = [[0; 32]; 32];
         let ok = run(
             tier,
             Op::Angular {
                 rf: &rf,
                 angle,
                 n,
-                out: &mut t,
+                out: &mut *t,
             },
         );
         if ok {
@@ -560,6 +631,19 @@ mod tests {
     use crate::ps::tests::{ledger, pps_bits, sps_bits};
     use crate::ps::{activate, parse_pps, parse_sps};
     use std::sync::Arc;
+
+    /// `super::predict` with a fresh scratch.
+    fn predict(
+        f: &mut Frame,
+        act: &Active,
+        c: usize,
+        x0: usize,
+        y0: usize,
+        log2: u32,
+        mode: u32,
+    ) -> Result<()> {
+        super::predict(&mut Scratch::default(), f, act, c, x0, y0, log2, mode)
+    }
 
     /// 64x64 picture, every CTB started in slice 0.
     fn setup() -> (Active, Frame) {

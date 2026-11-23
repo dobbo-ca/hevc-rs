@@ -12,7 +12,7 @@ use crate::bits::BitReader;
 use crate::cabac::{Cabac, Contexts, Ctx};
 use crate::error::{Error, Result};
 use crate::frame::{Frame, NO_FILTER_BYPASS, NO_FILTER_PCM, SaoParams, SliceParams};
-use crate::intra::predict;
+use crate::intra::{Scratch, predict};
 use crate::ps::Active;
 use crate::residual::{ResidualParams, residual_coding, scan_idx};
 use crate::slice::SliceHeader;
@@ -31,6 +31,8 @@ pub(crate) struct SliceState {
     prev_qp: i32,
     /// Coefficient scratch for one transform block (32x32 at most).
     coeffs: [i32; 1024],
+    /// Block buffers of intra prediction.
+    intra: Scratch,
 }
 
 impl Default for SliceState {
@@ -40,6 +42,7 @@ impl Default for SliceState {
             ctx_wpp: None,
             prev_qp: 0,
             coeffs: [0; 1024],
+            intra: Scratch::default(),
         }
     }
 }
@@ -849,7 +852,16 @@ impl Dec<'_, '_> {
         } else {
             self.cu.chroma_mode
         };
-        predict(self.frame, self.act, c, x, y, log2, mode)?;
+        predict(
+            &mut self.st.intra,
+            self.frame,
+            self.act,
+            c,
+            x,
+            y,
+            log2,
+            mode,
+        )?;
         if !cbf {
             return Ok(());
         }
