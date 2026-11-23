@@ -81,7 +81,7 @@ cmpyuv() {
 
 full() {
   REP=$1 bad=0
-  rm -rf $W; mkdir -p "$REP" $W/prefix $W/de $W/ff $W/ffp
+  rm -rf $W; mkdir -p "$REP" $W/prefix $W/de $W/denf $W/ff $W/ffp
   gather $W/in
   n=$(ls $W/in | wc -l)
   [ "$n" -gt 0 ] || { echo "corpus is empty" >&2; bad=1; }
@@ -90,6 +90,7 @@ full() {
   run hevc-oracle probe $W/in $W/probe
   run hevc-oracle --threads 1 $W/prefix $W/rs1
   run hevc-oracle $W/prefix $W/rsn
+  run hevc-oracle --threads 1 --no-filters $W/prefix $W/rsnf
 
   # libde265 and ffmpeg on every prefix stream. ffmpeg's pix_fmt comes from the hevc-rs probe.
   : > $W/ffnames; : > $W/ffskip
@@ -97,6 +98,7 @@ full() {
     [ -f "$p" ] || continue
     b=${p##*/}; s=${b%.bit}
     dec265 -q -o "$W/de/$s.yuv" "$p" > /dev/null 2>&1 || { rm -f "$W/de/$s.yuv"; echo "dec265 failed" > "$W/de/$s.err"; }
+    dec265 -q --disable-deblocking --disable-sao -o "$W/denf/$s.yuv" "$p" > /dev/null 2>&1 || rm -f "$W/denf/$s.yuv"
     [ -f "$W/probe/$s.probe" ] || continue
     read -r w h c d dc _ < "$W/probe/$s.probe"
     case "$(norm "$c")/$d" in
@@ -150,6 +152,8 @@ EOT
   # G2, G3: pictures.
   cmpyuv $W/de dec265 $W/rs1 hevc-rs $W/d-dec265 $W/s-dec265
   cmpyuv $W/ff ffmpeg $W/rs1 hevc-rs $W/d-ffmpeg $W/s-ffmpeg $W/ffnames
+  # G6 (diagnostic): reconstruction without the in-loop filters.
+  cmpyuv $W/denf dec265-nofilters $W/rsnf hevc-rs-nofilters $W/d-nofilters $W/s-nofilters
   # G4: decoded picture hash SEI.
   find $W/rs1 -type f -name '*.info' -exec grep -lw bad {} + 2> /dev/null | sed 's#.*/##; s#\.info$#: hash bad#' | sort > $W/d-hash
   # G5: threads.
@@ -176,8 +180,9 @@ EOT
   gate "G3 ffmpeg vs hevc-rs" $W/d-ffmpeg soft
   gate "G4 decoded picture hash (no bad)" $W/d-hash soft
   gate "G5 1 thread vs default threads" $W/d-threads
+  gate "G6 dec265 vs hevc-rs, deblocking and SAO off" $W/d-nofilters soft
   [ -s $W/ffprobe-failed ] && { echo; echo "ffprobe failed (G1 skips them), first 50:"; echo; head -n 50 $W/ffprobe-failed | sed 's/^/    /'; } >> "$REP/summary.md"
-  for d in d-probe d-dec265 d-ffmpeg d-hash d-threads; do [ -f $W/$d ] && cp $W/$d "$REP/$d.diff"; done
+  for d in d-probe d-dec265 d-ffmpeg d-hash d-threads d-nofilters; do [ -f $W/$d ] && cp $W/$d "$REP/$d.diff"; done
   rm -rf $W
   return $bad
 }
