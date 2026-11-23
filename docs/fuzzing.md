@@ -9,7 +9,6 @@
 | `params` | `probe` on one SPS and on one PPS NAL unit built from the input (start code and NAL header in front) |
 | `probe` | `probe` on arbitrary bytes; an Ok `Info` must stay inside the limits |
 | `decode` | `decode` with small `Limits`; the planes of every picture must match its `Info`. The low 3 bits of the last byte switch deblocking, SAO and metadata off |
-
 | `crop_tiers` | `crop::fuzz_tiers`: random plane and window, every available tier equals Scalar |
 | `heic` | `decode_heic` with small `Limits`; an Ok image's luma plane must match its `Info` size |
 
