@@ -213,7 +213,11 @@ impl<'a> Cabac<'a> {
     /// already be at the right bit (see [`Cabac::reader`]).
     pub(crate) fn reinit(&mut self) -> Result<()> {
         self.range = 510;
-        self.value = u64::from(self.r.u(9)?);
+        let v = self.r.u(9)?;
+        if v >= 510 {
+            return Err(Error::InvalidData("ivlOffset 510 or 511"));
+        }
+        self.value = u64::from(v);
         self.k = 0;
         self.refill();
         Ok(())
@@ -227,7 +231,8 @@ impl<'a> Cabac<'a> {
         self.r.rewind(self.k as usize);
         self.value >>= self.k;
         self.k = 0;
-        self.floor = 0;
+        self.floor = u32::MAX;
+        self.lim = u32::MAX;
         &mut self.r
     }
 
@@ -280,7 +285,7 @@ impl<'a> Cabac<'a> {
         // Renormalisation: shift until the range is >= 256 (at most 7 bits).
         let sh = self.range.leading_zeros().saturating_sub(23);
         self.range <<= sh;
-        self.k -= sh;
+        self.k = self.k.saturating_sub(sh);
         if self.k < self.lim {
             self.settle()?;
         }
@@ -289,7 +294,7 @@ impl<'a> Cabac<'a> {
 
     /// 9.3.4.3.4 DecodeBypass.
     pub(crate) fn bypass(&mut self) -> Result<bool> {
-        self.k -= 1;
+        self.k = self.k.saturating_sub(1);
         let scaled = u64::from(self.range) << self.k;
         let bin = self.value >= scaled;
         if bin {
@@ -389,7 +394,7 @@ impl<'a> Cabac<'a> {
         }
         if self.range < 256 {
             self.range <<= 1;
-            self.k -= 1;
+            self.k = self.k.saturating_sub(1);
             if self.k < self.lim {
                 self.settle()?;
             }
@@ -521,6 +526,9 @@ mod tests {
         fn reinit(&mut self) -> Result<()> {
             self.range = 510;
             self.offset = self.r.u(9)?;
+            if self.offset >= 510 {
+                return Err(Error::InvalidData("ivlOffset 510 or 511"));
+            }
             Ok(())
         }
 
@@ -618,11 +626,11 @@ mod tests {
     fn matches_reference_engine_on_random_streams() {
         for seed in 1..400u64 {
             let mut s = seed;
-            let len = (lcg(&mut s) % 48) as usize + if seed % 5 == 0 { 600 } else { 0 };
+            let len = (lcg(&mut s) % 48) as usize + if seed.is_multiple_of(5) { 600 } else { 0 };
             let mut data: Vec<u8> = (0..len).map(|_| (lcg(&mut s) >> 5) as u8).collect();
-            // 9.3.2.5: ivlOffset must start below 510; keep the top bit of the stream clear.
-            if let Some(b) = data.first_mut() {
-                *b &= 0x7F;
+            // Some seeds start with 0xFF: ivlOffset 510/511 is rejected (9.3.2.5) by both engines.
+            if let Some(b) = data.first_mut().filter(|_| seed.is_multiple_of(16)) {
+                *b = 0xFF;
             }
             let a0 = RefCabac::new(BitReader::new(&data));
             let b0 = Cabac::new(BitReader::new(&data));
@@ -638,8 +646,14 @@ mod tests {
             let mut b = a.clone();
             for st in 0..800 {
                 let r = lcg(&mut s);
-                if r % 61 == 0 {
+                if r.is_multiple_of(61) {
                     // PCM style: reader at the spec position, then re-initialisation.
+                    let n = (r >> 8) as u32 % 20;
+                    assert_eq!(
+                        rf.r.u(n).ok(),
+                        nw.reader().u(n).ok(),
+                        "seed {seed} step {st}"
+                    );
                     assert_eq!(
                         rf.r.bit_pos(),
                         nw.reader().bit_pos(),
@@ -891,6 +905,27 @@ mod tests {
         let mut c = Ctx::init(154, 30);
         assert!(!d.decode(&mut c).unwrap());
         assert!(d.terminate().unwrap());
+    }
+
+    #[test]
+    fn invalid_initial_offset_is_an_error() {
+        assert!(Cabac::new(BitReader::new(&[0xFF, 0x80, 0, 0])).is_err());
+        assert!(RefCabac::new(BitReader::new(&[0xFF, 0x80, 0, 0])).is_err());
+    }
+
+    #[test]
+    fn bins_after_reader_without_reinit_do_not_panic() {
+        let data = [0u8; 16];
+        let mut d = Cabac::new(BitReader::new(&data)).unwrap();
+        let _ = d.reader().u(3);
+        let mut ctx = Ctx::init(154, 30);
+        assert!(d.decode(&mut ctx).is_err());
+        let mut d = Cabac::new(BitReader::new(&data)).unwrap();
+        d.reader();
+        assert!(d.bypass().is_err());
+        let mut d = Cabac::new(BitReader::new(&data)).unwrap();
+        d.reader();
+        let _ = d.terminate();
     }
 
     #[test]

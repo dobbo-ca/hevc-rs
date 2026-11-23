@@ -747,9 +747,9 @@ mod tests {
                     (seed >> 24) as u8
                 })
                 .collect();
-            // ivlOffset must start below 510 (9.3.2.5).
-            if let Some(b) = data.first_mut() {
-                *b &= 0x7F;
+            // Some rounds start with 0xFF: ivlOffset 510/511 is rejected (9.3.2.5).
+            if let Some(b) = data.first_mut().filter(|_| round.is_multiple_of(16)) {
+                *b = 0xFF;
             }
             for log2 in 2..=5u32 {
                 for scan_idx in 0..3u32 {
@@ -757,12 +757,17 @@ mod tests {
                         log2_size: log2,
                         c_idx: round as usize % 3,
                         scan_idx,
-                        transform_skip_allowed: log2 == 2 && round % 3 != 0,
-                        bypass: round % 7 == 0,
-                        sign_hiding: round % 2 == 0,
+                        transform_skip_allowed: log2 == 2 && !round.is_multiple_of(3),
+                        bypass: round.is_multiple_of(7),
+                        sign_hiding: round.is_multiple_of(2),
                     };
-                    let mut c1 = Cabac::new(BitReader::new(&data)).unwrap();
-                    let mut c2 = Cabac::new(BitReader::new(&data)).unwrap();
+                    let (Ok(mut c1), Ok(mut c2)) = (
+                        Cabac::new(BitReader::new(&data)),
+                        Cabac::new(BitReader::new(&data)),
+                    ) else {
+                        assert_eq!(data.first(), Some(&0xFF));
+                        continue;
+                    };
                     let mut x1 = Contexts::init(20 + (round % 20) as i32);
                     let mut x2 = x1.clone();
                     let mut b1 = vec![0; 1 << (2 * log2)];
@@ -889,7 +894,9 @@ mod tests {
                 .collect();
             for log2 in 2..=5 {
                 for scan_idx in 0..3 {
-                    let mut cabac = Cabac::new(BitReader::new(&data)).unwrap();
+                    let Ok(mut cabac) = Cabac::new(BitReader::new(&data)) else {
+                        continue;
+                    };
                     let mut ctx = Contexts::init(26 + (round % 10));
                     let p = ResidualParams {
                         log2_size: log2,
