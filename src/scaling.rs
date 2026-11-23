@@ -206,6 +206,18 @@ impl ScalingList {
         };
         v.copied().unwrap_or(16)
     }
+
+    /// The factors of one matrix, row-major (`y * size + x`); None when `log2_size` or
+    /// `matrix_id` is out of range (where `factor` gives 16).
+    pub fn matrix(&self, log2_size: u32, matrix_id: usize) -> Option<&[u8]> {
+        match log2_size {
+            2 => self.f4.get(matrix_id).map(|f| f.as_slice()),
+            3 => self.f8.get(matrix_id).map(|f| f.as_slice()),
+            4 => self.f16.get(matrix_id).map(|f| f.as_slice()),
+            5 => self.f32.get(matrix_id).map(|f| f.as_slice()),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

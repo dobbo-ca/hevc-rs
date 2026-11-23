@@ -11,6 +11,7 @@
 | `decode` | `decode` with small `Limits`; the planes of every picture must match its `Info`. The low 3 bits of the last byte switch deblocking, SAO and metadata off |
 
 | `heic` | `decode_heic` with small `Limits`; an Ok image's luma plane must match its `Info` size |
+| `transform_tiers` | `__fuzz_transform::tiers_agree`: every SIMD tier equals scalar on one block of at most 32x32 built from the bytes |
 
 All targets run with `-rss_limit_mb=2048 -malloc_limit_mb=512`, so an allocation outside the
 limits is a crash.
@@ -19,7 +20,7 @@ Seeds are made in the image build (`.github/ci/Dockerfile`, stage `fuzz`), one d
 target, and are not kept in git. `annexb`, `probe` and `decode` get a hand-written VPS, the start
 of an SPS and an AUD, plus the first 64 KiB of the first 20 conformance streams from the data
 cache. `heic` gets the first 20 files under 64 KiB of the HEIC corpus. `hvcc` gets one minimal `hvcC` record with a sample, `params` the SPS bytes alone. The
-workflow adds the files of `tests/data/fuzz-grown` and keeps each target's corpus between runs.
+`transform_tiers` has no seeds: its seed directory starts empty. The workflow adds the files of `tests/data/fuzz-grown` and keeps each target's corpus between runs.
 
 `.github/workflows/fuzz.yml` runs weekly on Tuesday at 12:23 UTC (the slot is not shared with
 another crate) and on `workflow_dispatch`, never on push or pull request. The dispatch input

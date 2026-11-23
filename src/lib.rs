@@ -246,3 +246,13 @@ pub struct Picture {
 pub fn simd_tier() -> &'static str {
     simd::tier().name()
 }
+
+/// Hooks for the cross-tier fuzz targets; not part of the API.
+#[doc(hidden)]
+pub mod __fuzz_transform {
+    /// Builds one transform block from `data` (size at most 32 x 32), runs every SIMD tier of
+    /// this CPU on it and returns whether all of them equal the scalar tier. Never panics.
+    pub fn tiers_agree(data: &[u8]) -> bool {
+        crate::transform::fuzz_tiers(data)
+    }
+}

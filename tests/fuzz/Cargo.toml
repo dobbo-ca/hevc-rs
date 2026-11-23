@@ -55,3 +55,10 @@ path = "fuzz_targets/heic.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "transform_tiers"
+path = "fuzz_targets/transform_tiers.rs"
+test = false
+doc = false
+bench = false
