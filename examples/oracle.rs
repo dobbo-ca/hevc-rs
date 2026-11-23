@@ -1,7 +1,8 @@
 //! Parity oracle (docs/design.md, "Oracles and parity").
 //!
 //! `oracle [--threads N] [--no-filters] <in-dir> <out-dir>` decodes every `.bit`, `.bin`,
-//! `.hevc` and `.265` file (Annex B) under in-dir and writes `<name>.yuv` and `<name>.info`, or
+//! `.hevc` and `.265` file (Annex B) under in-dir and writes `<name>.yuv`, `<name>.info` and
+//! `<name>.sei` (informational: per picture, the SEI message count and `type:len` list), or
 //! `<name>.err`. `oracle probe <in-dir> <out-dir>` writes `<name>.probe`. `oracle prefix
 //! <in-dir> <out-dir>` writes `<name>.bit`, the NAL units before the first P or B picture.
 //! `<name>` is the path relative to in-dir, without the extension, with `/` replaced by `__`.
@@ -83,6 +84,7 @@ fn decode_one(name: &str, data: &[u8], opts: &Options, limits: &Limits, outdir: 
     }
     let mut yuv = Vec::new();
     let mut info = String::new();
+    let mut sei = String::new();
     for p in &pics {
         for plane in &p.planes {
             match &plane.samples {
@@ -95,6 +97,11 @@ fn decode_one(name: &str, data: &[u8], opts: &Options, limits: &Limits, outdir: 
             Some(false) => "bad",
             None => "none",
         };
+        write!(sei, "{}", p.sei.len()).unwrap();
+        for m in &p.sei {
+            write!(sei, " {}:{}", m.payload_type, m.payload.len()).unwrap();
+        }
+        sei.push('\n');
         let i = &p.info;
         writeln!(
             info,
@@ -110,6 +117,7 @@ fn decode_one(name: &str, data: &[u8], opts: &Options, limits: &Limits, outdir: 
     }
     std::fs::write(outdir.join(format!("{name}.yuv")), yuv).unwrap();
     std::fs::write(outdir.join(format!("{name}.info")), info).unwrap();
+    std::fs::write(outdir.join(format!("{name}.sei")), sei).unwrap();
 }
 
 fn main() {

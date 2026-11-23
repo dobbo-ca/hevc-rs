@@ -1,4 +1,5 @@
-//! SEI messages: the decoded picture hash (payloadType 132, D.2.20 / D.3.19) and its computation.
+//! SEI messages: the sei_message() walk, the decoded picture hash (payloadType 132, D.2.20 /
+//! D.3.19) and its computation.
 
 /// Hash algorithm of a decoded picture hash SEI (hash_type 0, 1, 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,38 +19,45 @@ pub(crate) struct PictureHash {
     pub values: [[u8; 16]; 3],
 }
 
-/// Walks the sei_message()s of one SEI RBSP and returns the decoded picture hash, if there is a
-/// well formed one. Never fails: anything malformed gives `None` (or is skipped).
-pub(crate) fn parse(rbsp: &[u8]) -> Option<PictureHash> {
-    let mut pos = 0usize;
-    // Stops at the rbsp trailing bits byte (0x80) or the end.
-    while rbsp.get(pos).is_some_and(|&b| b != 0x80) {
-        let mut ty = 0usize;
-        while let Some(&b) = rbsp.get(pos) {
-            pos += 1;
-            ty = ty.checked_add(usize::from(b))?;
-            if b != 0xFF {
-                break;
-            }
+/// One ff-extended number of sei_message (7.3.5): payloadType or payloadSize. None when the data
+/// ends first.
+fn ext_number(rbsp: &[u8], pos: &mut usize) -> Option<usize> {
+    let mut n = 0usize;
+    loop {
+        let b = *rbsp.get(*pos)?;
+        *pos += 1;
+        n = n.checked_add(usize::from(b))?;
+        if b != 0xFF {
+            return Some(n);
         }
-        let mut size = 0usize;
-        while let Some(&b) = rbsp.get(pos) {
-            pos += 1;
-            size = size.checked_add(usize::from(b))?;
-            if b != 0xFF {
-                break;
-            }
-        }
-        let end = pos.checked_add(size)?;
-        let payload = rbsp.get(pos..end)?;
-        if ty == 132
-            && let Some(h) = parse_hash(payload)
-        {
-            return Some(h);
-        }
-        pos = end;
     }
-    None
+}
+
+/// Walks the sei_message()s of one SEI RBSP: `(payloadType, sei_payload bytes)` in order. Stops
+/// at the byte holding rbsp_stop_one_bit (the last non-zero byte), or a malformed message (the
+/// messages before it are still yielded). Never fails.
+pub(crate) fn walk(rbsp: &[u8]) -> impl Iterator<Item = (u32, &[u8])> {
+    let mut pos = 0usize;
+    let stop = rbsp.iter().rposition(|&b| b != 0).unwrap_or(0);
+    std::iter::from_fn(move || {
+        if pos >= stop {
+            return None;
+        }
+        let ty = u32::try_from(ext_number(rbsp, &mut pos)?).ok()?;
+        let size = ext_number(rbsp, &mut pos)?;
+        let end = pos.checked_add(size).filter(|&e| e <= stop)?;
+        let payload = rbsp.get(pos..end)?;
+        pos = end;
+        Some((ty, payload))
+    })
+    .fuse()
+}
+
+/// The decoded picture hash of the SEI RBSP, if there is a well formed one.
+pub(crate) fn parse(rbsp: &[u8]) -> Option<PictureHash> {
+    walk(rbsp)
+        .filter(|&(ty, _)| ty == 132)
+        .find_map(|(_, payload)| parse_hash(payload))
 }
 
 fn parse_hash(p: &[u8]) -> Option<PictureHash> {
@@ -324,6 +332,29 @@ mod tests {
         assert_eq!(h.kind, HashKind::Crc);
         assert_eq!(h.components, 1);
         assert_eq!(h.values[0][..2], [0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn walk_yields_every_message() {
+        // 137 (3 bytes), 256 (extended type, empty), 132, trailing bits.
+        let v: [u8; 13] = [137, 3, 1, 2, 3, 0xFF, 0x01, 0, 132, 2, 1, 9, 0x80];
+        let all: Vec<(u32, &[u8])> = walk(&v).collect();
+        let want: [(u32, &[u8]); 3] = [(137, &[1, 2, 3][..]), (256, &[][..]), (132, &[1, 9][..])];
+        assert_eq!(all, want);
+        // A truncated message ends the walk; the ones before it are kept.
+        let v: [u8; 6] = [144, 1, 7, 137, 5, 1];
+        let all: Vec<(u32, &[u8])> = walk(&v).collect();
+        let want: [(u32, &[u8]); 1] = [(144, &[7][..])];
+        assert_eq!(all, want);
+        assert_eq!(walk(&[]).count(), 0);
+        assert_eq!(walk(&[0x80]).count(), 0);
+        // A last_payload_type_byte of 0x80 (type 128) is not the trailing bits.
+        let v: [u8; 4] = [128, 1, 5, 0x80];
+        let all: Vec<(u32, &[u8])> = walk(&v).collect();
+        assert_eq!(all, [(128, &[5][..])]);
+        let v: [u8; 6] = [137, 1, 0, 128, 0, 0x80];
+        let all: Vec<(u32, &[u8])> = walk(&v).collect();
+        assert_eq!(all, [(137, &[0][..]), (128, &[][..])]);
     }
 
     #[test]

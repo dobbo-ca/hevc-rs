@@ -15,5 +15,6 @@ pub fn limits() -> Limits {
         max_height: 4096,
         max_pixels: 1 << 22,
         max_pictures: 8,
+        max_metadata: 1 << 16,
     }
 }

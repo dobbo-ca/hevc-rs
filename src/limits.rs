@@ -23,6 +23,10 @@ pub struct Limits {
     /// Most pictures decoded in one call (default 4096). More is
     /// [`Error::PictureLimit`](crate::Error::PictureLimit).
     pub max_pictures: usize,
+    /// Most bytes of SEI messages kept per picture (default 1 MiB): the payload bytes plus
+    /// `size_of::<SeiMessage>()` for each message. A message that would pass it is dropped, with
+    /// no error. The kept bytes are charged to `max_alloc` like the planes.
+    pub max_metadata: usize,
 }
 
 impl Default for Limits {
@@ -34,6 +38,7 @@ impl Default for Limits {
             max_height: 16384,
             max_pixels: 1 << 28,
             max_pictures: 4096,
+            max_metadata: 1 << 20,
         }
     }
 }
