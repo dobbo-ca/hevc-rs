@@ -10,7 +10,7 @@ use crate::nal::{self, Nal};
 use crate::ps::{self, Active, Pps, Sps, SubLayerOrdering};
 use crate::sei::{self, PictureHash};
 use crate::slice::{self, SliceHeader};
-use crate::{ChromaFormat, Info, Options, Picture, Plane, Samples, SeiMessage, deblock, sao};
+use crate::{ChromaFormat, Info, Options, Picture, Plane, SeiMessage, crop, deblock, sao};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -295,7 +295,7 @@ struct Waiting {
 /// the pictures waiting for output).
 fn must_bump(dpb: &[Waiting], o: &SubLayerOrdering, check_full: bool) -> bool {
     if dpb.is_empty() {
-        return false;
+        return Ok(false);
     }
     if dpb.len() > o.max_num_reorder_pics as usize {
         return true;
@@ -349,6 +349,7 @@ fn to_picture(
     hash_ok: Option<bool>,
     sei: Vec<SeiMessage>,
     ledger: &Ledger,
+    cancel: &AtomicBool,
 ) -> Result<(Picture, usize)> {
     let info = info_of(sps)?;
     let depth_of = |c: usize| {
@@ -382,25 +383,7 @@ fn to_picture(
             if stride == 0 {
                 return Err(Error::InvalidData("plane"));
             }
-            let n = w * h;
-            let rows = src.chunks_exact(stride).skip(y0).take(h);
-            let samples = if depth_of(c) == 8 {
-                let mut v: Vec<u8> = Vec::new();
-                v.try_reserve_exact(n).map_err(|_| Error::OutOfMemory)?;
-                for row in rows {
-                    let r = row.get(x0..x0 + w).ok_or(Error::InvalidData("plane"))?;
-                    v.extend(r.iter().map(|&s| s as u8));
-                }
-                Samples::U8(v)
-            } else {
-                let mut v: Vec<u16> = Vec::new();
-                v.try_reserve_exact(n).map_err(|_| Error::OutOfMemory)?;
-                for row in rows {
-                    let r = row.get(x0..x0 + w).ok_or(Error::InvalidData("plane"))?;
-                    v.extend_from_slice(r);
-                }
-                Samples::U16(v)
-            };
+            let samples = crop::crop_plane(src, stride, (x0, y0, w, h), depth_of(c) == 8, cancel)?;
             Ok(Plane {
                 width: w as u32,
                 height: h as u32,
@@ -420,10 +403,11 @@ fn to_picture(
 }
 
 /// Whether the decoded picture matches the hash of the SEI (D.3.19), over the uncropped planes.
-fn hash_matches(frame: &Frame, sps: &Sps, h: &PictureHash) -> bool {
+/// `Error::Cancelled` when `cancel` is set (read once per row).
+fn hash_matches(frame: &Frame, sps: &Sps, h: &PictureHash, cancel: &AtomicBool) -> Result<bool> {
     let n = frame.num_planes();
     if h.components != n {
-        return false;
+        return Ok(false);
     }
     let planes: Vec<&[u16]> = frame.planes.iter().map(Vec::as_slice).collect();
     let depths = [
@@ -437,8 +421,9 @@ fn hash_matches(frame: &Frame, sps: &Sps, h: &PictureHash) -> bool {
         frame.width.as_slice(),
         frame.height.as_slice(),
         &depths,
-    );
-    got.iter().zip(&h.values).take(n).all(|(a, b)| a == b)
+        cancel,
+    )?;
+    Ok(got.iter().zip(&h.values).take(n).all(|(a, b)| a == b))
 }
 
 /// Decoder state of one call.
@@ -737,17 +722,25 @@ impl<'a> Decoder<'a> {
             .copied()
             .ok_or(Error::InvalidData("sub-layer ordering info"))?;
         if cur.output {
-            // The hash and the crop below walk the whole picture without a check of their own.
-            if self.cancel.load(Ordering::Relaxed) {
-                return Err(Error::Cancelled);
-            }
-            let hash_ok = cur.hash.as_ref().map(|h| hash_matches(&cur.frame, &sps, h));
+            // The hash and the crop read the cancel flag once per row.
+            let hash_ok = cur
+                .hash
+                .as_ref()
+                .map(|h| hash_matches(&cur.frame, &sps, h, self.cancel))
+                .transpose()?;
             self.dpb.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
             let sei = std::mem::take(&mut cur.sei);
             let sei_charged = sei.charged;
-            let (mut pic, charged) =
-                to_picture(&cur.frame, &sps, cur.poc, hash_ok, sei.msgs, self.ledger)
-                    .inspect_err(|_| self.ledger.release(sei_charged))?;
+            let (mut pic, charged) = to_picture(
+                &cur.frame,
+                &sps,
+                cur.poc,
+                hash_ok,
+                sei.msgs,
+                self.ledger,
+                self.cancel,
+            )
+            .inspect_err(|_| self.ledger.release(sei_charged))?;
             let charged = charged + sei.charged;
             if !self.opts.metadata {
                 pic.info.vui = None;

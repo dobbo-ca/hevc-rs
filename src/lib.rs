@@ -25,7 +25,7 @@
 //!
 //! `max_alloc` is charged before each allocation and released on drop. `max_threads = 1` spawns
 //! no thread (v1 is serial anyway). The decode entry points read a cancel flag before every NAL
-//! unit and every CTU, and in deblocking and SAO per row; when it is set the call returns
+//! unit and every CTU, and in deblocking, SAO, the picture hash and the output crop per row; when it is set the call returns
 //! [`Error::Cancelled`].
 //!
 //! ```
@@ -76,6 +76,7 @@
 
 mod bits;
 mod cabac;
+mod crop;
 mod ctu;
 mod deblock;
 mod decoder;
@@ -244,4 +245,14 @@ pub struct Picture {
 /// The output is the same for every tier.
 pub fn simd_tier() -> &'static str {
     simd::tier().name()
+}
+
+/// Entry of the cross-tier fuzz target `crop_tiers`. Not part of the API.
+#[doc(hidden)]
+pub mod __fuzz_crop {
+    /// Builds a plane and a window from `data`, crops it on every SIMD tier this CPU has, and
+    /// returns true when each result equals the scalar one.
+    pub fn tiers_match(data: &[u8]) -> bool {
+        crate::crop::fuzz_tiers(data)
+    }
 }
