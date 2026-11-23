@@ -110,7 +110,7 @@ full() {
     [ -z "$pf" ] || [ "${dc:-$d}" = "$d" ] || pf=
     if [ -z "$pf" ]; then echo "$s" >> $W/ffskip; continue; fi
     echo "$s" >> $W/ffnames
-    ffmpeg -nostdin -v error -flags unaligned -i "$p" -f rawvideo -fps_mode passthrough -pix_fmt "$pf" "$W/ff/$s.yuv" > /dev/null 2>&1 \
+    ffmpeg -nostdin -v error -flags unaligned -i "$p" -autoscale 0 -f rawvideo -fps_mode passthrough -pix_fmt "$pf" "$W/ff/$s.yuv" > /dev/null 2>&1 \
       || { rm -f "$W/ff/$s.yuv"; echo "ffmpeg failed" > "$W/ff/$s.err"; }
   done
 
@@ -135,7 +135,7 @@ EOT
   done
 
   # G1: probe vs ffprobe.
-  : > $W/d-probe
+  : > $W/d-probe; : > $W/probe-explained
   for f in $W/ffp/*.ffprobe; do
     [ -f "$f" ] || continue
     b=${f##*/}; s=${b%.ffprobe}
@@ -146,7 +146,16 @@ EOT
     else
       got="err $(cat "$W/probe/$s.err" 2> /dev/null)"
     fi
-    [ "$want" = "$got" ] || echo "$s: ffprobe='$want' hevc-rs='$got'" >> $W/d-probe
+    [ "$want" = "$got" ] && continue
+    # A stream whose pictures change size: ffprobe reports another SPS than the one of the first
+    # picture. Explained when the hevc-rs probe is the size of its first decoded picture.
+    sizes=$(cut -d' ' -f2,3 "$W/rs1/$s.info" 2> /dev/null | sort -u | wc -l)
+    first=$(head -n 1 "$W/rs1/$s.info" 2> /dev/null | cut -d' ' -f2,3)
+    if [ "${sizes:-0}" -gt 1 ] && [ "$first" = "$w $h" ]; then
+      echo "$s: probe: ffprobe='$want' hevc-rs='$got' (the pictures change size; hevc-rs gives the first)" >> $W/probe-explained
+    else
+      echo "$s: ffprobe='$want' hevc-rs='$got'" >> $W/d-probe
+    fi
   done
 
   # G2, G3: pictures.
@@ -176,7 +185,7 @@ EOT
       echo "$s: not confirmed (dec265 $de, ffmpeg $ff, hash ok $ok/$pics)" >> $W/d-confirm
     fi
   done
-  cp $W/disagree "$REP/disagreements.txt"; mkdir -p "$REP/info" && cp $W/rs1/*.info "$REP/info/"
+  cat $W/probe-explained >> $W/disagree; cp $W/disagree "$REP/disagreements.txt"; mkdir -p "$REP/info" && cp $W/rs1/*.info "$REP/info/"
   # G4: decoded picture hash SEI.
   find $W/rs1 -type f -name '*.info' -exec grep -lw bad {} + 2> /dev/null | sed 's#.*/##; s#\.info$#: hash bad#' | sort > $W/d-hash
   # G5: threads.
