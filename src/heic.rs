@@ -450,6 +450,51 @@ pub fn decode_heic(
     })
 }
 
+/// Decodes image item `id` of `heif`, the parse of `file`, with no parse of its own.
+///
+/// The item is one `hvc1` image or a `grid` of `hvc1` tiles, decoded as [`decode_heic`] decodes the
+/// primary image: each coded item must hold exactly one picture, and the metadata (SEI messages,
+/// VUI) is that of the first tile, kept unless [`Options::metadata`] is false. No alpha plane is
+/// decoded, and the `irot`, `imir` and `clap` properties are not applied; read them from
+/// `heif.image(id)`.
+///
+/// Limits: `max_alloc` is the peak of the call. An eighth of it goes to the isobmff item bytes
+/// (one item at a time); the decoded pictures, the assembled planes and the decoder's working
+/// memory share the rest. `heif` itself is not charged: the caller holds it. `max_width`,
+/// `max_height` and `max_pixels` apply to every coded picture and to the output size of a grid.
+/// The cancel flag is read before each coded item and inside the decoder.
+///
+/// # Errors
+///
+/// [`Error::InvalidData`] for an `id` that is not an item (the text is `"no-such-item"`) and for
+/// the other errors of [`decode_heic`]; [`Error::Unsupported`] when the item is not HEVC or a grid
+/// of HEVC tiles, or is protected; the limit and cancel errors of [`decode_heic`].
+pub fn decode_heic_item(
+    heif: &Heif,
+    file: &[u8],
+    id: u32,
+    opts: &Options,
+    limits: &Limits,
+    cancel: &AtomicBool,
+) -> Result<Picture> {
+    let iso = isobmff::Limits {
+        max_alloc: limits.max_alloc / 8,
+        max_threads: 1,
+        max_pixels: limits.max_pixels,
+        ..isobmff::Limits::default()
+    };
+    let cx = Ctx {
+        heif,
+        file,
+        opts,
+        limits,
+        cancel,
+        iso: &iso,
+        rest: limits.max_alloc - limits.max_alloc / 8,
+    };
+    cx.image(id, 0, false, "image item is not HEVC")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,6 +621,72 @@ mod tests {
         assert_eq!(merge_hash(Some(true), Some(false)), Some(false));
     }
 
+    fn bx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut v = (body.len() as u32 + 8).to_be_bytes().to_vec();
+        v.extend_from_slice(kind);
+        v.extend_from_slice(body);
+        v
+    }
+
+    fn fbx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        bx(kind, &[&[0u8; 4][..], body].concat())
+    }
+
+    /// One `hvc1` item (id 1, 64 x 48, junk payload) in a hand-built HEIF.
+    fn one_item_file() -> Vec<u8> {
+        let hvcc = bx(
+            b"hvcC",
+            &[
+                &[
+                    1u8, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 93, 0xF0, 0, 0xFC, 0xFD, 0xF8, 0xF8, 0,
+                    0, 3, 1, 0xA0, 0, 1, 0, 3,
+                ][..],
+                &[0x40, 0x01, 0x02],
+            ]
+            .concat(),
+        );
+        let ispe = fbx(
+            b"ispe",
+            &[&64u32.to_be_bytes()[..], &48u32.to_be_bytes()].concat(),
+        );
+        let ftyp = bx(b"ftyp", b"heic\0\0\0\0heic");
+        let meta = |offset: u32| {
+            let hdlr = fbx(b"hdlr", &[&[0u8; 4][..], b"pict", &[0; 12], &[0]].concat());
+            let pitm = fbx(b"pitm", &[0, 1]);
+            let infe = fbx(b"infe", &[&[0u8, 1, 0, 0][..], b"hvc1", &[0]].concat());
+            let iinf = fbx(b"iinf", &[&[0u8, 1][..], &infe].concat());
+            let iloc = fbx(
+                b"iloc",
+                &[
+                    &[0x44u8, 0, 0, 1, 0, 1, 0, 0, 0, 1][..],
+                    &offset.to_be_bytes(),
+                    &4u32.to_be_bytes(),
+                ]
+                .concat(),
+            );
+            let ipco = bx(b"ipco", &[&ispe[..], &hvcc].concat());
+            let ipma = fbx(b"ipma", &[0u8, 0, 0, 1, 0, 1, 2, 1, 0x82]);
+            let iprp = bx(b"iprp", &[&ipco[..], &ipma].concat());
+            fbx(b"meta", &[&hdlr[..], &pitm, &iinf, &iloc, &iprp].concat())
+        };
+        let offset = (ftyp.len() + meta(0).len() + 8) as u32;
+        [ftyp, meta(offset), bx(b"mdat", &[1, 2, 3, 4])].concat()
+    }
+
+    #[test]
+    fn item_with_a_bad_id_or_bad_data_is_an_error() {
+        let file = one_item_file();
+        let cancel = AtomicBool::new(false);
+        let iso = isobmff::Limits::default();
+        let heif = isobmff::parse(&file, &iso, &cancel).expect("hand-built file parses");
+        let (o, l) = (Options::default(), Limits::default());
+        let r = decode_heic_item(&heif, &file, 99, &o, &l, &cancel);
+        assert!(
+            matches!(r, Err(Error::InvalidData("no-such-item"))),
+            "{r:?}"
+        );
+        assert!(decode_heic_item(&heif, &file, 1, &o, &l, &cancel).is_err());
+    }
     #[test]
     fn garbage_is_invalid_not_a_panic() {
         let cancel = AtomicBool::new(false);

@@ -30,6 +30,7 @@ println!("{} pictures", pictures.len());
 ## HEIC
 
 `decode_heic` decodes the primary image of a HEIC file (one `hvc1` item or a grid of tiles, plus its alpha plane) on top of isobmff-rs. `irot`, `imir` and `clap` come back raw in `transforms`, not applied.
+`decode_heic_item` decodes any image item of an already parsed `isobmff::Heif` (a coded item or a grid, no alpha, transforms not applied) without parsing again.
 
 ```rust
 let file = std::fs::read("photo.heic")?;

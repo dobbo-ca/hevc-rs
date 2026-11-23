@@ -594,6 +594,8 @@ gives the item graph; this crate decodes the pixels.
 ```rust
 pub fn decode_heic(file: &[u8], opts: &Options, limits: &Limits, cancel: &AtomicBool)
     -> Result<HeicImage, Error>;
+pub fn decode_heic_item(heif: &isobmff::Heif, file: &[u8], id: u32, opts: &Options, limits: &Limits,
+    cancel: &AtomicBool) -> Result<Picture, Error>;   // any image item of a parsed file; no alpha, no transforms applied
 pub struct HeicImage { pub image: Picture, pub alpha: Option<Plane>, pub transforms: Vec<Transform> }
 pub enum Transform { Clap(Clap), Rotate(u16), Mirror(Axis) }   // own types, same fields as isobmff's
 ```

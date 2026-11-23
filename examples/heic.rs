@@ -106,6 +106,15 @@ fn decode_one(name: &str, data: &[u8], outdir: &Path) {
             return;
         }
     };
+    // decode_heic_item on the parse of the same file must give the primary image of decode_heic.
+    let iso = isobmff::Limits::default();
+    let heif = isobmff::parse(data, &iso, &cancel).unwrap();
+    let id = heif.primary_image().unwrap().id;
+    let item = hevc::decode_heic_item(&heif, data, id, &opts, &Limits::default(), &cancel);
+    assert!(
+        item.is_ok_and(|p| p == h.image),
+        "{name}: decode_heic_item differs"
+    );
     let mut yuv = Vec::new();
     for p in &h.image.planes {
         push(&mut yuv, p);
