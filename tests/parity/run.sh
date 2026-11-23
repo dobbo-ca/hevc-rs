@@ -128,6 +128,7 @@ heic_part() {
   [ -s $W/heic-names ] && { echo "heic corpus name collisions:" >&2; cat $W/heic-names >&2; bad=1; }
   run hevc-heic $W/hin $W/hr
   run heic-oracle $W/hin $W/hl
+  for v in none nodeblock nosao; do HEIC_FILTERS=$v hevc-heic $W/hin $W/hv-$v > /dev/null 2>&1; done
   : > $W/d-heic; : > $W/heic-explained
   hboth=0 heq=0 halpha=0 hbothfail=0
   for f in $W/hin/*; do
@@ -136,7 +137,19 @@ heic_part() {
     r=$W/hr/$s l=$W/hl/$s
     if [ -f "$r.yuv" ] && [ -f "$l.yuv" ]; then
       hboth=$((hboth + 1)); hok=1
-      cmp -s "$r.yuv" "$l.yuv" || { echo "$s: yuv differs (hevc-rs $(wc -c < "$r.yuv") bytes, libheif $(wc -c < "$l.yuv") bytes)" >> $W/d-heic; hok=0; }
+      if ! cmp -s "$r.yuv" "$l.yuv"; then
+        # Diagnosis: bytes that differ, the first one, the luma plane size, and which hevc-rs
+        # variant without an in-loop filter equals libheif.
+        nd=$(cmp -l "$r.yuv" "$l.yuv" 2> /dev/null | wc -l)
+        first=$(cmp "$r.yuv" "$l.yuv" 2> /dev/null | sed -n 's/.*byte \([0-9]*\).*/\1/p')
+        read -r iw ih _ idy _ < "$r.info"; ib=1; [ "$idy" -gt 8 ] && ib=2
+        same=
+        for v in none nodeblock nosao; do
+          [ -f "$W/hv-$v/$s.yuv" ] && cmp -s "$W/hv-$v/$s.yuv" "$l.yuv" && same="$same $v"
+        done
+        echo "$s: yuv differs (hevc-rs $(wc -c < "$r.yuv") bytes, libheif $(wc -c < "$l.yuv") bytes; $nd bytes differ, first at byte $first, luma plane $((iw * ih * ib)) bytes; libheif equals hevc-rs with filters off:${same:- no variant})" >> $W/d-heic
+        hok=0
+      fi
       if [ -f "$r.alpha" ] && [ -f "$l.alpha" ]; then
         halpha=$((halpha + 1))
         cmp -s "$r.alpha" "$l.alpha" || { echo "$s: alpha differs (hevc-rs $(wc -c < "$r.alpha") bytes, libheif $(wc -c < "$l.alpha") bytes)" >> $W/d-heic; hok=0; }

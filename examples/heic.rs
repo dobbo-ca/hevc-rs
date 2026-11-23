@@ -88,7 +88,16 @@ fn push(out: &mut Vec<u8>, p: &Plane) {
 
 fn decode_one(name: &str, data: &[u8], outdir: &Path) {
     let cancel = AtomicBool::new(false);
-    let r = hevc::decode_heic(data, &Options::default(), &Limits::default(), &cancel);
+    // Diagnosis only (tests/parity/run.sh): HEIC_FILTERS=none|nodeblock|nosao turns in-loop
+    // filters off, to find which filter an oracle that differs left out.
+    let mut opts = Options::default();
+    match std::env::var("HEIC_FILTERS").as_deref() {
+        Ok("none") => (opts.deblocking, opts.sao) = (false, false),
+        Ok("nodeblock") => opts.deblocking = false,
+        Ok("nosao") => opts.sao = false,
+        _ => {}
+    }
+    let r = hevc::decode_heic(data, &opts, &Limits::default(), &cancel);
     let h = match r {
         Ok(h) => h,
         Err(e) => {
