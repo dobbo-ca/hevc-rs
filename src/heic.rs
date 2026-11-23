@@ -70,6 +70,8 @@ fn iso_err(e: isobmff::Error) -> Error {
         isobmff::Error::LimitExceeded(Limit::Pixels) => Error::PixelLimit,
         // Valid HEIF that isobmff-rs does not handle (e.g. the `mini` box): outside the scope.
         isobmff::Error::Unsupported(what) => Error::Unsupported(what),
+        // No `meta` box: e.g. the low-overhead `mini` form of HEIF, which isobmff-rs does not read.
+        isobmff::Error::NoMeta => Error::Unsupported("HEIF file without a meta box (mini form)"),
         e => Error::InvalidData(e.class()),
     }
 }
