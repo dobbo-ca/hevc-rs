@@ -69,3 +69,10 @@ path = "fuzz_targets/intra_tiers.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "sao_tiers"
+path = "fuzz_targets/sao_tiers.rs"
+test = false
+doc = false
+bench = false

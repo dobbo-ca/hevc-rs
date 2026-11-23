@@ -101,3 +101,22 @@ per sample; `tests::gather_matches_per_sample` checks it against the per-sample 
 Tests: `tiers_match_scalar` (all sizes, modes, bit depths 8/10/12/16, extreme and over-range
 samples), `frames_match_scalar` (whole frames, luma and chroma, every aligned position),
 `fuzz_entry`. Fuzz target `intra_tiers` (`__fuzz_intra::run`).
+## SIMD: SAO (`src/sao_simd.rs`)
+
+Row kernels for band offset (`bo_row`) and edge offset (`eo_row`) on 16-bit lanes. `sao_ctb`
+(`src/sao.rs`) validates in safe code and hands a kernel only a run of one row that has no
+PCM/bypass cell, whose edge-offset neighbours are inside the picture and a usable CTB (the first
+and last column of the CTB, other rows, and everything on `Tier::Scalar` take the per-sample
+scalar code, which is the oracle). Offsets equal to `i16::MIN` or tier Scalar skip the kernel.
+
+- Tiers: Scalar (per-sample code in `sao_ctb`), AVX2 (16 lanes, `shuffle_epi8` offset lookup,
+  saturating add/sub for the clip), AVX-512 (dispatched to the AVX2 kernel: a row kernel bound by
+  loads gains nothing from 32 lanes), NEON (8 lanes, `vqtbl1q_u8` lookup).
+- `unsafe` blocks: the two dispatch fns `eo_row` and `bo_row` (call the safe `target_feature`
+  kernels; invariant: the tier came from `simd::tier()` / `simd::available()`, which return it
+  only when the feature was detected). The load/store helpers are the shared ones in
+  `src/simd/{x86,arm}.rs`; kernels get arrays from `as_chunks`, the tail runs the scalar row
+  code.
+- Tests: `sao_simd::tests::tiers_equal_scalar` (rows, bit depth 8/10/12/16, extreme offsets and
+  samples) and `sao::tests::tiers_equal_scalar` (whole pictures with slices, PCM cells). Fuzz
+  target `sao_tiers` (`__fuzz_sao::tiers`).
