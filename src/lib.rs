@@ -287,3 +287,13 @@ pub mod __fuzz_sao {
         crate::sao_simd::fuzz_tiers(data)
     }
 }
+
+/// Cross-tier fuzz entry for the deblocking kernels. Not public API.
+#[doc(hidden)]
+pub mod __fuzz_deblock {
+    /// Builds one batch of 4 edge segments (luma or chroma, vertical or horizontal) from `data`,
+    /// runs every SIMD tier of this CPU and returns whether all equal the scalar tier.
+    pub fn tiers(data: &[u8]) -> bool {
+        crate::deblock::fuzz_tiers(data)
+    }
+}
