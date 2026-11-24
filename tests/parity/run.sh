@@ -128,6 +128,9 @@ heic_part() {
   [ -s $W/heic-names ] && { echo "heic corpus name collisions:" >&2; cat $W/heic-names >&2; bad=1; }
   run hevc-heic $W/hin $W/hr
   run heic-oracle $W/hin $W/hl
+  # One thread must give the same bytes as the default (conventions: parity at 1 and default).
+  HEIC_THREADS=1 hevc-heic $W/hin $W/hr1 > /dev/null 2>&1
+  diff -r $W/hr $W/hr1 > $W/heic-threads.diff 2>&1 || { echo "heic: 1 thread differs from default" >&2; bad=1; }
   for v in none nodeblock nosao; do HEIC_FILTERS=$v hevc-heic $W/hin $W/hv-$v > /dev/null 2>&1; done
   # Diagnosis: the primary coded item as Annex B, decoded by dec265 (a third witness).
   HEIC_ANNEXB=1 hevc-heic $W/hin $W/hx > /dev/null 2>&1; mkdir -p $W/hd

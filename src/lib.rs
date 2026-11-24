@@ -24,7 +24,7 @@
 //! | `max_metadata` | 1 MiB | bytes of SEI messages kept per picture | no error; the message is dropped |
 //!
 //! `max_alloc` is charged before each allocation and released on drop. `max_threads = 1` spawns
-//! no thread (v1 is serial anyway). The decode entry points read a cancel flag before every NAL
+//! no thread (only the tiles of a HEIC grid use more than one). The decode entry points read a cancel flag before every NAL
 //! unit and every CTU, and in deblocking, SAO, the picture hash and the output crop per row; when it is set the call returns
 //! [`Error::Cancelled`].
 //!

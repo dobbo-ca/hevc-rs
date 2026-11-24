@@ -600,7 +600,8 @@ pub struct HeicImage { pub image: Picture, pub alpha: Option<Plane>, pub transfo
 pub enum Transform { Clap(Clap), Rotate(u16), Mirror(Axis) }   // own types, same fields as isobmff's
 ```
 
-- `image` is the primary item: one coded `hvc1` item, or a `grid` of `hvc1` tiles. A coded item
+- `image` is the primary item: one coded `hvc1` item, a `grid` of `hvc1` tiles, or an `iden` or
+  `iovl` of those (below). A coded item
   is `Heif::item_bytes` plus its `hvcC` record, passed as one sample to `decode_hvcc_into`; it
   must give exactly one picture, else `InvalidData`. Grid tiles go row-major, tile `(col, row)`
   at `(col * tile_w, row * tile_h)` (chroma at half), cropped to the grid `output_width x
@@ -620,8 +621,47 @@ pub enum Transform { Clap(Clap), Rotate(u16), Mirror(Axis) }   // own types, sam
   `urn:mpeg:hevc:2015:auxid:1`, `urn:mpeg:mpegB:cicp:systems:auxiliary:alpha` or
   `urn:mpeg:avc:2015:auxid:1`), itself coded
   or a grid (a grid of alpha decodes luma only).
-- A primary (or alpha) image that is not `hvc1` or a grid of `hvc1` (AV1, overlay, identity,
-  other) is `Unsupported("primary image is not HEVC")`.
+- `iden` (identity) primary or alpha: the input item (coded or grid) is decoded and returned as
+  is; `transforms` is the input's own `irot`/`imir`/`clap` in file order, then the identity
+  item's. (The alpha plane has no transform list, so an alpha `iden` loses its transforms, as
+  every alpha image does.)
+- `iovl` (overlay) primary or alpha: composed in the native YCbCr layout of the inputs on a canvas
+  of `output_width x output_height` (`max_width`, `max_height`, `max_pixels` and the ledger apply
+  before the canvas is allocated). The canvas is filled with the fill colour, then the inputs are
+  painted in `dimg` order at `(horizontal_offset, vertical_offset)`, later inputs on top,
+  clipped to the canvas, chroma at half the offset; there is no blending (an HEVC input has no
+  alpha). Inputs are coded or grid items and must share chroma format and bit depths, and have no
+  transformative properties of their own (the pixels are not transformed here); in 4:2:0 every
+  offset and every input width and height must be even. Else `Unsupported` with the reason; an overlay with no input is
+  `Unsupported` too (no format to compose in). `sei`, `info.vui`, `poc` are the first input's,
+  `hash_ok` is the merge over inputs as for grid tiles. An input wholly outside the canvas is
+  still decoded (and so still checked for the format).
+- Overlay fill colour (R, G, B, A, 16 bits each, full range): the colour space is the `nclx`
+  `colr` of the `iovl` item itself, else of the first input item (`matrix_coefficients`,
+  `full_range_flag`), else the VUI of the
+  first input's SPS (`matrix_coeffs`, `video_full_range_flag`; absent with `metadata` off),
+  else BT.601 limited. With `E'R = R/65535` (same for G, B), `Kr`, `Kb` from the matrix
+  (1: 0.2126, 0.0722; 4: 0.30, 0.11; 7: 0.212, 0.087; 9: 0.2627, 0.0593; anything else
+  including 2, 5, 6: 0.299, 0.114) and `Kg = 1 - Kr - Kb`:
+  `E'Y = Kr E'R + Kg E'G + Kb E'B`, `E'Pb = (E'B - E'Y) / (2 (1 - Kb))`,
+  `E'Pr = (E'R - E'Y) / (2 (1 - Kr))`, quantised as H.273 (E-3 to E-5) with bit depth `b`:
+  limited `Y = round(2^(b-8) (219 E'Y + 16))`, `C = round(2^(b-8) (224 E'P + 128))`;
+  full `Y = round((2^b - 1) E'Y)`, `C = round((2^b - 1) E'P + 2^(b-1))`; all clipped to
+  `0..2^b - 1`, `b` the luma depth for Y and the chroma depth for Cb, Cr. Matrix 0 (identity,
+  GBR): the planes are G, B, R, quantised like luma. The fill R, G, B are sRGB in ISO/IEC
+  23008-12; only the matrix and range are applied here, not the primaries or transfer, so the
+  fill is approximate for BT.2020/PQ content (a known approximation). A monochrome canvas takes only Y. The
+  alpha `A` is used when the overlay is an alpha image (luma-only canvas): `round(A / 65535 *
+  (2^b - 1))`. libheif (from memory of its design, not read for this change) composes an `iovl`
+  in interleaved RGB(A) and alpha-blends its inputs, so its output is RGB, not the inputs' YCbCr;
+  we do not match that (native layout, no blending), and the HEIC parity oracle reports `convert`
+  for such files.
+- Grid tiles are decoded in parallel (`Limits::max_threads`, see `docs/threading.md`): tile 0
+  first and alone (it gives the format and sizes the canvas), the others on up to `max_threads`
+  threads (the caller included) that each place their tile on the canvas. The output and the
+  error are those of the serial loop: the first error in tile order wins.
+- A primary (or alpha) image that is not `hvc1`, a grid of `hvc1`, or an `iden` or `iovl` of those
+  (AV1, other) is `Unsupported("primary image is not HEVC")`.
 - Errors: isobmff `Cancelled`, `OutOfMemory`, `LimitExceeded(Alloc)` and `LimitExceeded(Pixels)`
   map to `Cancelled`, `OutOfMemory`, `AllocLimit` and `PixelLimit`; every other isobmff error is
   `InvalidData(err.class())`.
