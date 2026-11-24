@@ -454,13 +454,13 @@ fn hash_matches(frame: &Frame, sps: &Sps, h: &PictureHash, cancel: &AtomicBool) 
 }
 
 /// Bands of CTB rows for the in-loop filters: at most one per thread (0 counts as 1), one per CTB
-/// row, one per 64 Ki luma samples, and 64 (so the per-band bookkeeping stays within the small
-/// reserve), so that a small picture is filtered on the calling thread
-/// (a thread scope costs more than it saves there).
+/// row, one per 16 Ki luma samples, and 64 (so the per-band bookkeeping stays within the small
+/// reserve), so that a small picture is filtered on one thread
+/// (waking a pool thread costs more than it saves there).
 fn filter_workers(threads: usize, act: &Active) -> usize {
     let sps = &act.sps;
     let by_size =
-        usize::try_from((u64::from(sps.width) * u64::from(sps.height)) >> 16).unwrap_or(usize::MAX);
+        usize::try_from((u64::from(sps.width) * u64::from(sps.height)) >> 14).unwrap_or(usize::MAX);
     threads
         .min(sps.pic_height_in_ctbs_y as usize)
         .min(by_size)
@@ -2011,9 +2011,10 @@ mod tests {
         };
         assert_eq!(workers(512, 256, 0), 1);
         assert_eq!(workers(512, 256, 1), 1);
-        assert_eq!(workers(256, 256, 8), 1);
-        assert_eq!(workers(512, 256, 8), 2);
-        assert_eq!(workers(512, 256, usize::MAX), 2);
+        assert_eq!(workers(256, 256, 8), 4);
+        assert_eq!(workers(512, 256, 8), 8);
+        assert_eq!(workers(512, 256, usize::MAX), 8);
+        assert_eq!(workers(128, 64, 8), 1);
         // Size would allow 4 bands, but there are only 2 CTB rows.
         assert_eq!(workers(4096, 64, 8), 2);
         assert_eq!(workers(1024, 1024, 3), 3);

@@ -396,7 +396,7 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
         }
     }
 
-    // Band-parallel filters on a real picture: one 512x512 picture (four bands of 64 Ki luma
+    // Band-parallel filters on a real picture: one 512x512 picture (16 bands of 16 Ki luma
     // samples; one picture, so no picture worker) gives the same output for every max_threads,
     // and no thread outside the shared pool runs next to the calling thread: the bands run on the
     // pool (`frame::tests::par_bands_runs_at_most_max_threads_at_once` counts how many at once).
