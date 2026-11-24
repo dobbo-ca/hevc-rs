@@ -426,6 +426,9 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
                     ..Limits::default()
                 };
                 for _ in 0..50 {
+                    // A worker joined at the end of the previous call can still be listed for a
+                    // moment while it exits; let it go before the next call starts its own.
+                    std::thread::sleep(std::time::Duration::from_millis(2));
                     let _ = hevc::decode(&many, &opts, &limits, &cancel);
                 }
                 done.store(true, Ordering::Relaxed);
