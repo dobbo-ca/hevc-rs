@@ -437,8 +437,7 @@ fn filter_workers(threads: usize, act: &Active) -> usize {
     threads
         .min(sps.pic_height_in_ctbs_y as usize)
         .min(by_size)
-        .min(64)
-        .max(1)
+        .clamp(1, 64)
 }
 
 /// Decoder state of one call.
