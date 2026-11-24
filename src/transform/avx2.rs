@@ -37,8 +37,8 @@ const fn pk<const P: usize, const W: usize>(n: usize, dst: bool) -> [[i32; W]; P
 static PK_DST: [[i32; 8]; 2] = pk::<2, 8>(4, true);
 static PK4: [[i32; 8]; 2] = pk::<2, 8>(4, false);
 static PK8: [[i32; 8]; 4] = pk::<4, 8>(8, false);
-static PK16: [[i32; 16]; 8] = pk::<8, 16>(16, false);
-static PK32: [[i32; 32]; 16] = pk::<16, 32>(32, false);
+pub(super) static PK16: [[i32; 16]; 8] = pk::<8, 16>(16, false);
+pub(super) static PK32: [[i32; 32]; 16] = pk::<16, 32>(32, false);
 
 /// Scaling, transform (or transform skip) and rounding of the block, in place. `dq` is None when
 /// the coefficients are already scaled. `coeffs` has n * n entries; `p` is validated.

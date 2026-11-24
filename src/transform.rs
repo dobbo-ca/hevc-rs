@@ -316,6 +316,8 @@ fn pack(coeffs: &[i32], n: usize, c16: &mut [i16]) -> (usize, usize) {
 
 #[cfg(target_arch = "x86_64")]
 mod avx2;
+#[cfg(target_arch = "x86_64")]
+mod avx512;
 #[cfg(target_arch = "aarch64")]
 mod neon;
 
@@ -324,6 +326,14 @@ mod neon;
 #[allow(unsafe_code)]
 fn residual_simd(tier: Tier, coeffs: &mut [i32], list: Option<&ScalingList>, p: &TuParams) -> bool {
     match tier {
+        #[cfg(target_arch = "x86_64")]
+        Tier::Avx512 if simd::has_avx512() => {
+            let dq = dq_for(coeffs, list, p);
+            // SAFETY: the guard above found AVX-512 F, BW and VL (and so AVX2) on this CPU;
+            // `coeffs` has n * n entries and `p` is validated (residual_block).
+            unsafe { avx512::residual(coeffs, dq, p) };
+            true
+        }
         #[cfg(target_arch = "x86_64")]
         Tier::Avx2 | Tier::Avx512 if std::arch::is_x86_feature_detected!("avx2") => {
             let dq = dq_for(coeffs, list, p);
@@ -350,6 +360,12 @@ fn add_row(tier: Tier, row: &mut [u16], res: &[i32], max: i32) {
     // The kernels handle equal-length rows of 4, 8, 16 or 32 only; anything else runs scalar.
     let simd_ok = row.len() == res.len() && matches!(row.len(), 4 | 8 | 16 | 32);
     match tier {
+        #[cfg(target_arch = "x86_64")]
+        Tier::Avx512 if simd_ok && row.len() == 32 && simd::has_avx512() => {
+            // SAFETY: the guard above found AVX-512 F, BW and VL (and so AVX2) on this CPU; the
+            // kernel only reads and writes within the two slices.
+            unsafe { avx512::add_row(row, res, max) }
+        }
         #[cfg(target_arch = "x86_64")]
         Tier::Avx2 | Tier::Avx512 if simd_ok && std::arch::is_x86_feature_detected!("avx2") => {
             // SAFETY: the guard above found AVX2 on this CPU (Avx512 implies it, see

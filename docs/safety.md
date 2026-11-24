@@ -32,7 +32,7 @@ thread, best of 3; `HEVC_SIMD` forces the tier). These were tried and removed:
 
 The output crop (`src/crop.rs`) and the picture hash (`sei::compute`) read the cancel flag before
 every row and return `Error::Cancelled`.
-## SIMD: transform (`src/transform.rs`, `src/transform/avx2.rs`, `src/transform/neon.rs`)
+## SIMD: transform (`src/transform.rs`, `src/transform/{avx2,avx512,neon}.rs`)
 
 Scope: dequantisation (8.6.3), inverse DCT 4 to 32 and DST 4 (both passes, the i16 clip between
 them, the bdShift rounding), the transform-skip shift, and the residual add with clip (8.6.7).
@@ -43,15 +43,16 @@ Scalar is the oracle and the fallback (`dequant_scalar`, `transform_scalar`, the
 |---|---|
 | Scalar | oracle |
 | AVX2 | `avx2::residual` (dequant, transform, transform-skip rounding), `avx2::add_row` |
-| AVX-512 | no kernel of its own: dispatches to the AVX2 ones (the rows are 4 to 32 wide, 256 bits are enough) |
+| AVX-512 | `avx512::residual` for 16x16 and 32x32 (a row of 16 or 32 outputs in one or two zmm; `madd_epi16`, `packs_epi32` plus the `permutexvar_epi64` lane fix-up; 4x4 and 8x8 call `avx2::residual`) and `avx512::add_row` for 32-sample rows (shorter rows call `avx2::add_row`). Isolated in `avx512.rs`, so it is easy to drop. Features: avx512f, avx512bw, avx512vl (`simd::has_avx512()`) |
 | NEON | `neon::residual`, `neon::add_row` |
 
 `unsafe` blocks, all in `residual_simd` and `add_row` of `transform.rs` (`#[allow(unsafe_code)]`
 on those two fns), plus the shared load/store helpers of `simd/x86.rs` and `simd/arm.rs`:
 
-- Four calls of a `#[target_feature]` kernel. Invariant: the CPU has the feature. Checked by the
-  match guard right before the call (`is_x86_feature_detected!("avx2")` /
-  `is_aarch64_feature_detected!("neon")`), so even `residual_block(tier, ..)` with a tier the CPU
+- Six calls of a `#[target_feature]` kernel. Invariant: the CPU has the feature. Checked by the
+  match guard right before the call (`is_x86_feature_detected!("avx2")`, `simd::has_avx512()` for
+  the two `avx512::` calls,
+  or `is_aarch64_feature_detected!("neon")`), so even `residual_block(tier, ..)` with a tier the CPU
   lacks falls back to scalar. The detection is std's cached atomic load, not a CPUID per call.
 `add_row` also runs scalar unless both slices have the same length 4, 8, 16 or 32. The kernels contain no `unsafe`: arrays come from slices with
   `as_chunks`, `first_chunk` and `chunks_exact`.
@@ -110,10 +111,11 @@ and last column of the CTB, other rows, and everything on `Tier::Scalar` take th
 scalar code, which is the oracle). Offsets equal to `i16::MIN` or tier Scalar skip the kernel.
 
 - Tiers: Scalar (per-sample code in `sao_ctb`), AVX2 (16 lanes, `shuffle_epi8` offset lookup,
-  saturating add/sub for the clip), AVX-512 (dispatched to the AVX2 kernel: a row kernel bound by
-  loads gains nothing from 32 lanes), NEON (8 lanes, `vqtbl1q_u8` lookup).
+  saturating add/sub for the clip), AVX-512 (`x512k`: 32 lanes, mask compares
+  and `movm_epi16`; the tail of a row under 32 samples runs the AVX2 kernel; dispatch guarded by
+  `simd::has_avx512()`), NEON (8 lanes, `vqtbl1q_u8` lookup).
 - `unsafe` blocks: the two dispatch fns `eo_row` and `bo_row` (call the safe `target_feature`
-  kernels; invariant: the tier came from `simd::tier()` / `simd::available()`, which return it
+  kernels, AVX2 or AVX-512; invariant: the tier came from `simd::tier()` / `simd::available()`, which return it
   only when the feature was detected). The load/store helpers are the shared ones in
   `src/simd/{x86,arm}.rs`; kernels get arrays from `as_chunks`, the tail runs the scalar row
   code.

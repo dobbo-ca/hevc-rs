@@ -36,6 +36,15 @@ impl Tier {
     }
 }
 
+/// True when this CPU has AVX-512 F, BW and VL, the features of the `Avx512` kernels. The
+/// dispatch guards use it, so a tier value that was not taken from `available()` stays safe.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn has_avx512() -> bool {
+    std::arch::is_x86_feature_detected!("avx512f")
+        && std::arch::is_x86_feature_detected!("avx512bw")
+        && std::arch::is_x86_feature_detected!("avx512vl")
+}
+
 /// The tiers this CPU can run, scalar first.
 pub(crate) fn available() -> Vec<Tier> {
     let mut v = vec![Tier::Scalar];
