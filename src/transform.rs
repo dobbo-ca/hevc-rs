@@ -693,6 +693,10 @@ mod tests {
         let avail = simd::available();
         #[cfg(target_arch = "x86_64")]
         assert!(avail.contains(&Tier::Avx2), "AVX2 not detected");
+        #[cfg(target_arch = "x86_64")]
+        if std::env::var_os("HEVC_EXPECT_AVX512").is_some() {
+            assert!(avail.contains(&Tier::Avx512), "AVX-512 not detected");
+        }
         #[cfg(target_arch = "aarch64")]
         assert!(avail.contains(&Tier::Neon), "NEON not detected");
         assert!(avail.len() > 1, "no SIMD tier to test");

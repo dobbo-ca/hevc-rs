@@ -427,6 +427,13 @@ mod tests {
     fn tiers_equal_scalar() {
         #[cfg(target_arch = "x86_64")]
         assert!(simd::available().contains(&Tier::Avx2), "AVX2 not detected");
+        #[cfg(target_arch = "x86_64")]
+        if std::env::var_os("HEVC_EXPECT_AVX512").is_some() {
+            assert!(
+                simd::available().contains(&Tier::Avx512),
+                "AVX-512 not detected"
+            );
+        }
         #[cfg(target_arch = "aarch64")]
         assert!(simd::available().contains(&Tier::Neon), "NEON not detected");
         let mut s = 0x9e37_79b9_7f4a_7c15u64;

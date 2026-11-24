@@ -43,7 +43,7 @@ RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
 RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + && cargo clippy --locked --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
 RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
-    find src examples tests -name '*.rs' -exec touch {} + && cargo test --locked --no-fail-fast
+    find src examples tests -name '*.rs' -exec touch {} + && HEVC_EXPECT_AVX512=1 cargo test --locked --no-fail-fast
 RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + && HEVC_SIMD=scalar cargo test --locked --no-fail-fast
 # (Nothing reads HEVC_SIMD yet, so this second run repeats the first; it starts to count with the

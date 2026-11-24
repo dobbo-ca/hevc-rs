@@ -117,8 +117,10 @@ scalar code, which is the oracle). Offsets equal to `i16::MIN` or tier Scalar sk
 - `unsafe` blocks: the two dispatch fns `eo_row` and `bo_row` (call the safe `target_feature`
   kernels, AVX2 or AVX-512; invariant: the tier came from `simd::tier()` / `simd::available()`, which return it
   only when the feature was detected). The load/store helpers are the shared ones in
-  `src/simd/{x86,arm}.rs`; kernels get arrays from `as_chunks`, the tail runs the scalar row
-  code.
+  `src/simd/{x86,arm}.rs`; kernels get arrays from `as_chunks`, the tail runs the next narrower
+  kernel (AVX-512, AVX2, scalar).
 - Tests: `sao_simd::tests::tiers_equal_scalar` (rows, bit depth 8/10/12/16, extreme offsets and
-  samples) and `sao::tests::tiers_equal_scalar` (whole pictures with slices, PCM cells). Fuzz
+  samples; the only test that reaches the 32-lane AVX-512 body) and
+  `sao::tests::tiers_equal_scalar` (whole pictures with slices, PCM cells; its 32-sample CTBs
+  give runs of at most 30, so it covers the AVX2 tail, not the 32-lane body). Fuzz
   target `sao_tiers` (`__fuzz_sao::tiers`).

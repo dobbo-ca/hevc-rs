@@ -52,10 +52,7 @@ pub(crate) fn available() -> Vec<Tier> {
     {
         if std::arch::is_x86_feature_detected!("avx2") {
             v.push(Tier::Avx2);
-            if std::arch::is_x86_feature_detected!("avx512f")
-                && std::arch::is_x86_feature_detected!("avx512bw")
-                && std::arch::is_x86_feature_detected!("avx512vl")
-            {
+            if has_avx512() {
                 v.push(Tier::Avx512);
             }
         }
