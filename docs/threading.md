@@ -134,7 +134,9 @@ tier with scalar).
   `max_threads`, because they run alone.
 
 The split never changes a result: the picture and band paths are byte-identical for every thread
-count (`tests/threads.rs`, unit tests).
+count (`tests/threads.rs`, unit tests). The integration tests build real streams with a small test
+encoder (`tests/common`); `tests/limits.rs` also checks that a 512x512 picture runs band threads,
+and the heap peak against `max_alloc` while replaced parameter sets are held by pictures in flight.
 
 
 ## Memory and cancel

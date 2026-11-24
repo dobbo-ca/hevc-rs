@@ -1792,6 +1792,54 @@ mod tests {
         assert!(store.sps[0].is_none());
     }
 
+    #[test]
+    fn a_replaced_set_stays_booked_while_the_picture_being_built_holds_it() {
+        use crate::ps::tests::{pps_bits, sps_bits};
+        use std::cell::RefCell;
+        let (sps, pps) = (sps_bits(64, 64), pps_bits(1));
+        // VPS, SPS, PPS, the slice of an IDR picture (the picture being built shares the stored
+        // SPS and PPS; its data is not valid, so it fails when the stream ends), the SPS and the
+        // PPS again, an AUD.
+        let (vps, aud) = ([0x0C, 0xFF], [0x50]);
+        let slice = [0xAC, 0xC0, 0x55, 0x55, 0x55, 0x55];
+        let units: [(u8, &[u8]); 7] = [
+            (32, &vps[..]),
+            (33, sps.as_slice()),
+            (34, pps.as_slice()),
+            (19, &slice[..]),
+            (33, sps.as_slice()),
+            (34, pps.as_slice()),
+            (35, &aud[..]),
+        ];
+        let ledger = Ledger::default();
+        ledger.reset(1 << 20, 0).unwrap();
+        let (opts, limits, cancel) = (
+            Options::default(),
+            Limits::default(),
+            AtomicBool::new(false),
+        );
+        let mut out = Vec::new();
+        let mut d = Decoder::new(&ledger, &opts, &limits, &cancel, &mut out, None);
+        // left[i]: what the ledger has left when unit i is read, so after unit i - 1.
+        let left = RefCell::new(Vec::new());
+        let nals = units.iter().map(|&(kind, payload)| {
+            left.borrow_mut().push(ledger.left());
+            Ok(Nal {
+                kind,
+                layer_id: 0,
+                temporal_id: 0,
+                payload,
+            })
+        });
+        let _ = d.stream(nals);
+        let left = left.into_inner();
+        // The new SPS and PPS are booked, and the replaced ones stay booked with the picture.
+        let sps_bytes = sps_cost(&crate::ps::parse_sps(&sps).unwrap());
+        let pps_bytes = pps_cost(&crate::ps::parse_pps(&pps).unwrap());
+        assert_eq!(left[4] - left[5], sps_bytes);
+        assert_eq!(left[5] - left[6], pps_bytes);
+    }
+
     fn picture(poc: i32) -> Picture {
         Picture {
             info: Info {
