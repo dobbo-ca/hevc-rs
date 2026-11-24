@@ -58,6 +58,15 @@ What each PR gave (all classes, 1 thread unless noted; each run against the main
 | #19 | deblocking and SAO in CTB-row bands (default threads) | 3519.0 nt | 3226.8 nt |
 | #18 | pictures in parallel; hash check opt-in (`Options::check_hash`) | 3523.8 / 3226.8 nt | 3106.5 / 1684.3 nt |
 | #25 | deblocking in edge batches of 16 lines, AVX2 and NEON kernels (bench runs 45481933675 and 45483838642 vs main run 45466964176) | 3041.1 / 1622.6 nt | 2783.2 / 1532.7 nt (second run 2803.0 / 1545.4 nt) |
+| #29 | sparse inverse transform: scaling, passes and clearing only on the extent of the non-zero coefficients, DC-only blocks as one value (bench runs 45510056582 and 45510870457 vs main run 45496374688) | 2606.8; heic 2390.8 / 2376.1 nt | 2528.5; heic 2144.9 / 1946.0 nt (second run 2528.9; heic 2176.4 / 2008.9 nt) |
+
+PR #29 in more detail (1 thread, ms, main → run 1 / run 2): the v4 build of the Annex B classes did
+not move (all 2396.8 → 2405.0 / 2408.8), the default build gained 3% (2606.8 → 2528.5 / 2528.9,
+dec265 3398.5 → 3362.2 / 3404.4) and the scalar tier 18% (4653.6 → 3835.1 / 3833.9). HEIC gained
+in every build: default 2390.8 → 2144.9 / 2176.4, avx2 2511.6 → 2179.2 / 2222.1, scalar 4267.6 →
+3362.8 / 3428.8 (libheif 6603.9 → 6398.2 / 6482.8). The v4 HEIC time of the main run (2787.8) was
+disturbed; earlier main runs gave 2232.9 to 2292.8, against 2131.4 / 2178.6 here. main10 and rext
+(11 and 3 small streams) were 0.3 to 0.7 ms slower in total.
 
 Kernels that gave no gain were removed (docs/safety.md, "Kernels removed"). Open for speed:
 parallel decode by tile / WPP row inside one picture.
