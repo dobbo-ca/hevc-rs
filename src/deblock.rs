@@ -100,12 +100,12 @@ fn seg_opt(
 ) -> Option<Seg> {
     let gw = meta.grid_w;
     let q = (y >> 2).checked_mul(gw)?.checked_add(x >> 2)?;
-    let (grid, p) = if vertical {
-        (&meta.edge_v, q.checked_sub(1)?)
+    let (bs, p) = if vertical {
+        (meta.edge_v_at(x, y)?, q.checked_sub(1)?)
     } else {
-        (&meta.edge_h, q.checked_sub(gw)?)
+        (meta.edge_h_at(x, y)?, q.checked_sub(gw)?)
     };
-    let bs = i32::from(*grid.get(q)?);
+    let bs = i32::from(bs);
     if bs == 0 || (chroma.is_some() && bs != 2) {
         return None;
     }
