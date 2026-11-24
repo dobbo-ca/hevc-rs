@@ -70,8 +70,11 @@ pub struct Options {
     /// no MD5, CRC or checksum is computed. `examples/oracle.rs` sets it, so the parity gate G4 is
     /// unchanged.
     pub check_hash: bool,
+    /// Apply `clap`, `irot` and `imir` in `decode_heic` and `decode_heic_item` (default false).
+    /// See "HEIC glue", "Transforms".
+    pub apply_transforms: bool,
 }
-impl Default for Options { /* all true except check_hash */ }
+impl Default for Options { /* all true except check_hash and apply_transforms */ }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChromaFormat { Mono, Yuv420 }
@@ -626,8 +629,9 @@ is `Unsupported`.
 pub fn decode_heic(file: &[u8], opts: &Options, limits: &Limits, cancel: &AtomicBool)
     -> Result<HeicImage, Error>;
 pub fn decode_heic_item(heif: &isobmff::Heif, file: &[u8], id: u32, opts: &Options, limits: &Limits,
-    cancel: &AtomicBool) -> Result<Picture, Error>;   // any image item of a parsed file; no alpha, no transforms applied
-pub struct HeicImage { pub image: Picture, pub alpha: Option<Plane>, pub transforms: Vec<Transform> }
+    cancel: &AtomicBool) -> Result<Picture, Error>;   // any image item of a parsed file; no alpha; transforms only with Options::apply_transforms
+pub struct HeicImage { pub image: Picture, pub alpha: Option<Plane>, pub transforms: Vec<Transform>,
+    pub transforms_applied: bool }
 pub enum Transform { Clap(Clap), Rotate(u16), Mirror(Axis) }   // own types, same fields as isobmff's
 ```
 
@@ -643,8 +647,9 @@ pub enum Transform { Clap(Clap), Rotate(u16), Mirror(Axis) }   // own types, sam
 - A protected item (`protection_index` not 0, for example CENC) is `Unsupported("protected
   item")`: its slice data is encrypted, so it is not decoded as if clear.
   `place` and `blit` are pure functions over planes (unit tested without fixtures).
-- Not applied: `irot`, `imir`, `clap` come back raw and in file order in `transforms`. The caller
-  applies them.
+- Not applied by default: `irot`, `imir`, `clap` come back raw and in file order in `transforms`
+  (the metadata rule: they are never dropped). `Options::apply_transforms` (default false)
+  applies them; see "Transforms" below.
 - Metadata is kept raw (the owner rule above): `image.sei`, `image.info.vui` and `poc` are the
   first tile's; `hash_ok` is `Some(true)` only if every tile's hash was checked and passed (so `None` unless `Options::check_hash` is true).
   `Options::metadata` false drops them.
@@ -655,7 +660,7 @@ pub enum Transform { Clap(Clap), Rotate(u16), Mirror(Axis) }   // own types, sam
 - `iden` (identity) primary or alpha: the input item (coded or grid) is decoded and returned as
   is; `transforms` is the input's own `irot`/`imir`/`clap` in file order, then the identity
   item's. (The alpha plane has no transform list, so an alpha `iden` loses its transforms, as
-  every alpha image does.)
+  every alpha image does, unless `Options::apply_transforms` applies them.)
 - `iovl` (overlay) primary or alpha: composed in the native YCbCr layout of the inputs on a canvas
   of `output_width x output_height` (`max_width`, `max_height`, `max_pixels` and the ledger apply
   before the canvas is allocated). The canvas is filled with the fill colour, then the inputs are
@@ -700,3 +705,36 @@ pub enum Transform { Clap(Clap), Rotate(u16), Mirror(Axis) }   // own types, sam
 - Limits: see `docs/limits.md`. The cancel flag is read before each coded item (between tiles).
 - libheif is the CI oracle only (`examples/heic.rs` is the Rust side of the comparison); it is LGPL
   and never linked.
+
+### Transforms (`Options::apply_transforms`)
+
+Rule (rust-ports docs/new-crates.md, "Transforms"): the decoders return `clap`, `irot` and `imir`
+raw by default and never drop them; an opt-in option applies them through the one shared helper,
+`isobmff::apply_transforms` (isobmff-rs `src/transform.rs`, `docs/transforms.md`). This crate
+writes no crop or rotation of its own.
+
+- Off (the default): nothing changes; the output is byte-identical to a build without the option.
+- On, `decode_heic`: after the image (and its alpha plane) are decoded and assembled, the image
+  is passed to `apply_transforms` with the list that `transforms` returns (for an `iden` item,
+  its input's transforms first, then its own: an `iden` chain is applied innermost first, as
+  libheif does). `transforms` is still returned in full, `transforms_applied` is true, and
+  `image.info.width`/`height` are the size after the transforms (`coded_width`/`coded_height`
+  stay the coded size). Planes go to the helper and back by moving their `Vec`s, no copy.
+- The alpha plane takes the transforms of the alpha item itself (its own `ipma` list, and for an
+  `iden` alpha those of its input first), not those of the main image, as libheif decodes it. An
+  alpha item without transforms stays as coded while the main image turns; libheif then scales
+  the alpha plane (nearest neighbour) to the main image's size, this crate does not scale.
+- On, `decode_heic_item`: the item's own transforms (with the same `iden` rule) are applied to
+  the returned picture; the caller set the option, so the `Picture` needs no flag.
+- A grid whose tiles have transforms of their own is `Unsupported("grid tile with transformative
+  properties")` with the option on (libheif turns each tile before it pastes it; with the option
+  off the tiles are decoded as before). An overlay input with transforms stays `Unsupported`
+  either way.
+- Chroma: hevc-rs pictures are 4:0:0 or 4:2:0, which the helper keeps (it changes the format only
+  for 4:2:2 turned by 90 or 270 degrees). An odd crop offset or an odd side moves the chroma by one
+  luma sample instead of converting; libheif converts to 4:4:4 there (docs/parity.md, G7t).
+- A second `irot`, `imir` or `clap` on one item is applied like the first (the helper applies the
+  whole list). libheif rejects such a file, also without transforms.
+- Errors: those of the helper through the same mapping as the parse (`Cancelled`, `OutOfMemory`,
+  `AllocLimit`, `PixelLimit`; a `clap` or `irot` it rejects is `InvalidData("malformed")`).
+  Memory: `docs/limits.md`. No thread is spawned for the transforms, for any `max_threads`.

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Parity gates of hevc-rs (docs/design.md, "Oracles and parity"). CI only, called by
 # .github/ci/Dockerfile; needs the oracle binaries on PATH.
-#   run.sh full <report-dir>   the gates on /data/x + tests/data/fuzz-grown, and G7 on /heic/x
+#   run.sh full <report-dir>   the gates on /data/x + tests/data/fuzz-grown, and G7 and G7t on /heic/x
 #   run.sh ref <out-dir>       hevc-oracle on the first 20 corpus streams, one thread
 #   run.sh arm <ref-dir>       the aarch64 oracle (qemu) on the same prefixes vs <ref-dir>
 # Binaries: hevc-oracle (examples/oracle), hevc-heic (examples/heic), dec265 (libde265),
@@ -207,6 +207,72 @@ heic_part() {
   } > $W/heic-summary.md
 }
 
+# heic_xfrm_part (after heic_part, on the same $W/hin): the second G7 pass, with the transforms
+# applied on both sides (HEIC_TRANSFORMS=1: Options::apply_transforms in hevc-heic, libheif with
+# its transformations on). As G7, except that a file where libheif gives 4:4:4 and hevc-rs 4:2:0
+# at the same size (libheif changes the chroma format for odd clap offsets and odd sides) compares
+# only the luma and alpha planes and is listed in heic-xfrm-disagreements.txt when they are equal.
+heic_xfrm_part() {
+  HEIC_TRANSFORMS=1 hevc-heic $W/hin $W/htr || { echo "FAILED: hevc-heic with transforms" >&2; bad=1; }
+  HEIC_TRANSFORMS=1 heic-oracle $W/hin $W/htl || { echo "FAILED: heic-oracle with transforms" >&2; bad=1; }
+  : > $W/d-heic-xfrm; : > $W/heic-xfrm-explained
+  tboth=0 teq=0 tchanged=0 t444=0 tbothfail=0
+  for f in $W/hin/*; do
+    [ -f "$f" ] || continue
+    b=${f##*/}; s=${b%.*}
+    r=$W/htr/$s l=$W/htl/$s
+    if [ -f "$r.yuv" ] && [ -f "$l.yuv" ]; then
+      tboth=$((tboth + 1))
+      # The transforms change the hevc-rs output of this file.
+      { cmp -s "$r.yuv" "$W/hr/$s.yuv" && cmp -s "$r.info" "$W/hr/$s.info"; } || tchanged=$((tchanged + 1))
+      aok=1
+      if [ -f "$r.alpha" ] && [ -f "$l.alpha" ]; then cmp -s "$r.alpha" "$l.alpha" || aok=0
+      elif [ -f "$r.alpha" ] || [ -f "$l.alpha" ]; then aok=0; fi
+      read -r rw rh rc rdy _ ra _ < "$r.info"; read -r lw lh lc ldy _ la _ < "$l.info"
+      if [ "$(normi "$r.info")" = "$(normi "$l.info")" ] && cmp -s "$r.yuv" "$l.yuv" && [ $aok = 1 ]; then
+        teq=$((teq + 1))
+      elif [ "$rc" = 420 ] && [ "$lc" = 444 ] && [ "$rw $rh $rdy $ra" = "$lw $lh $ldy $la" ]; then
+        by=1; [ "$rdy" -gt 8 ] && by=2
+        if cmp -s -n $((rw * rh * by)) "$r.yuv" "$l.yuv" && [ $aok = 1 ]; then
+          t444=$((t444 + 1))
+          echo "$s: libheif converts to 4:4:4 ($rw x $rh), hevc-rs keeps 4:2:0; luma and alpha equal" >> $W/heic-xfrm-explained
+        else
+          echo "$s: libheif 4:4:4, hevc-rs 4:2:0, and the luma or alpha differs (hevc-rs '$(cat "$r.info")', libheif '$(cat "$l.info")')" >> $W/d-heic-xfrm
+        fi
+      else
+        echo "$s: differs (hevc-rs '$(cat "$r.info")', libheif '$(cat "$l.info")'; yuv $(cmp -s "$r.yuv" "$l.yuv" && echo equal || echo differs), alpha $([ $aok = 1 ] && echo equal || echo differs))" >> $W/d-heic-xfrm
+      fi
+    elif [ -f "$r.yuv" ]; then
+      echo "$s: hevc-rs decodes, libheif fails ($(cat "$l.err" 2> /dev/null || echo no output))" >> $W/heic-xfrm-explained
+    elif [ -f "$l.yuv" ]; then
+      re=$(cat "$r.err" 2> /dev/null)
+      if [ "$re" = unsupported ] || [ "$re" = limit ]; then
+        echo "$s: libheif decodes ($(cat "$l.info" 2> /dev/null)), hevc-rs rejects as $re: $(cat "$r.msg" 2> /dev/null)" >> $W/heic-xfrm-explained
+      else
+        echo "$s: libheif decodes, hevc-rs fails ($(cat "$r.err" 2> /dev/null || echo no output): $(cat "$r.msg" 2> /dev/null))" >> $W/d-heic-xfrm
+      fi
+    elif [ -f "$r.err" ] && [ -f "$l.err" ]; then
+      tbothfail=$((tbothfail + 1))
+    else
+      echo "$s: no output with transforms (hevc-rs: $(ls "$r".* 2> /dev/null | wc -l) files, libheif: $(ls "$l".* 2> /dev/null | wc -l) files)" >> $W/d-heic-xfrm
+    fi
+  done
+  [ "$tboth" -ge "${PARITY_MIN_HEIC:-20}" ] || echo "coverage: $tboth files decoded by both with transforms, below PARITY_MIN_HEIC=${PARITY_MIN_HEIC:-20}" >> $W/d-heic-xfrm
+  cp $W/heic-xfrm-explained "$REP/heic-xfrm-disagreements.txt"
+  {
+    echo; echo "### HEIC with transforms applied (hevc-rs apply_transforms vs libheif)"; echo
+    echo "| set | count |"; echo "|---|---|"
+    echo "| hevc-rs: decoded / error | $(count $W/htr '*.yuv') / $(count $W/htr '*.err') |"
+    echo "| libheif: decoded / error | $(count $W/htl '*.yuv') / $(count $W/htl '*.err') |"
+    echo "| decoded by both | $tboth |"
+    echo "| of them changed by their transforms (hevc-rs output differs from G7) | $tchanged |"
+    echo "| equal (yuv, alpha, info) | $teq |"
+    echo "| libheif 4:4:4, luma and alpha equal (explained) | $t444 |"
+    echo "| rejected by both | $tbothfail |"
+    echo "| explained, all (heic-xfrm-disagreements.txt) | $(wc -l < $W/heic-xfrm-explained) |"
+  } >> $W/heic-summary.md
+}
+
 full() {
   REP=$1 bad=0
   rm -rf $W; mkdir -p "$REP" $W/prefix $W/de $W/denf $W/ff $W/ffp
@@ -335,8 +401,9 @@ EOT
   diff -rq $W/rs1 $W/rsn > $W/d-threads
   # G8: SIMD tiers.
   { diff -rq $W/rs1 $W/rs-scalar; diff -rq $W/rs1 $W/rs-avx2; } > $W/d-tiers
-  # G7: HEIC, hevc-rs vs libheif.
+  # G7: HEIC, hevc-rs vs libheif; G7t: the same with the transforms applied.
   heic_part
+  heic_xfrm_part
 
   read -r cmpn cmpb < $W/s-dec265
   pics=$(find $W/rs1 -type f -name '*.info' -exec cat {} + | wc -l)
@@ -364,11 +431,12 @@ EOT
   gate "G8 HEVC_SIMD=scalar and avx2 vs the default tier" $W/d-tiers
   echo "| G6 (report only) dec265 vs hevc-rs, deblocking and SAO off | $(wc -l < $W/d-nofilters) diff lines |" >> "$REP/summary.md"
   gate "G7 HEIC: hevc-rs vs libheif (yuv, alpha, info of every file both decode)" $W/d-heic
+  gate "G7t HEIC with transforms applied: hevc-rs vs libheif (luma and alpha where libheif gives 4:4:4)" $W/d-heic-xfrm
   [ -s $W/ffprobe-failed ] && { echo; echo "ffprobe failed (G1 skips them), first 50:"; echo; head -n 50 $W/ffprobe-failed | sed 's/^/    /'; } >> "$REP/summary.md"
   cat $W/heic-summary.md >> "$REP/summary.md"
   # Streams hevc-rs rejects, with the error token (unsupported tools are expected; see docs/parity.md).
   for e in $W/probe/*.err $W/rs1/*.err; do [ -f "$e" ] && echo "${e#$W/}: $(cat "$e")"; done > "$REP/errors.txt"
-  for d in d-probe d-dec265 d-ffmpeg d-hash d-threads d-tiers d-nofilters d-heic; do [ -f $W/$d ] && cp $W/$d "$REP/$d.diff"; done
+  for d in d-probe d-dec265 d-ffmpeg d-hash d-threads d-tiers d-nofilters d-heic d-heic-xfrm; do [ -f $W/$d ] && cp $W/$d "$REP/$d.diff"; done
   rm -rf $W
   return $bad
 }

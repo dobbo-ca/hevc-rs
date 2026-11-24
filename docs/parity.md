@@ -21,14 +21,17 @@ All of this runs in CI only; nothing is built or run on a developer machine.
   little-endian; monochrome is Y only), `<name>.alpha` (the alpha plane, same sample format; only
   when there is one) and `<name>.info` (`W H chroma depthY depthC alpha`, chroma 400 or 420, alpha
   0 or 1), or `<name>.err` with a token (`unsupported`, `invalid`, `container`, `limit`, ...). The
-  image is not rotated, mirrored or cropped by its transforms.
+  image is not rotated, mirrored or cropped by its transforms, except with `HEIC_TRANSFORMS=1`
+  (G7t): then it sets `Options::apply_transforms`.
 - libheif v1.23.7 (`tests/parity/c/heic_oracle.c` linked statically to the tag, commit
   `12a259a5`, with libde265 v1.0.15 as the only codec) is the HEIC oracle `heic-oracle`:
   `heif_decode_image` of the primary image with `heif_colorspace_undefined`,
   `heif_chroma_undefined` and `ignore_transformations = 1`, so the native YCbCr layout and depth
   are kept, in the same output files. An RGB or interleaved result is `<name>.err` = `convert`;
   other failures are `decode`. For a monochrome image libheif has no chroma plane, so its depthC
-  is written as depthY. libheif is LGPL: it is a CI-only binary, never linked into the crate.
+  is written as depthY. With `HEIC_TRANSFORMS=1` (G7t) it sets `ignore_transformations = 0`, so
+  libheif applies `clap`, `irot` and `imir`. libheif is LGPL: it is a CI-only binary, never
+  linked into the crate.
 
 ## Gates
 
@@ -61,7 +64,7 @@ All of this runs in CI only; nothing is built or run on a developer machine.
    An `iovl` primary decodes in the inputs' YCbCr, while libheif returns RGB for it (the oracle
    token is `convert`, a libheif failure): such a file is listed in `heic-disagreements.txt`, not
    compared. An `iden` primary is compared like any other (libheif runs with
-   `ignore_transformations`).
+   `ignore_transformations`; G7t compares it with the transforms applied).
 
    Coverage: G7 also fails when fewer than `PARITY_MIN_HEIC` (default 20) files are decoded by
    both, so a libheif without a HEVC decoder cannot pass with nothing compared (the oracle image
@@ -72,6 +75,34 @@ All of this runs in CI only; nothing is built or run on a developer machine.
    A file both reject is only counted. `heic-errors.txt` has the error token of every rejected
    file on each side. The summary has the counts: files, decoded by each, decoded by both, equal,
    alpha planes compared, rejected by both, explained.
+7. G7t HEIC with the transforms applied: the second pass of G7 over the same HEIC corpus, with
+   `HEIC_TRANSFORMS=1` on both sides (`Options::apply_transforms` in `examples/heic`, libheif with
+   its transformations on). Not soft. Rules as G7, plus one: a file where libheif gives 4:4:4 and
+   hevc-rs 4:2:0 at the same size compares only the luma and alpha planes (and W, H, depthY,
+   alpha of `.info`); when they are equal it is listed in `heic-xfrm-disagreements.txt`,
+   explained, else it is a line of `d-heic-xfrm.diff`. The summary counts the files whose
+   hevc-rs output the transforms change (against G7), so a pass that applied nothing shows.
+
+   Expected differences (the only ones allowed, each explained in
+   `heic-xfrm-disagreements.txt` by the run):
+   - libheif changes the chroma format, hevc-rs does not: for 4:2:0, a `clap` with an odd left or
+     top offset, `irot` 90 with an odd width, 270 with an odd height, 180 or `imir` with an odd
+     width or height. libheif converts the image to 4:4:4 (bilinear) before that step; the
+     shared helper (isobmff-rs `docs/transforms.md`, "Chroma") keeps 4:2:0 and moves the chroma by
+     one luma sample. Luma and alpha must still be equal. (4:2:2 turned by 90 or 270 degrees, the
+     other case, cannot occur: hevc-rs decodes 4:0:0 and 4:2:0 only.)
+   - A second `irot`, `imir` or `clap` on one item: libheif rejects the file (also in G7, with
+     `ignore_transformations`), isobmff-rs keeps every property as stored (the metadata rule) and
+     the helper applies them all in order. Such a file shows as "hevc-rs decodes, libheif fails".
+   - A grid whose tiles have transforms of their own: libheif turns each tile before it pastes
+     it; hevc-rs returns `Unsupported` with the option on ("libheif decodes, hevc-rs rejects as
+     unsupported").
+   - An alpha item without the main image's transforms: both apply the alpha item's own
+     transforms; libheif then scales the alpha plane to the main image's size (nearest
+     neighbour), hevc-rs does not. This would be a `d-heic-xfrm.diff` line (alpha differs), not
+     an explained one; the corpus has none (see Counts).
+   - As in G7: `unsupported` or `limit` on the hevc-rs side, and files only hevc-rs decodes (an
+     `iovl` primary, for which libheif returns RGB, token `convert`), are explained.
 8. G8 (run after G5) `HEVC_SIMD=scalar` and `HEVC_SIMD=avx2` equal the default (best) tier,
    AVX-512 on the CI hosts. `parity-arm64` does the same for scalar against NEON.
 
@@ -91,6 +122,7 @@ From the CI runs of 2026-11-23 with every gate green (main 6dbe2a7 and the PR ru
 | HEIC files / decoded by both / equal to libheif (yuv, alpha, info) | 177 / 60 / 60 (3 alpha planes; includes the `mini` files C71 and libheif `lightning_mini`, PR #23 run 45470257821) |
 | HEIC files libheif decodes and hevc-rs rejects (explained) | 2: C039 (`unsupported`), 4:4:4 (MIAF003); hevc-rs decodes and libheif fails: 1 (`iff_hevc_tile_multiple_items_tbas`) |
 | HEIC files rejected by both | 114 (among them imazen `lightning_mini.heif`, the pre-final `mini` draft: hevc-rs `container`, libheif `decode`) |
+| G7t (transforms applied): decoded by both / equal / changed by their transforms | 60 / 60 / 9 (PR #28 run 45502344744). libheif 4:4:4 cases: 0 (no corpus file has an odd crop offset or odd side under a transform). Alpha planes scaled by libheif: 0. Explained: 2 (`iff_hevc_tile_multiple_items_tbas` and MIAF003, as in G7). With the transforms on, libheif also rejects C039 (an `iden` of an `iden`) |
 
 Two oracle settings matter: ffmpeg runs with `-flags unaligned -autoscale 0` (else it aligns the
 left crop and scales pictures that change size), and libheif with

@@ -124,6 +124,12 @@ pub struct Options {
     /// for a picture that has the SEI. false: it is `None` and no MD5, CRC or checksum is
     /// computed (about 4% of the decode time; libde265 and ffmpeg do not check by default).
     pub check_hash: bool,
+    /// Apply the `clap`, `irot` and `imir` properties in [`decode_heic`] and [`decode_heic_item`]
+    /// (default false: the pixels come back as coded). true: the image (and the alpha plane of
+    /// `decode_heic`) is cropped, rotated and mirrored by `isobmff::apply_transforms`, in `ipma`
+    /// order, and `info.width`/`info.height` are the size after it. The Annex B and `hvcC` entry
+    /// points ignore it.
+    pub apply_transforms: bool,
 }
 
 impl Default for Options {
@@ -133,6 +139,7 @@ impl Default for Options {
             sao: true,
             metadata: true,
             check_hash: false,
+            apply_transforms: false,
         }
     }
 }
