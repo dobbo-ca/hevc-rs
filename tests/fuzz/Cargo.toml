@@ -62,3 +62,10 @@ path = "fuzz_targets/transform_tiers.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "intra_tiers"
+path = "fuzz_targets/intra_tiers.rs"
+test = false
+doc = false
+bench = false
