@@ -64,10 +64,14 @@ fn planar(p: &Refs, out: &mut Block, log2: u32) {
         let vl = vdupq_n_s32(p.left(y + 1));
         let wy = vdupq_n_s32(ni - 1 - yi);
         let k = vdupq_n_s32((yi + 1) * bl + ni);
-        for (ci, c) in row.chunks_exact_mut(4).enumerate().take(n / 4) {
-            let Ok(dst) = <&mut [i32; 4]>::try_from(c) else {
-                continue;
-            };
+        for (ci, c) in row
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+            .take(n / 4)
+        {
+            let dst = c;
             let Some(t) = arr::<4>(&p.r, 2 * n + 1 + 4 * ci) else {
                 continue;
             };
@@ -91,10 +95,14 @@ fn angular(rf: &[i32; RF_LEN], angle: i32, n: usize, out: &mut Block) {
         let pos = (a as i32 + 1) * angle;
         let (idx, f) = (pos >> 5, pos & 31);
         let (wa, wb) = (vdupq_n_s32(32 - f), vdupq_n_s32(f));
-        for (ci, c) in row.chunks_exact_mut(4).enumerate().take(n / 4) {
-            let Ok(dst) = <&mut [i32; 4]>::try_from(c) else {
-                continue;
-            };
+        for (ci, c) in row
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+            .take(n / 4)
+        {
+            let dst = c;
             let Ok(base) = usize::try_from(32 + 4 * ci as i32 + idx + 1) else {
                 continue;
             };
@@ -115,10 +123,13 @@ fn angular(rf: &[i32; RF_LEN], angle: i32, n: usize, out: &mut Block) {
 fn store(block: &Block, out: &mut Pred, n: usize, max: i32) {
     let (lo, hi) = (vdupq_n_s32(0), vdupq_n_s32(max));
     for (src, dst) in block.iter().zip(out.iter_mut()).take(n) {
-        for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)).take(n / 4) {
-            let (Ok(s), Ok(d)) = (<&[i32; 4]>::try_from(s), <&mut [u16; 4]>::try_from(d)) else {
-                continue;
-            };
+        for (s, d) in src
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(dst.as_chunks_mut::<4>().0.iter_mut())
+            .take(n / 4)
+        {
             let v = vminq_s32(vmaxq_s32(ld_i32x4(s), lo), hi);
             st_u16x4(d, vqmovun_s32(v));
         }

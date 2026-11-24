@@ -66,10 +66,14 @@ fn planar(p: &Refs, out: &mut Block, log2: u32) {
         let vl = _mm256_set1_epi32(p.left(y + 1));
         let wy = _mm256_set1_epi32(ni - 1 - yi);
         let k = _mm256_set1_epi32((yi + 1) * bl + ni);
-        for (ci, c) in row.chunks_exact_mut(8).enumerate().take(n.div_ceil(8)) {
-            let Ok(dst) = <&mut [i32; 8]>::try_from(c) else {
-                continue;
-            };
+        for (ci, c) in row
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .enumerate()
+            .take(n.div_ceil(8))
+        {
+            let dst = c;
             let Some(t) = arr::<8>(&p.r, 2 * n + 1 + 8 * ci) else {
                 continue;
             };
@@ -93,10 +97,14 @@ fn angular(rf: &[i32; RF_LEN], angle: i32, n: usize, out: &mut Block) {
         let pos = (a as i32 + 1) * angle;
         let (idx, f) = (pos >> 5, pos & 31);
         let (wa, wb) = (_mm256_set1_epi32(32 - f), _mm256_set1_epi32(f));
-        for (ci, c) in row.chunks_exact_mut(8).enumerate().take(n.div_ceil(8)) {
-            let Ok(dst) = <&mut [i32; 8]>::try_from(c) else {
-                continue;
-            };
+        for (ci, c) in row
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .enumerate()
+            .take(n.div_ceil(8))
+        {
+            let dst = c;
             let Ok(base) = usize::try_from(32 + 8 * ci as i32 + idx + 1) else {
                 continue;
             };
@@ -121,13 +129,12 @@ fn store(block: &Block, out: &mut Pred, n: usize, max: i32) {
     let (lo, hi) = (_mm256_setzero_si256(), _mm256_set1_epi32(max));
     for (src, dst) in block.iter().zip(out.iter_mut()).take(n) {
         for (s, d) in src
-            .chunks_exact(8)
-            .zip(dst.chunks_exact_mut(8))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .zip(dst.as_chunks_mut::<8>().0.iter_mut())
             .take(n.div_ceil(8))
         {
-            let (Ok(s), Ok(d)) = (<&[i32; 8]>::try_from(s), <&mut [u16; 8]>::try_from(d)) else {
-                continue;
-            };
             let v = _mm256_min_epi32(_mm256_max_epi32(ld_i32x8(s), lo), hi);
             let w = _mm_packus_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v));
             st_u16x8(d, w);

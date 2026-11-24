@@ -25,21 +25,12 @@ type Pred = [[u16; 32]; 32];
 
 /// Block buffers of [`predict`], kept by the caller across calls so that no 4 KiB array is
 /// zeroed per prediction. Every mode writes the whole n x n part of each buffer it reads.
+#[derive(Default)]
 pub(crate) struct Scratch {
     pred: Block,
     /// The transposed result of a horizontal angular mode.
     t: Block,
     out: Pred,
-}
-
-impl Default for Scratch {
-    fn default() -> Self {
-        Self {
-            pred: [[0; 32]; 32],
-            t: [[0; 32]; 32],
-            out: [[0; 32]; 32],
-        }
-    }
 }
 
 /// intraPredAngle (Table 8-5) for predModeIntra 2..=34, index = mode - 2.
