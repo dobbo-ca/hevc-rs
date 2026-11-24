@@ -29,6 +29,7 @@ thread, best of 3; `HEVC_SIMD` forces the tier). These were tried and removed:
 | Kernel | Tiers | Bench | Result |
 |---|---|---|---|
 | Output pack `u16` to `u8` (`src/crop.rs`) | AVX2 (`packus` + lane permute), AVX-512 (`vpmovwb`), NEON (`vmovn`) | run 45286842132: scalar 5914.7 ms, avx2 5912.9 ms, avx512 5912.4 ms (dec265 3360.8 ms) | no measurable gain; the scalar narrowing loop stays |
+| Deblocking luma/chroma line filters (`src/deblock.rs`, branch `sp-dblk-r5t1`, PR #16) | AVX2, NEON (Avx512 used AVX2) | run 45299840365 vs main run 45301270780: all classes 1t 4155.6 ms vs 4173.9 ms; ENTP_A 1055 vs 1053 ms, OPFLAG_B 949 vs 936 ms; the batched scalar path was slower (5273.4 vs 5216.7 ms) | no measurable gain; the scalar filters stay |
 
 The output crop (`src/crop.rs`) and the picture hash (`sei::compute`) read the cancel flag before
 every row and return `Error::Cancelled`.
