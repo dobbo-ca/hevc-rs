@@ -21,6 +21,7 @@ jobs:
     runs-on: github-arc-runner-set
     outputs:
       targets: ${{ steps.p.outputs.targets }}
+      arm64: ${{ steps.p.outputs.arm64 }}
     steps:
       - id: p
         env:
@@ -35,6 +36,9 @@ jobs:
             *) case " $all " in *" $ONLY "*) list=$ONLY ;; *) echo "unknown target $ONLY" >&2; exit 1 ;; esac ;;
           esac
           echo "targets=[$(echo $list | sed 's/[a-z_][a-z_]*/"&"/g; s/" "/","/g')]" >> "$GITHUB_OUTPUT"
+          # The tier targets of the list also run on aarch64 (job fuzz-arm64).
+          arm=$(for t in $list; do case $t in *_tiers) printf '%s ' $t ;; esac; done)
+          echo "arm64=[$(echo $arm | sed 's/[a-z_][a-z_]*/"&"/g; s/" "/","/g')]" >> "$GITHUB_OUTPUT"
   fuzz:
     needs: plan
     runs-on: github-arc-runner-set
@@ -114,15 +118,17 @@ jobs:
 
   # The NEON kernels: the three tier targets built for aarch64, run under qemu-user (no sanitizer:
   # ASan does not run under qemu), so every NEON tier is compared with scalar.
+  # It starts after the x86_64 job, so there are never more than two fuzz jobs at a time.
   fuzz-arm64:
-    needs: plan
+    needs: [plan, fuzz]
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.arm64 != '[]'
     runs-on: github-arc-runner-set
     strategy:
       fail-fast: false
       # As above: the ARC runners are shared.
       max-parallel: 2
       matrix:
-        target: [transform_tiers, intra_tiers, sao_tiers]
+        target: ${{ fromJSON(needs.plan.outputs.arm64) }}
     timeout-minutes: 60
     env:
       MAX_TOTAL_TIME: ${{ inputs.max_total_time || '600' }}
@@ -157,8 +163,8 @@ jobs:
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: corpus
-          key: fuzz-corpus-${{ matrix.target }}-arm64-${{ github.run_id }}
-          restore-keys: fuzz-corpus-${{ matrix.target }}-arm64-
+          key: fuzz-corpus-arm64-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-arm64-${{ matrix.target }}-
       - run: |
           mkdir -p corpus/${{ matrix.target }}
           docker create --name fuzz -e MAX_TOTAL_TIME -e TARGET=${{ matrix.target }} hevc-fuzz-arm64:local \
@@ -178,4 +184,4 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: corpus
-          key: fuzz-corpus-${{ matrix.target }}-arm64-${{ github.run_id }}
+          key: fuzz-corpus-arm64-${{ matrix.target }}-${{ github.run_id }}

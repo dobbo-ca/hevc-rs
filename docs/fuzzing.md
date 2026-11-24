@@ -15,7 +15,8 @@
 | `intra_tiers` | `__fuzz_intra::run`: one intra block (size 4..32, mode 0..34, bit depth 8..16, luma/strong/raw flags) built from the bytes, every SIMD tier vs scalar, bit-exact |
 
 All targets run with `-rss_limit_mb=2048 -malloc_limit_mb=512`, so an allocation outside the
-limits is a crash.
+limits is a crash. The malloc limit needs the sanitizer's allocator hooks, so it applies to the
+x86_64 jobs only; the `fuzz-arm64` jobs (no sanitizer, under qemu) have the RSS limit only.
 
 Seeds are made in the image build (`.github/ci/Dockerfile`, stage `fuzz`), one directory per
 target, and are not kept in git. `annexb`, `probe` and `decode` get a hand-written VPS, the start

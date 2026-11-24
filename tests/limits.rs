@@ -316,7 +316,9 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
     }
 
     // Parameter sets repeated before every picture (the replaced sets are still shared by the
-    // pictures in flight): the heap peak of eight threads stays within the budget.
+    // pictures in flight): the heap peak of eight threads stays within the budget. A smoke test:
+    // the bytes of one replaced SPS/PPS pair fit in the small reserve, so it cannot tell whether
+    // the replaced sets stay booked (`Decoder::stream`, the 32..=34 arm, does that).
     let repeated = stream_with(64, 2048, 6, true);
     let (_, rep_need) =
         peaked(|| hevc::decode(&repeated, &opts, &Limits::default(), &cancel).map(drop));
