@@ -205,14 +205,17 @@ fn threads_now() -> usize {
     let Ok(dir) = std::fs::read_dir("/proc/self/task") else {
         return 0;
     };
-    // A thread that has exited (and was joined) can stay listed for a moment in state Z or X;
-    // only live threads count.
+    // A thread that has exited (and was joined) can stay listed for a moment in state Z or X,
+    // and pthread_join can return while the thread is still in the kernel's exit path (state R
+    // or D, with PF_EXITING = 0x4 in the flags, the 6th field after the state); only live
+    // threads count.
     dir.filter_map(Result::ok)
         .filter(|e| {
             std::fs::read_to_string(e.path().join("stat")).is_ok_and(|s| {
-                s.rsplit_once(')')
-                    .and_then(|(_, rest)| rest.trim_start().chars().next())
-                    .is_some_and(|c| c != 'Z' && c != 'X')
+                let mut f = s.rsplit_once(')').map_or("", |(_, r)| r).split_whitespace();
+                let state = f.next().unwrap_or("Z");
+                let flags: u32 = f.nth(5).and_then(|v| v.parse().ok()).unwrap_or(0);
+                state != "Z" && state != "X" && flags & 0x4 == 0
             })
         })
         .count()
