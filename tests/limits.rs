@@ -192,7 +192,20 @@ fn stream_n(size: u32, data: usize, n: usize) -> Vec<u8> {
 
 #[cfg(target_os = "linux")]
 fn threads_now() -> usize {
-    std::fs::read_dir("/proc/self/task").map_or(0, Iterator::count)
+    let Ok(dir) = std::fs::read_dir("/proc/self/task") else {
+        return 0;
+    };
+    // A thread that has exited (and was joined) can stay listed for a moment in state Z or X;
+    // only live threads count.
+    dir.filter_map(Result::ok)
+        .filter(|e| {
+            std::fs::read_to_string(e.path().join("stat")).is_ok_and(|s| {
+                s.rsplit_once(')')
+                    .and_then(|(_, rest)| rest.trim_start().chars().next())
+                    .is_some_and(|c| c != 'Z' && c != 'X')
+            })
+        })
+        .count()
 }
 
 /// Runs `f` and returns whether it failed with `AllocLimit` and the heap peak above the live
