@@ -72,10 +72,10 @@ fn iso_err(e: isobmff::Error) -> Error {
         isobmff::Error::OutOfMemory => Error::OutOfMemory,
         isobmff::Error::LimitExceeded(Limit::Alloc) => Error::AllocLimit,
         isobmff::Error::LimitExceeded(Limit::Pixels) => Error::PixelLimit,
-        // Valid HEIF that isobmff-rs does not handle (e.g. the `mini` box): outside the scope.
+        // Valid HEIF that isobmff-rs does not handle (e.g. a `mini` box of another codec or
+        // version): outside the scope.
         isobmff::Error::Unsupported(what) => Error::Unsupported(what),
-        // No `meta` box: e.g. the low-overhead `mini` form of HEIF, which isobmff-rs does not read.
-        isobmff::Error::NoMeta => Error::Unsupported("HEIF file without a meta box (mini form)"),
+        // `NoMeta` (neither `meta` nor `mini`) is a container error like the others.
         e => Error::InvalidData(e.class()),
     }
 }
@@ -800,7 +800,9 @@ impl Ctx<'_> {
 
 /// Decodes the primary image of a HEIC file, and its alpha plane when it has one.
 ///
-/// The primary item is one `hvc1` image, a `grid` of `hvc1` tiles, an `iden` (identity) item
+/// The file has a `meta` box or a `mini` box (ISO/IEC 23008-12 Annex O); isobmff-rs gives both
+/// the same item graph, so a `mini` file's orientation comes back as `irot`/`imir` in
+/// [`HeicImage::transforms`] and its alpha item is decoded like any other. The primary item is one `hvc1` image, a `grid` of `hvc1` tiles, an `iden` (identity) item
 /// whose input is one of those, or an `iovl` (overlay) of those; each coded item is decoded
 /// with [`decode_hvcc_into`] and must hold exactly one picture. The metadata (SEI messages, VUI)
 /// is that of the first tile (first input of an overlay), kept unless [`Options::metadata`] is
@@ -1046,6 +1048,7 @@ mod tests {
         assert_eq!(iso_err(E::LimitExceeded(Limit::Pixels)), Error::PixelLimit);
         assert_eq!(iso_err(E::Truncated), Error::InvalidData("truncated"));
         assert_eq!(iso_err(E::Unsupported("mini")), Error::Unsupported("mini"));
+        assert_eq!(iso_err(E::NoMeta), Error::InvalidData("no-meta"));
         assert_eq!(merge_hash(Some(true), Some(true)), Some(true));
         assert_eq!(merge_hash(Some(true), None), None);
         assert_eq!(merge_hash(Some(true), Some(false)), Some(false));
@@ -1534,5 +1537,77 @@ mod tests {
             !matches!(r, Err(Error::Unsupported("primary image is not HEVC"))),
             "{r:?}"
         );
+    }
+
+    /// A `mini` box file (ISO/IEC 23008-12 Annex O, `ftyp` minor version `heic`): a 64 x 48
+    /// 4:2:0 8-bit `hvc1` image with the `hvcC` record of `one_item_file` and junk item data,
+    /// orientation 5, an alpha item that shares the main configuration, and an Exif chunk.
+    fn mini_file() -> Vec<u8> {
+        let cfg = [
+            1u8, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 93, 0xF0, 0, 0xFC, 0xFD, 0xF8, 0xF8, 0, 0, 3, 1,
+            0xA0, 0, 1, 0, 3, 0x40, 0x01, 0x02,
+        ];
+        let (alpha, main, exif): (&[u8], &[u8], &[u8]) = (b"ALPHA", &[1, 2, 3, 4], b"II*\0EXIF");
+        let mut bits = Vec::new();
+        let mut put = |v: usize, n: u32| bits.extend((0..n).rev().map(|i| (v >> i) & 1 == 1));
+        put(0, 2); // version
+        // explicit codec types, float, full range, alpha, explicit CICP, hdr, icc, exif, xmp
+        put(0b0_0110_0010, 9);
+        put(1, 2); // 4:2:0
+        put(4, 3); // orientation 5
+        put(0, 1); // small dimensions
+        put(63, 7);
+        put(47, 7);
+        put(0, 2); // chroma not centred, horizontally and vertically
+        put(0, 1); // 8 bits
+        put(0, 1); // alpha not premultiplied
+        put(0b010, 3); // large metadata 0, large codec config 1, large item data 0
+        put(cfg.len(), 12);
+        put(main.len() - 1, 15);
+        put(alpha.len(), 15);
+        put(0, 12); // the alpha item uses the main configuration
+        put(0, 1); // Exif not compressed
+        put(exif.len() - 1, 10);
+        let mut payload: Vec<u8> = bits
+            .chunks(8)
+            .map(|c| {
+                c.iter()
+                    .enumerate()
+                    .fold(0u8, |b, (i, &x)| if x { b | (0x80 >> i) } else { b })
+            })
+            .collect();
+        payload.extend_from_slice(&[&cfg[..], alpha, main, exif].concat());
+        [bx(b"ftyp", b"mif3heic"), bx(b"mini", &payload)].concat()
+    }
+
+    #[test]
+    fn mini_box_is_decoded_like_meta() {
+        let file = mini_file();
+        let cancel = AtomicBool::new(false);
+        let iso = isobmff::Limits::default();
+        let heif = isobmff::parse(&file, &iso, &cancel).expect("hand-built mini file parses");
+        let img = heif.primary_image().unwrap();
+        assert!(matches!(
+            img.kind,
+            ImageKind::Coded {
+                codec: Codec::Hevc,
+                config: CodecConfig::Hevc(_)
+            }
+        ));
+        assert_eq!((img.width, img.height, img.alpha), (64, 48, Some(2)));
+        // Orientation 5 as libheif maps it, returned raw.
+        assert_eq!(
+            transforms_of(&heif, &img).unwrap(),
+            [Transform::Rotate(270), Transform::Mirror(Axis::LeftRight)]
+        );
+        // The Exif chunk stays readable as stored (a mini box has no exif_tiff_header_offset).
+        let md = heif.metadata(&file, 1, &iso, &cancel).unwrap();
+        assert_eq!(md.exif.as_deref(), Some(&b"II*\0EXIF"[..]));
+        // The item bytes reach the decoder (the junk is one NAL length past the data), for the
+        // primary and for the alpha item, which shares its configuration.
+        let (o, l) = (Options::default(), Limits::default());
+        let e = decode_heic(&file, &o, &l, &cancel).err();
+        assert_eq!(e, Some(Error::InvalidData("NAL length beyond the data")));
+        assert_eq!(e, decode_heic_item(&heif, &file, 2, &o, &l, &cancel).err());
     }
 }

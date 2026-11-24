@@ -200,7 +200,8 @@ ENV CARGO_NET_OFFLINE=true
 # fuzz -max_len) of the first 20 conformance streams from the data cache, which hold the
 # parameter sets and the first intra slices. hvcc: a split byte, a minimal hvcC record with one
 # SPS array, and one length-prefixed AUD sample. params: the SPS bytes with no start code or NAL
-# header. Fuzz-grown files are added by fuzz.yml.
+# header. heic: the first 20 HEIC corpus files under 64 KiB, plus the `mini` box files (C71 and
+# both lightning_mini). Fuzz-grown files are added by fuzz.yml.
 FROM fuzz-tools AS fuzz
 COPY . .
 COPY --from=data /data.list /data.list
@@ -216,7 +217,7 @@ RUN --mount=type=cache,id=hevc-rs-data,target=/data,sharing=locked,readonly \
     && head -n 20 /data.list | while IFS= read -r f; do \
          n=${f#./}; head -c 65536 "/data/x/$n" > "tests/fuzz/seeds/annexb/$(echo "$n" | tr / _)"; \
        done \
-    && (cd /heic/x && find . -type f -size -64k | sort | head -n 20) | while IFS= read -r f; do \
+    && (cd /heic/x && { find . -type f -size -64k | sort | head -n 20; find . -type f \( -iname "*mini*" -o -name C71.heic \) | sort; }) | while IFS= read -r f; do \
          n=${f#./}; cp "/heic/x/$n" "tests/fuzz/seeds/heic/$(echo "$n" | tr / _)"; \
        done \
     && cp tests/fuzz/seeds/annexb/* tests/fuzz/seeds/probe/ \

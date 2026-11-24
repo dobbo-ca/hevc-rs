@@ -22,7 +22,7 @@ x86_64 jobs only; the `fuzz-arm64` jobs (no sanitizer, under qemu) have the RSS 
 Seeds are made in the image build (`.github/ci/Dockerfile`, stage `fuzz`), one directory per
 target, and are not kept in git. `annexb`, `probe` and `decode` get a hand-written VPS, the start
 of an SPS and an AUD, plus the first 64 KiB of the first 20 conformance streams from the data
-cache. `heic` gets the first 20 files under 64 KiB of the HEIC corpus. `hvcc` gets one minimal `hvcC` record with a sample, `params` the SPS bytes alone. The
+cache. `heic` gets the first 20 files under 64 KiB of the HEIC corpus and its `mini` box files (C71 and both `lightning_mini.heif`). `hvcc` gets one minimal `hvcC` record with a sample, `params` the SPS bytes alone. The
 `transform_tiers`, `intra_tiers`, `sao_tiers` and `deblock_tiers` have no seeds: their seed directories start empty. The workflow adds the files of `tests/data/fuzz-grown` and keeps each target's corpus between runs.
 
 `.github/workflows/fuzz.yml` runs weekly on Tuesday at 12:23 UTC (the slot is not shared with

@@ -1,7 +1,7 @@
 # Dependencies
 
 One: `isobmff` ([isobmff-rs](https://github.com/dobbo-ca/isobmff-rs), private, same owner, pure
-Rust, no `unsafe`), pinned by git rev in `Cargo.toml`; it parses the HEIC container for
+Rust, no `unsafe`), pinned by git rev in `Cargo.toml` (`06d94e6`, which reads the `mini` box); it parses the HEIC container for
 `decode_heic` and decodes no pixels. CI fetches it with a read-only GitHub App token (see
 `docs/conventions.md` in rust-ports, "Private git dependencies"). The build dependencies are
 empty. No C code.

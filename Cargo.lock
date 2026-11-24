@@ -12,4 +12,4 @@ dependencies = [
 [[package]]
 name = "isobmff"
 version = "0.1.0"
-source = "git+https://github.com/dobbo-ca/isobmff-rs?rev=26953d6120830fee8173964f7222e95f5cc3a35c#26953d6120830fee8173964f7222e95f5cc3a35c"
+source = "git+https://github.com/dobbo-ca/isobmff-rs?rev=06d94e66ed14cf9ad0444cffbde8df90cb1920f6#06d94e66ed14cf9ad0444cffbde8df90cb1920f6"
