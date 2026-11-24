@@ -445,7 +445,7 @@ mod tests {
             s ^= s << 17;
             s
         };
-        let extreme = seed % 3 == 0;
+        let extreme = seed.is_multiple_of(3);
         for c in 0..f.num_planes() {
             for y in 0..f.height[c] {
                 for x in 0..f.width[c] {
@@ -486,10 +486,10 @@ mod tests {
     fn tiers_equal_scalar() {
         let l = ledger();
         for seed in 1..40u64 {
-            let (act, mut want) = random_frame(seed % 2 == 0, seed * 0x9e37_79b9);
+            let (act, mut want) = random_frame(seed.is_multiple_of(2), seed * 0x9e37_79b9);
             sao_with(Tier::Scalar, &mut want, &act, &l, &AtomicBool::new(false)).unwrap();
             for t in simd::available() {
-                let (act, mut got) = random_frame(seed % 2 == 0, seed * 0x9e37_79b9);
+                let (act, mut got) = random_frame(seed.is_multiple_of(2), seed * 0x9e37_79b9);
                 sao_with(t, &mut got, &act, &l, &AtomicBool::new(false)).unwrap();
                 assert_eq!(got.planes, want.planes, "{} seed {seed}", t.name());
             }
