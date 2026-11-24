@@ -40,18 +40,27 @@ static PK8: [[i32; 8]; 4] = pk::<4, 8>(8, false);
 static PK16: [[i32; 16]; 8] = pk::<8, 16>(16, false);
 static PK32: [[i32; 32]; 16] = pk::<16, 32>(32, false);
 
-/// Scaling, transform (or transform skip) and rounding of the block, in place. `dq` is None when
-/// the coefficients are already scaled. `coeffs` has n * n entries; `p` is validated.
+/// Scaling (in place, of the chunks that cover the extent `ext` of the non-zero coefficients),
+/// transform (or transform skip) and rounding of the block into `res`. `dq` is None when the
+/// coefficients are already scaled. `coeffs` and `res` have n * n entries, `ext` is at most
+/// (n, n); `p` is validated.
 #[target_feature(enable = "avx2")]
-pub(super) fn residual(coeffs: &mut [i32], dq: Option<Dq<'_>>, p: &TuParams) {
+pub(super) fn residual(
+    coeffs: &mut [i32],
+    ext: (usize, usize),
+    dq: Option<Dq<'_>>,
+    p: &TuParams,
+    res: &mut [i32],
+) {
+    let n = 1usize << p.log2_size;
     if let Some(dq) = dq {
-        dequant(coeffs, &dq);
+        dequant(coeffs, n, ext, &dq);
     }
     let bd2 = 20 - p.bit_depth;
     if p.transform_skip {
-        ts_round(coeffs, 5 + p.log2_size, bd2);
+        ts_round(coeffs, res, 5 + p.log2_size, bd2);
     } else {
-        transform(coeffs, p, bd2);
+        transform(coeffs, ext, p, bd2, res);
     }
 }
 
@@ -65,51 +74,53 @@ fn dq8(v: __m256i, ms: __m256i, rnd: __m256i, sh: __m128i) -> __m256i {
     )
 }
 
-/// 8.6.3 in i32; the caller has checked that no product overflows (`dq_for`).
+/// 8.6.3 in i32 on the chunks of 8 entries that cover the first `rows` rows and `cols` columns
+/// (a chunk is two rows of a 4x4 block); the caller has checked that no product overflows
+/// (`dq_for`). A zero coefficient scales to zero, so covering more than the extent is harmless.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn dequant(coeffs: &mut [i32], dq: &Dq<'_>) {
+fn dequant(coeffs: &mut [i32], n: usize, (rows, cols): (usize, usize), dq: &Dq<'_>) {
     let rnd = _mm256_set1_epi32(1 << (dq.bd_shift - 1));
     let sh = _mm_cvtsi32_si128(dq.bd_shift as i32);
-    match dq.mat {
-        None => {
-            let ms = _mm256_set1_epi32(dq.scale * 16);
-            for ch in coeffs.as_chunks_mut::<8>().0 {
-                st_i32x8(ch, dq8(ld_i32x8(ch), ms, rnd, sh));
-            }
-        }
-        Some(m) => {
-            let scale = _mm256_set1_epi32(dq.scale);
-            for (cc, mm) in coeffs
-                .as_chunks_mut::<16>()
-                .0
-                .iter_mut()
-                .zip(m.as_chunks::<16>().0)
-            {
-                let f = ld_u8x16(mm);
-                let fs = [
-                    _mm256_cvtepu8_epi32(f),
-                    _mm256_cvtepu8_epi32(_mm_srli_si128::<8>(f)),
-                ];
-                for (ch, f) in cc.as_chunks_mut::<8>().0.iter_mut().zip(fs) {
-                    let ms = _mm256_mullo_epi32(f, scale);
-                    st_i32x8(ch, dq8(ld_i32x8(ch), ms, rnd, sh));
-                }
-            }
+    let flat = _mm256_set1_epi32(dq.scale * 16);
+    let scale = _mm256_set1_epi32(dq.scale);
+    let mat = dq.mat.map(|m| m.as_chunks::<8>().0);
+    // Chunks per row, and the rows and chunks of a row that cover the extent.
+    let (per_row, nrows, ncols) = if n == 4 {
+        (1, rows.div_ceil(2), 1)
+    } else {
+        (n / 8, rows, cols.div_ceil(8))
+    };
+    let chunks = coeffs.as_chunks_mut::<8>().0;
+    for r in 0..nrows {
+        for (k, ch) in chunks.iter_mut().enumerate().skip(r * per_row).take(ncols) {
+            let ms = match mat {
+                None => flat,
+                Some(m) => match m.get(k) {
+                    Some(f) => _mm256_mullo_epi32(_mm256_cvtepu8_epi32(ld_u8x8(f)), scale),
+                    None => continue,
+                },
+            };
+            st_i32x8(ch, dq8(ld_i32x8(ch), ms, rnd, sh));
         }
     }
 }
 
-/// Transform skip (8-298) and the bdShift rounding: `(c << ts + round) >> bd2`.
+/// Transform skip (8-298) and the bdShift rounding: `res = (c << ts + round) >> bd2`.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn ts_round(coeffs: &mut [i32], ts: u32, bd2: u32) {
+fn ts_round(coeffs: &[i32], res: &mut [i32], ts: u32, bd2: u32) {
     let l = _mm_cvtsi32_si128(ts as i32);
     let r = _mm_cvtsi32_si128(bd2 as i32);
     let rnd = _mm256_set1_epi32(1 << (bd2 - 1));
-    for ch in coeffs.as_chunks_mut::<8>().0 {
+    for (ch, out) in coeffs
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .zip(res.as_chunks_mut::<8>().0)
+    {
         let v = _mm256_sll_epi32(ld_i32x8(ch), l);
-        st_i32x8(ch, _mm256_sra_epi32(_mm256_add_epi32(v, rnd), r));
+        st_i32x8(out, _mm256_sra_epi32(_mm256_add_epi32(v, rnd), r));
     }
 }
 
@@ -187,15 +198,15 @@ fn store_i32(out: &mut [i32], v: &[__m256i; 4]) {
     }
 }
 
-/// Both 1-D passes (8.6.4.1) and the final bdShift rounding.
+/// Both 1-D passes (8.6.4.1) and the final bdShift rounding, into `res`.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn transform(coeffs: &mut [i32], p: &TuParams, bd2: u32) {
+fn transform(coeffs: &[i32], ext: (usize, usize), p: &TuParams, bd2: u32, res: &mut [i32]) {
     match p.log2_size {
-        2 => sized::<16>(coeffs, p, bd2),
-        3 => sized::<64>(coeffs, p, bd2),
-        4 => sized::<256>(coeffs, p, bd2),
-        _ => sized::<1024>(coeffs, p, bd2),
+        2 => sized::<16>(coeffs, ext, p, bd2, res),
+        3 => sized::<64>(coeffs, ext, p, bd2, res),
+        4 => sized::<256>(coeffs, ext, p, bd2, res),
+        _ => sized::<1024>(coeffs, ext, p, bd2, res),
     }
 }
 
@@ -203,31 +214,39 @@ fn transform(coeffs: &mut [i32], p: &TuParams, bd2: u32) {
 /// bytes and not 4 KiB.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn sized<const NN: usize>(coeffs: &mut [i32], p: &TuParams, bd2: u32) {
+fn sized<const NN: usize>(
+    coeffs: &[i32],
+    ext: (usize, usize),
+    p: &TuParams,
+    bd2: u32,
+    res: &mut [i32],
+) {
     let n = 1usize << p.log2_size;
     let mut c16 = [0i16; NN];
     let mut ht = [0i16; NN];
     let (Some(c16), Some(ht)) = (c16.get_mut(..n * n), ht.get_mut(..n * n)) else {
         return;
     };
-    let ext = pack(coeffs, n, c16);
+    let ext = pack(coeffs, n, ext, c16);
     match (n, p.dst) {
-        (4, true) => run::<8>(&PK_DST, c16, ht, coeffs, n, ext, bd2),
-        (4, false) => run::<8>(&PK4, c16, ht, coeffs, n, ext, bd2),
-        (8, _) => run::<8>(&PK8, c16, ht, coeffs, n, ext, bd2),
-        (16, _) => run::<16>(&PK16, c16, ht, coeffs, n, ext, bd2),
-        _ => run::<32>(&PK32, c16, ht, coeffs, n, ext, bd2),
+        (4, true) => run::<8>(&PK_DST, c16, ht, res, n, ext, bd2),
+        (4, false) => run::<8>(&PK4, c16, ht, res, n, ext, bd2),
+        (8, _) => run::<8>(&PK8, c16, ht, res, n, ext, bd2),
+        (16, _) => run::<16>(&PK16, c16, ht, res, n, ext, bd2),
+        _ => run::<32>(&PK32, c16, ht, res, n, ext, bd2),
     }
 }
 
 /// `ext` is the (rows, cols) extent of the non-zero coefficients in `c16`; `ht` is all zero.
+/// Pass 1 transforms the first `cols` columns from their first `rows` inputs, pass 2 every row
+/// from its first `cols` inputs (the other columns of the intermediate are zero).
 #[inline]
 #[target_feature(enable = "avx2")]
 fn run<const W: usize>(
     tab: &[[i32; W]],
     c16: &[i16],
     ht: &mut [i16],
-    coeffs: &mut [i32],
+    res: &mut [i32],
     n: usize,
     ext: (usize, usize),
     bd2: u32,
@@ -246,7 +265,7 @@ fn run<const W: usize>(
     // Pass 2 (rows, step 3) and the rounding of 8-299.
     let rnd = _mm256_set1_epi32(1 << (bd2 - 1));
     let sh = _mm_cvtsi32_si128(bd2 as i32);
-    for (a, out) in coeffs.chunks_exact_mut(n).enumerate() {
+    for (a, out) in res.chunks_exact_mut(n).enumerate() {
         let mut v = row_acc(ht, n, a, tab, cols.div_ceil(2));
         for x in v.iter_mut() {
             *x = _mm256_sra_epi32(_mm256_add_epi32(*x, rnd), sh);

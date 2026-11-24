@@ -121,6 +121,9 @@ pub(crate) struct ResidualParams {
 
 pub(crate) struct ResidualOut {
     pub transform_skip: bool,
+    /// (rows, cols): every non-zero coefficient is in the first `rows` rows and the first
+    /// `cols` columns (the largest y and x written, plus one).
+    pub ext: (usize, usize),
 }
 
 /// last_sig_coeff_{x,y}_prefix: TR with cMax = (log2 << 1) - 1, ctxInc by 9.3.4.2.3.
@@ -226,9 +229,25 @@ fn abs_level_remaining(cabac: &mut Cabac, rice: u32) -> Result<i32> {
     Ok(i32::try_from(v).unwrap_or(i32::MAX))
 }
 
-/// Decodes one residual block into `coeffs` (raster, nTbS * nTbS, row = y). The buffer is
-/// zeroed first. Values are saturated to i32; conformance keeps them within 16 bits.
+/// Decodes one residual block into `coeffs` (raster, nTbS * nTbS, row = y), which must be all
+/// zero on entry: only the coded coefficients are written (the transform clears them again,
+/// `transform::reconstruct`). On error the buffer is zeroed. Values are saturated to i32;
+/// conformance keeps them within 16 bits.
 pub(crate) fn residual_coding(
+    cabac: &mut Cabac,
+    ctx: &mut Contexts,
+    p: &ResidualParams,
+    coeffs: &mut [i32],
+) -> Result<ResidualOut> {
+    let out = coding(cabac, ctx, p, coeffs);
+    if out.is_err() {
+        coeffs.fill(0);
+    }
+    out
+}
+
+/// [`residual_coding`] without the clear on error.
+fn coding(
     cabac: &mut Cabac,
     ctx: &mut Contexts,
     p: &ResidualParams,
@@ -239,10 +258,10 @@ pub(crate) fn residual_coding(
         return Err(Error::InvalidData("residual_coding block size or scanIdx"));
     }
     let n_tb = 1usize << log2;
-    coeffs
-        .get_mut(..n_tb * n_tb)
-        .ok_or(Error::InvalidData("residual buffer too small"))?
-        .fill(0);
+    if coeffs.len() < n_tb * n_tb {
+        return Err(Error::InvalidData("residual buffer too small"));
+    }
+    let mut ext = (0, 0);
     let chroma = p.c_idx > 0;
 
     let transform_skip = p.transform_skip_allowed
@@ -418,10 +437,14 @@ pub(crate) fn residual_coding(
             let x = (xs << 2) + usize::from(xp);
             let y = (ys << 2) + usize::from(yp);
             put(coeffs, y * n_tb + x, if negative { -mag } else { mag })?;
+            ext = (ext.0.max(y + 1), ext.1.max(x + 1));
             num_sig += 1;
         }
     }
-    Ok(ResidualOut { transform_skip })
+    Ok(ResidualOut {
+        transform_skip,
+        ext,
+    })
 }
 
 #[cfg(test)]
@@ -652,7 +675,10 @@ mod tests {
                 num_sig += 1;
             }
         }
-        Ok(ResidualOut { transform_skip })
+        Ok(ResidualOut {
+            transform_skip,
+            ext: crate::transform::extent(coeffs, n_tb),
+        })
     }
 
     /// ctxInc of sig_coeff_flag, 9.3.4.2.5 (transform_skip_context_enabled_flag is 0).
@@ -776,8 +802,8 @@ mod tests {
                     let r2 = residual_coding(&mut c2, &mut x2, &p, &mut b2);
                     let what = format!("round {round} log2 {log2} scan {scan_idx}");
                     assert_eq!(
-                        r1.as_ref().map(|o| o.transform_skip),
-                        r2.as_ref().map(|o| o.transform_skip),
+                        r1.as_ref().map(|o| (o.transform_skip, o.ext)),
+                        r2.as_ref().map(|o| (o.transform_skip, o.ext)),
                         "{what}"
                     );
                     if r1.is_ok() {
@@ -907,7 +933,9 @@ mod tests {
                         sign_hiding: round % 2 == 0,
                     };
                     let mut buf = vec![0; 1 << (2 * log2)];
-                    let _ = residual_coding(&mut cabac, &mut ctx, &p, &mut buf);
+                    if residual_coding(&mut cabac, &mut ctx, &p, &mut buf).is_err() {
+                        assert!(buf.iter().all(|&c| c == 0), "not cleared on error");
+                    }
                 }
             }
         }

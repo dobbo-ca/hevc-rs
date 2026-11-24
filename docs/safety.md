@@ -38,12 +38,24 @@ every row and return `Error::Cancelled`.
 
 Scope: dequantisation (8.6.3), inverse DCT 4 to 32 and DST 4 (both passes, the i16 clip between
 them, the bdShift rounding), the transform-skip shift, and the residual add with clip (8.6.7).
-Scalar is the oracle and the fallback (`dequant_scalar`, `transform_scalar`, the loop in
-`add_row`).
+The oracle is the full scalar transform of the whole block (`residual_full`: `dequant_scalar` over
+n x n, `transform_scalar`, and the scalar loop in `add_row`).
+
+Sparse blocks: residual_coding returns the extent (rows, cols) of the coefficients it wrote, and
+every tier works only on that corner. The scaling, the max scan of `dq_for` and the pack to i16
+cover only the extent; pass 1 transforms only the first `cols` columns from their first `rows`
+inputs, and pass 2 reads only the first `cols` inputs of each row (the other columns of the
+intermediate are zero). The terms left out are products with zero, so the result is the full
+transform bit for bit, the intermediate clip included. A block whose only non-zero coefficient
+is the DC one (no transform skip, no DST) skips both passes: every sample gets
+`(64 * g + round) >> bdShift` with `g = (64 * d + 64) >> 7` and `d` the scaled coefficient, the
+same operations as the full transform (`dc_residual`). The 4x4 DST keeps the general path. The
+residual goes to a scratch buffer, so the coefficient buffer is cleared only on the extent
+(`reconstruct`); residual_coding expects it all zero and zeroes it after an error.
 
 | Tier | Kernels |
 |---|---|
-| Scalar | oracle |
+| Scalar | `dequant_scalar` and `transform_sparse` on the extent |
 | AVX2 | `avx2::residual` (dequant, transform, transform-skip rounding), `avx2::add_row` |
 | AVX-512 | no kernel of its own: dispatches to the AVX2 ones (the rows are 4 to 32 wide, 256 bits are enough) |
 | NEON | `neon::residual`, `neon::add_row` |
@@ -60,14 +72,19 @@ on those two fns), plus the shared load/store helpers of `simd/x86.rs` and `simd
 - Kernel inputs are validated in safe code before the call: `residual_block` checks size, bit
   depth, qP and the buffer length; `reconstruct` gets each frame row from `Frame::row_mut`.
 
-Overflow: the dequantisation runs in i32 only when `max|c| * max(m) * scale + round` fits i32
-(`dq_for`), else in i64 as scalar does. The transform inputs are i16 (clamped by the scaling), the
+Overflow: the dequantisation runs in i32 only when `max(|c| * m) * scale + round` over the extent
+fits i32 (`dq_for`), else in i64 as scalar does. The transform inputs are i16 (clamped by the scaling), the
 matrix entries are at most 90, so `madd` sums and the i32 accumulators cannot overflow and match
 scalar. In the add the residual is clamped to +-65536 first, which does not change the clipped
 sum for samples of at most 16 bits.
 
-Tests: `transform::tests::tiers_match_scalar` (all sizes, depths 8/10/12/16, qP range, DCT, DST,
-skip, bypass, flat and default scaling lists, extreme coefficients) and `fuzz_tiers_random_bytes`.
+Tests: every tier, given the tight extent and the whole block, against the full scalar transform
+(`tiers_agree`): `transform::tests::tiers_match_scalar` (all sizes, depths 8/10/12/16, qP range,
+DCT, DST, skip, bypass, flat and default scaling lists, extreme coefficients),
+`tiers_sparse_match_full` (every bounding box of every size, random sparse coefficients inside),
+`tiers_dc_only_match_full` (the DC fast path, extreme DC values) and `fuzz_tiers_random_bytes`;
+`residual::tests` check the extent residual_coding returns, and the reconstruct tests that the
+coefficient buffer is all zero afterwards, also on error.
 Fuzz: `tests/fuzz/fuzz_targets/transform_tiers.rs` calls `hevc::__fuzz_transform::tiers_agree`.
 ## SIMD: intra prediction (`src/intra.rs`, `src/intra/{x86,arm}.rs`)
 

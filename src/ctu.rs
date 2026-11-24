@@ -29,8 +29,11 @@ pub(crate) struct SliceState {
     /// qPY_PREV carry: QpY of the last CU decoded (8.6.1); a dependent slice segment continues
     /// the QG sequence of its slice.
     prev_qp: i32,
-    /// Coefficient scratch for one transform block (32x32 at most).
+    /// Coefficient scratch for one transform block (32x32 at most), all zero between blocks:
+    /// residual_coding writes only the coded coefficients and reconstruct clears them.
     coeffs: [i32; 1024],
+    /// Residual of one transform block (reconstruct scratch).
+    res: [i32; 1024],
     /// Block buffers of intra prediction.
     intra: Scratch,
 }
@@ -42,6 +45,7 @@ impl Default for SliceState {
             ctx_wpp: None,
             prev_qp: 0,
             coeffs: [0; 1024],
+            res: [0; 1024],
             intra: Scratch::default(),
         }
     }
@@ -897,7 +901,17 @@ impl Dec<'_, '_> {
             matrix_id: c,
             log2_size: log2,
         };
-        reconstruct(self.frame, self.act, c, x, y, coeffs, &tu)
+        reconstruct(
+            self.frame,
+            self.act,
+            c,
+            x,
+            y,
+            coeffs,
+            out.ext,
+            &mut self.st.res,
+            &tu,
+        )
     }
 }
 
