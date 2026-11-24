@@ -115,8 +115,8 @@ scalar code, which is the oracle). Offsets equal to `i16::MIN` or tier Scalar sk
   and `movm_epi16`; the tail of a row under 32 samples runs the AVX2 kernel; dispatch guarded by
   `simd::has_avx512()`), NEON (8 lanes, `vqtbl1q_u8` lookup).
 - `unsafe` blocks: the two dispatch fns `eo_row` and `bo_row` (call the safe `target_feature`
-  kernels, AVX2 or AVX-512; invariant: the tier came from `simd::tier()` / `simd::available()`, which return it
-  only when the feature was detected). The load/store helpers are the shared ones in
+  kernels, AVX2 or AVX-512; invariant: the tier came from `simd::tier()` / `simd::available()`,
+  which return it only when the feature was detected). The load/store helpers are the shared ones in
   `src/simd/{x86,arm}.rs`; kernels get arrays from `as_chunks`, the tail runs the next narrower
   kernel (AVX-512, AVX2, scalar).
 - Tests: `sao_simd::tests::tiers_equal_scalar` (rows, bit depth 8/10/12/16, extreme offsets and
