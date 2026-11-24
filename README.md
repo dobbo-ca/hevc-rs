@@ -49,7 +49,7 @@ There is no unlimited entry point. Every call takes a `Limits`.
 
 ## HEIC
 
-`decode_heic` decodes the primary image of a HEIC file (one `hvc1` item or a grid of tiles, plus its alpha plane) on top of isobmff-rs. `irot`, `imir` and `clap` come back raw in `transforms`, not applied.
+`decode_heic` decodes the primary image of a HEIC file (one `hvc1` item or a grid of tiles, plus its alpha plane) on top of isobmff-rs, from a `meta` box or from the low-overhead `mini` box (ISO/IEC 23008-12 Annex O). `irot`, `imir` and `clap` come back raw in `transforms`, not applied; for a `mini` file the orientation comes back as `irot`/`imir`. Exif and XMP are not touched: read them with `isobmff::Heif::metadata`.
 `decode_heic_item` decodes any image item of an already parsed `isobmff::Heif` (a coded item or a grid, no alpha, transforms not applied) without parsing again.
 
 ```rust

@@ -609,7 +609,14 @@ Implemented:
 ## HEIC glue
 
 `src/heic.rs`, on top of isobmff-rs (private git dependency, `docs/dependencies.md`). isobmff
-gives the item graph; this crate decodes the pixels.
+gives the item graph; this crate decodes the pixels. A file with the low-overhead `mini` box
+(ISO/IEC 23008-12 Annex O) instead of `meta` gives the same item graph (isobmff-rs
+docs/design.md, "The `mini` box"), so it takes the same path: item 1 is the primary `hvc1`
+image, item 2 its alpha (`auxl`), the orientation is `irot`/`imir` (returned raw like any other
+transform), and the Exif and XMP items stay in the graph for `Heif::metadata` (the Exif of a
+`mini` box is returned as stored: it has no `exif_tiff_header_offset`). A file with neither
+`meta` nor `mini` is `InvalidData("no-meta")`; a `mini` of another codec (the VVC `.hmg` files)
+is `Unsupported`.
 
 ```rust
 pub fn decode_heic(file: &[u8], opts: &Options, limits: &Limits, cancel: &AtomicBool)
@@ -683,7 +690,8 @@ pub enum Transform { Clap(Clap), Rotate(u16), Mirror(Axis) }   // own types, sam
 - A primary (or alpha) image that is not `hvc1`, a grid of `hvc1`, or an `iden` or `iovl` of those
   (AV1, other) is `Unsupported("primary image is not HEVC")`.
 - Errors: isobmff `Cancelled`, `OutOfMemory`, `LimitExceeded(Alloc)` and `LimitExceeded(Pixels)`
-  map to `Cancelled`, `OutOfMemory`, `AllocLimit` and `PixelLimit`; every other isobmff error is
+  map to `Cancelled`, `OutOfMemory`, `AllocLimit` and `PixelLimit`, `Unsupported(what)` to
+  `Unsupported(what)`; every other isobmff error (`NoMeta` included) is
   `InvalidData(err.class())`.
 - Limits: see `docs/limits.md`. The cancel flag is read before each coded item (between tiles).
 - libheif is the CI oracle only (`examples/heic.rs` is the Rust side of the comparison); it is LGPL

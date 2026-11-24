@@ -110,7 +110,8 @@ decodes hostile files that hevc-rs rejects on purpose, and the oracle runs with 
 security limits off, so they would be expected divergences; hevc-rs has its own `heic` fuzz
 target): libheif (`tests/data`, `examples`),
 MPEGGroup/FileFormatConformance (Git LFS), nokiatech/heif (gh-pages conformance files),
-imazen/heic (`testdata/apple-hdr`) and aaron-rust/hdr-sample-images (Git LFS, the `3A*` and `3B*`
+imazen/heic (`testdata/apple-hdr`, and `testdata/libheif-examples/lightning_mini.heif`, the
+pre-final draft syntax of the `mini` box) and aaron-rust/hdr-sample-images (Git LFS, the `3A*` and `3B*`
 `.heic` files). `tests/parity/heic-fetch.sh` makes a blobless sparse checkout of each source at
 its commit (verified after the fetch), pulls the LFS files, and keeps only `*.heic`, `*.heif` and
 `*.hif` files, into a second BuildKit cache mount (`id=hevc-rs-heic-data`, files under

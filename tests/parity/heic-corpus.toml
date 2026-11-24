@@ -33,7 +33,9 @@ exclude = []
 licence = "LICENSE:1-3: \"The Clear BSD License / Copyright (c) 2023, Apple Inc.\""
 
 # Commit on the gh-pages branch of nokiatech/heif, not on its default branch. The conformance
-# files that the MPEG repo does not have: C043..C053, C71, MIAF*.
+# files that the MPEG repo does not have: C043..C053, C71 (a `mini` box, HEVC, orientation 8),
+# MIAF*. The other `mini` box files there (C75.hmg, C83.hmg, 1dualMiniVVC.hmg) are VVC: no HEVC
+# to compare, and libheif and isobmff-rs both reject them.
 [[source]]
 name = "nokia-conformance-extra"
 repo = "https://github.com/nokiatech/heif"
@@ -42,14 +44,17 @@ include = ["content/conformance/C04[3-9].heic", "content/conformance/C05[0-3].he
 exclude = []
 licence = "CONTENT-LICENSES.md section 7: \"Freely redistributable for conformance testing and demonstration.\""
 
-# Only the Apple HDR gain map sample, which testdata/README.md licenses separately.
+# The Apple HDR gain map sample and the libheif example lightning_mini.heif, which
+# testdata/README.md licenses separately. lightning_mini.heif is the pre-final draft syntax of the
+# `mini` box (its hvcC is read 2 bytes off): an error case on both sides. The final-syntax file of
+# the same name is in the libheif source.
 [[source]]
 name = "imazen-heic"
 repo = "https://github.com/imazen/heic"
 commit = "4d72caddb4c1d664237a8d3693f35d69ac80caaf"
-include = ["testdata/apple-hdr/*.heic"]
+include = ["testdata/apple-hdr/*.heic", "testdata/libheif-examples/lightning_mini.heif"]
 exclude = []
-licence = "testdata/README.md, apple-hdr: \"Licensed under the MIT License\""
+licence = "testdata/README.md, apple-hdr: \"Licensed under the MIT License\"; testdata/README.md:7-10, libheif-examples: \"Licensed under the MIT License (see libheif-examples/COPYING)\""
 
 [[source]]
 name = "aaron-rust-hdr"
