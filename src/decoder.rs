@@ -426,6 +426,19 @@ fn hash_matches(frame: &Frame, sps: &Sps, h: &PictureHash, cancel: &AtomicBool) 
     Ok(got.iter().zip(&h.values).take(n).all(|(a, b)| a == b))
 }
 
+/// Bands of CTB rows for the in-loop filters: at most one per thread (0 counts as 1), one per CTB
+/// row, and one per 64 Ki luma samples, so that a small picture is filtered on the calling thread
+/// (a thread scope costs more than it saves there).
+fn filter_workers(threads: usize, act: &Active) -> usize {
+    let sps = &act.sps;
+    let by_size =
+        usize::try_from((u64::from(sps.width) * u64::from(sps.height)) >> 16).unwrap_or(usize::MAX);
+    threads
+        .min(sps.pic_height_in_ctbs_y as usize)
+        .min(by_size)
+        .max(1)
+}
+
 /// Decoder state of one call.
 struct Decoder<'a> {
     ledger: &'a Ledger,
@@ -710,11 +723,12 @@ impl<'a> Decoder<'a> {
             ));
         }
         let sps = Arc::clone(&cur.act.sps);
+        let workers = filter_workers(self.limits.max_threads, &cur.act);
         if self.opts.deblocking {
-            deblock::deblock(&mut cur.frame, &cur.act, self.cancel)?;
+            deblock::deblock(&mut cur.frame, &cur.act, self.cancel, workers)?;
         }
         if self.opts.sao && sps.sao_enabled {
-            sao::sao(&mut cur.frame, &cur.act, self.ledger, self.cancel)?;
+            sao::sao(&mut cur.frame, &cur.act, self.ledger, self.cancel, workers)?;
         }
         let ordering = sps
             .ordering

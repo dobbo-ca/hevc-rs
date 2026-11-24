@@ -8,9 +8,10 @@
 //! (`Frame::no_filter`).
 
 use crate::error::{Error, Result};
-use crate::frame::Frame;
+use crate::frame::{Frame, band_rows, par_bands, plane_cuts};
 use crate::ps::Active;
 use crate::simd::{self, Tier};
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_arch = "aarch64")]
@@ -487,24 +488,33 @@ fn check(cancel: &AtomicBool) -> Result<()> {
     }
 }
 
-fn luma_pass(
+/// The vertical (`vertical`) or horizontal luma edges whose first row is in `rows`. `plane` is
+/// the band of the plane that starts at row `row0`: `rows` start at `row0` for the vertical edges
+/// and 4 rows below it for the horizontal ones (the filter reads 4 rows above the edge).
+#[allow(clippy::too_many_arguments)]
+fn luma_band(
     tier: Tier,
-    frame: &mut Frame,
+    meta: &Frame,
     act: &Active,
+    plane: &mut [u16],
+    row0: usize,
+    rows: Range<usize>,
     vertical: bool,
     cancel: &AtomicBool,
 ) -> Result<()> {
     let depth = act.sps.bit_depth_luma;
-    let stride = frame.stride[0];
+    let Some(&stride) = meta.stride.first() else {
+        return Err(Error::InvalidData("luma plane"));
+    };
     let mut batch = LumaBatch::new(tier, if vertical { 1 } else { stride }, depth);
-    for gy in 0..frame.grid_h {
+    for y in rows.step_by(4) {
         check(cancel)?;
-        for gx in 0..frame.grid_w {
-            let (x, y) = (gx * 4, gy * 4);
+        for gx in 0..meta.grid_w {
+            let x = gx * 4;
             let (bs, along) = if vertical {
-                (frame.edge_v_at(x, y), x)
+                (meta.edge_v_at(x, y), x)
             } else {
-                (frame.edge_h_at(x, y), y)
+                (meta.edge_h_at(x, y), y)
             };
             // 8x8 grid only; the picture border is not an edge.
             if !along.is_multiple_of(8) || along < 8 {
@@ -519,31 +529,38 @@ fn luma_pass(
             } else {
                 ((x, y - 1), 1)
             };
-            let Some(e) = edge(frame, act, (x, y), p) else {
+            let Some(e) = edge(meta, act, (x, y), p) else {
                 continue;
             };
-            if let Some(plane) = frame.planes.first_mut() {
-                luma_segment(&mut batch, plane, y * stride + x, ks, bs, &e, depth);
-            }
+            luma_segment(
+                &mut batch,
+                plane,
+                (y - row0) * stride + x,
+                ks,
+                bs,
+                &e,
+                depth,
+            );
         }
     }
-    if let Some(plane) = frame.planes.first_mut() {
-        batch.flush(plane);
-    }
+    batch.flush(plane);
     Ok(())
 }
 
-fn chroma_pass(
+/// [`luma_band`] for chroma plane `c`: `rows` are chroma rows.
+#[allow(clippy::too_many_arguments)]
+fn chroma_band(
     tier: Tier,
-    frame: &mut Frame,
+    meta: &Frame,
     act: &Active,
     c: usize,
+    plane: &mut [u16],
+    row0: usize,
+    rows: Range<usize>,
     vertical: bool,
     cancel: &AtomicBool,
 ) -> Result<()> {
-    let (Some(&w), Some(&h), Some(&stride)) =
-        (frame.width.get(c), frame.height.get(c), frame.stride.get(c))
-    else {
+    let (Some(&w), Some(&stride)) = (meta.width.get(c), meta.stride.get(c)) else {
         return Err(Error::InvalidData("chroma plane"));
     };
     // cQpPicOffset: the PPS offset alone.
@@ -556,7 +573,7 @@ fn chroma_pass(
     let scale = 1i32 << depth.saturating_sub(8).min(8);
     let mut batch = ChromaBatch::new(tier, if vertical { 1 } else { stride }, depth);
     // Segments of 4 chroma samples along the edge (8 luma samples in 4:2:0).
-    for cy in (0..h).step_by(4) {
+    for cy in rows.step_by(4) {
         check(cancel)?;
         for cx in (0..w).step_by(4) {
             let across = if vertical { cx } else { cy };
@@ -565,9 +582,9 @@ fn chroma_pass(
             }
             let (x, y) = (cx * 2, cy * 2);
             let bs = if vertical {
-                frame.edge_v_at(x, y)
+                meta.edge_v_at(x, y)
             } else {
-                frame.edge_h_at(x, y)
+                meta.edge_h_at(x, y)
             };
             if bs != Some(2) {
                 continue;
@@ -577,32 +594,83 @@ fn chroma_pass(
             } else {
                 ((x, y - 1), 1)
             };
-            let Some(e) = edge(frame, act, (x, y), p) else {
+            let Some(e) = edge(meta, act, (x, y), p) else {
                 continue;
             };
             let tc = lookup(&TC_TAB, qpc(e.qp + pic_offset) + 2 + (e.tc_off << 1)) * scale;
-            if let Some(plane) = frame.planes.get_mut(c) {
-                chroma_segment(&mut batch, plane, cy * stride + cx, ks, tc, &e);
-            }
+            chroma_segment(&mut batch, plane, (cy - row0) * stride + cx, ks, tc, &e);
         }
     }
-    if let Some(plane) = frame.planes.get_mut(c) {
-        batch.flush(plane);
-    }
+    batch.flush(plane);
     Ok(())
 }
 
-/// Deblocks the whole picture in place: vertical edges first, then horizontal edges.
-pub(crate) fn deblock(frame: &mut Frame, act: &Active, cancel: &AtomicBool) -> Result<()> {
-    deblock_with(simd::tier(), frame, act, cancel)
+/// Deblocks the whole picture in place: vertical edges first, then horizontal edges. `workers`
+/// bands of CTB rows run in parallel (1: on the calling thread, nothing is spawned); the picture
+/// is the same for every `workers`.
+pub(crate) fn deblock(
+    frame: &mut Frame,
+    act: &Active,
+    cancel: &AtomicBool,
+    workers: usize,
+) -> Result<()> {
+    deblock_with(simd::tier(), frame, act, cancel, workers)
 }
 
 /// [`deblock`] on an explicit tier (the tests compare every tier with Scalar).
-fn deblock_with(tier: Tier, frame: &mut Frame, act: &Active, cancel: &AtomicBool) -> Result<()> {
+fn deblock_with(
+    tier: Tier,
+    frame: &mut Frame,
+    act: &Active,
+    cancel: &AtomicBool,
+    workers: usize,
+) -> Result<()> {
+    // The planes go out of the frame so that the bands can borrow them mutably while every band
+    // reads the metadata grids; they are put back on every path.
+    let mut planes = std::mem::take(&mut frame.planes);
+    let r = deblock_planes(tier, frame, act, &mut planes, cancel, workers);
+    frame.planes = planes;
+    r
+}
+
+/// Both passes over every plane, each pass split into bands of whole CTB rows. The vertical
+/// edges of a band only touch samples of its own rows. A horizontal edge at row `y` reads and
+/// writes rows `y - 4..y + 4` (luma) or `y - 2..y + 2` (chroma), so the band that owns the edges
+/// of CTB rows `[B, B')` is the slice `[B - 4, B' - 4)` of the plane: the footprints stay inside
+/// it, and horizontal edges are independent of each other, so any split gives the serial result.
+/// A pass ends when all its bands are done (the scope of `par_bands`), before the next pass.
+fn deblock_planes(
+    tier: Tier,
+    meta: &Frame,
+    act: &Active,
+    planes: &mut [Vec<u16>],
+    cancel: &AtomicBool,
+    workers: usize,
+) -> Result<()> {
+    let ctb = act.sps.ctb_size_y as usize;
+    let ctb_rows = band_rows(act.sps.pic_height_in_ctbs_y as usize, workers);
     for vertical in [true, false] {
-        luma_pass(tier, frame, act, vertical, cancel)?;
-        for c in 1..frame.num_planes() {
-            chroma_pass(tier, frame, act, c, vertical, cancel)?;
+        for (c, plane) in planes.iter_mut().enumerate() {
+            let (Some(&h), Some(&stride)) = (meta.height.get(c), meta.stride.get(c)) else {
+                return Err(Error::InvalidData("plane"));
+            };
+            let unit = if c == 0 { ctb } else { ctb / 2 };
+            let own = plane_cuts(&ctb_rows, unit, 0, h);
+            let cuts = if vertical {
+                own.clone()
+            } else {
+                plane_cuts(&ctb_rows, unit, 4, h)
+            };
+            par_bands(plane, stride, &cuts, |k, row0, band| {
+                let (Some(&y0), Some(&y1)) = (own.get(k), own.get(k + 1)) else {
+                    return Ok(());
+                };
+                if c == 0 {
+                    luma_band(tier, meta, act, band, row0, y0..y1, vertical, cancel)
+                } else {
+                    chroma_band(tier, meta, act, c, band, row0, y0..y1, vertical, cancel)
+                }
+            })?;
         }
     }
     Ok(())
@@ -772,7 +840,7 @@ mod tests {
             }
         }
         f.fill_edge_v(8, 0, 4, 4, 2).unwrap();
-        deblock(&mut f, &act, &AtomicBool::new(false)).unwrap();
+        deblock(&mut f, &act, &AtomicBool::new(false), 1).unwrap();
         // QpL 40: beta 42, tC 7 (Q 42); flat sides give dE 2, strong filter by hand.
         assert_eq!(
             row(&f, 0, 0, 4, 8),
@@ -809,8 +877,8 @@ mod tests {
         // pcm / bypass above the edge: p side stays.
         g.fill_no_filter(0, 0, 64, 8, 1).unwrap();
         let col = |f: &Frame| -> Vec<u16> { (4..12).map(|y| f.sample(0, 0, y).unwrap()).collect() };
-        deblock(&mut f, &act, &AtomicBool::new(false)).unwrap();
-        deblock(&mut g, &act, &AtomicBool::new(false)).unwrap();
+        deblock(&mut f, &act, &AtomicBool::new(false), 1).unwrap();
+        deblock(&mut g, &act, &AtomicBool::new(false), 1).unwrap();
         // QpL 30: beta 22, tC 3 (Q 32); |p0-q0| = 8 is not < 8, so weak.
         // delta = 3, p0 103, q0 105; p1 += 1, q1 -= 1.
         assert_eq!(col(&f), [100, 100, 101, 103, 105, 107, 108, 108]);
@@ -832,7 +900,7 @@ mod tests {
         }
         // Chroma x 8 is luma x 16; one 8-row luma segment.
         f.fill_edge_v(16, 0, 4, 8, 2).unwrap();
-        deblock(&mut f, &act, &AtomicBool::new(false)).unwrap();
+        deblock(&mut f, &act, &AtomicBool::new(false), 1).unwrap();
         // Cb: qPi 41 -> QpC 36 -> Q 38 -> tC 5; delta = 2 (not clipped). Cr (offset -1): tC 4.
         for c in 1..3 {
             assert_eq!(row(&f, c, 3, 6, 4), [100, 102, 102, 104]);
@@ -845,7 +913,7 @@ mod tests {
         let l = ledger();
         let (act, mut f) = setup(&l, 40);
         assert_eq!(
-            deblock(&mut f, &act, &AtomicBool::new(true)),
+            deblock(&mut f, &act, &AtomicBool::new(true), 1),
             Err(Error::Cancelled)
         );
         assert_eq!(
@@ -1016,17 +1084,116 @@ mod tests {
         for seed in 1..=60u64 {
             let (act, mut want) = random_picture(&l, seed * 0x1234_5679);
             let orig = want.planes.clone();
-            deblock_with(Tier::Scalar, &mut want, &act, &cancel).unwrap();
+            deblock_with(Tier::Scalar, &mut want, &act, &cancel, 1).unwrap();
             changed += usize::from(orig != want.planes);
             for t in simd::available() {
                 let (act, mut got) = random_picture(&l, seed * 0x1234_5679);
-                deblock_with(t, &mut got, &act, &cancel).unwrap();
+                deblock_with(t, &mut got, &act, &cancel, 1).unwrap();
                 assert!(got.planes == want.planes, "{} seed {seed}", t.name());
                 l.release(got.charged);
             }
             l.release(want.charged);
         }
         assert!(changed > 30, "the pictures are not filtered: {changed}");
+    }
+
+    /// A random `w` x `h` picture (CTB 32, so the last CTB row is partial): two slices with
+    /// different offsets, random QpY, edges, no_filter cells and blocky samples.
+    fn random_sized(l: &Ledger, seed: u64, w: usize, h: usize) -> (Active, Frame) {
+        let sps = Arc::new(
+            parse_sps(&sps_bits(
+                u32::try_from(w).unwrap(),
+                u32::try_from(h).unwrap(),
+            ))
+            .unwrap(),
+        );
+        let pps = Arc::new(parse_pps(&pps_bits(1)).unwrap());
+        let act = activate(sps, pps, &Limits::default(), l).unwrap();
+        let mut f = Frame::new(&act, l).unwrap();
+        let mut r = Xs(seed);
+        for k in 0..2 {
+            let s = SliceParams {
+                slice_addr_rs: k,
+                qp_y: 26,
+                cb_qp_offset: 0,
+                cr_qp_offset: 0,
+                deblocking_disabled: false,
+                beta_offset_div2: i32::try_from(r.next() % 13).unwrap() - 6,
+                tc_offset_div2: i32::try_from(r.next() % 13).unwrap() - 6,
+                loop_filter_across_slices: true,
+                sao_luma: true,
+                sao_chroma: true,
+            };
+            f.push_slice(s, l).unwrap();
+        }
+        for rs in 0..f.slice_idx.len() {
+            f.start_ctb(rs, r.next() % 2).unwrap();
+        }
+        for c in 0..3 {
+            let (pw, ph) = (f.width[c], f.height[c]);
+            let bw = pw / 8 + 1;
+            let bases: Vec<i32> = (0..bw * (ph / 8 + 1))
+                .map(|_| 90 + i32::try_from(r.next() % 60).unwrap())
+                .collect();
+            for y in 0..ph {
+                for x in 0..pw {
+                    let noise = i32::try_from(r.next() % 5).unwrap() - 2;
+                    let v = (bases[(y / 8) * bw + x / 8] + noise).clamp(0, 255);
+                    f.planes[c][y * pw + x] = u16::try_from(v).unwrap();
+                }
+            }
+        }
+        for gy in 0..f.grid_h {
+            for gx in 0..f.grid_w {
+                let (x, y) = (gx * 4, gy * 4);
+                let qp = i8::try_from(r.next() % 70).unwrap() - 10;
+                f.fill_qp_y(x, y, 4, 4, qp).unwrap();
+                f.fill_edge_v(x, y, 4, 4, [0, 1, 2, 2][(r.next() % 4) as usize])
+                    .unwrap();
+                f.fill_edge_h(x, y, 4, 4, [0, 1, 2, 2][(r.next() % 4) as usize])
+                    .unwrap();
+                if r.next() % 8 == 0 {
+                    f.fill_no_filter(x, y, 4, 4, 1).unwrap();
+                }
+            }
+        }
+        (act, f)
+    }
+
+    /// Any number of bands gives the planes of one band, on every tier; cancel puts the planes
+    /// back.
+    #[test]
+    fn workers_match_serial() {
+        let l = ledger();
+        let cancel = AtomicBool::new(false);
+        for (w, h) in [(64, 72), (200, 136)] {
+            for seed in 1..=4u64 {
+                for t in simd::available() {
+                    let (act, mut want) = random_sized(&l, seed * 0x1234_5679, w, h);
+                    let orig = want.planes.clone();
+                    deblock_with(t, &mut want, &act, &cancel, 1).unwrap();
+                    assert!(orig != want.planes, "not filtered: {w}x{h} seed {seed}");
+                    for workers in [2, 3, 5, 64] {
+                        let (act, mut got) = random_sized(&l, seed * 0x1234_5679, w, h);
+                        deblock_with(t, &mut got, &act, &cancel, workers).unwrap();
+                        assert!(
+                            got.planes == want.planes,
+                            "{} {w}x{h} seed {seed} workers {workers}",
+                            t.name()
+                        );
+                        l.release(got.charged);
+                    }
+                    l.release(want.charged);
+                }
+            }
+        }
+        let (act, mut f) = random_sized(&l, 7, 200, 136);
+        let orig = f.planes.clone();
+        assert_eq!(
+            deblock_with(Tier::Scalar, &mut f, &act, &AtomicBool::new(true), 3),
+            Err(Error::Cancelled)
+        );
+        assert!(f.planes == orig);
     }
 
     #[test]

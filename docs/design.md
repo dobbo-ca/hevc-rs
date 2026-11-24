@@ -165,8 +165,10 @@ WidthLimit, HeightLimit, PixelLimit, PictureLimit, AllocLimit, OutOfMemory, Canc
 Parity error tokens (examples/oracle.rs): `invalid`, `unsupported`, `inter`, `nopicture`,
 `limit`, `cancelled`.
 
-Threading in v1: decode is serial; `max_threads` is honoured (no thread is spawned). Parallel
-decode by tile / WPP row and parallel filters come later, byte-identical to serial.
+Threading: reconstruction is serial. Deblocking and SAO run in bands of whole CTB rows on up to
+`max_threads` scoped threads (`frame::par_bands`; 1 spawns nothing), byte-identical to serial for
+every thread count; see [threading.md](threading.md). Parallel decode by tile / WPP row and of
+whole pictures is not done.
 
 Cancellation: the flag is read before each NAL unit and before each CTU; set → `Cancelled`.
 
@@ -509,6 +511,12 @@ band offset and edge offset (hPos/vPos per class), SaoOffsetVal clipping, sample
 no_filter set unchanged, picture-boundary and slice/tile neighbour rules (MinTbAddrZs
 comparison and the slice_loop_filter_across_slices_enabled_flag of the right slice,
 loop_filter_across_tiles_enabled_flag). bitDepth-based band shift = bitDepth - 5.
+
+Both filters run in bands of whole CTB rows (`workers` bands, `decoder::filter_workers`; 1 = the
+calling thread, no spawn). Vertical edges never leave their row. A horizontal edge reaches 4 rows
+above and 3 below it, so the band that owns the edges of CTB rows `[B, B')` is the plane slice
+`[B - 4, B' - 4)`; a pass ends when its bands have joined. SAO bands write their own rows and read
+the shared deblocked copy. Details and the deviation from the pool convention: threading.md.
 
 ### decoder.rs
 

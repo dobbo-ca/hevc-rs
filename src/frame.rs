@@ -15,6 +15,8 @@ use crate::error::{Error, Result};
 use crate::ledger::{Ledger, filled};
 use crate::ps::Active;
 use std::mem::size_of;
+use std::sync::{Mutex, PoisonError};
+use std::thread;
 
 /// `slice_idx` of a CTB whose decoding has not started.
 pub(crate) const NO_SLICE: u32 = u32::MAX;
@@ -411,6 +413,107 @@ impl Frame {
     }
 }
 
+/// CTB-row cuts of `workers` balanced bands over `ctb_rows` CTB rows: `[0, .., ctb_rows]`, one
+/// more entry than bands. At most one band per CTB row, at least one band.
+pub(crate) fn band_rows(ctb_rows: usize, workers: usize) -> Vec<usize> {
+    let n = workers.clamp(1, ctb_rows.max(1));
+    (0..=n).map(|i| i * ctb_rows / n).collect()
+}
+
+/// Sample-row cuts of a plane from CTB-row cuts: cut `c` becomes `c * unit - shift` (`unit` is the
+/// CTB height in this plane), capped at `rows`; the last cut is `rows`. `shift` 4 gives the
+/// bands of the horizontal deblocking pass, which start 4 rows above the rows they own.
+pub(crate) fn plane_cuts(ctb_cuts: &[usize], unit: usize, shift: usize, rows: usize) -> Vec<usize> {
+    let last = ctb_cuts.len().saturating_sub(1);
+    ctb_cuts
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
+            if i == last {
+                rows
+            } else {
+                c.saturating_mul(unit).saturating_sub(shift).min(rows)
+            }
+        })
+        .collect()
+}
+
+/// A band waiting for a worker: its first plane row and its samples.
+type Band<'a> = Mutex<Option<(usize, &'a mut [u16])>>;
+
+fn run_band<F>(f: &F, k: usize, band: &Band<'_>) -> Result<()>
+where
+    F: Fn(usize, usize, &mut [u16]) -> Result<()>,
+{
+    let taken = band.lock().unwrap_or_else(PoisonError::into_inner).take();
+    taken.map_or(Ok(()), |(row0, s)| f(k, row0, s))
+}
+
+/// Splits `plane` (rows of `stride` samples) at the sample-row `cuts` (`[0, .., end]`, band `k`
+/// is rows `cuts[k]..cuts[k + 1]`) and calls `f(k, first_row, band)` on every band, band 0 on the
+/// calling thread and the others on scoped threads (a refused spawn runs that band here). All
+/// bands run; the result is the error of the lowest failing band, whatever the thread timing.
+/// One band spawns nothing. A cut list that does not start at 0, goes back, or leaves the plane
+/// is `InvalidData`.
+pub(crate) fn par_bands<F>(plane: &mut [u16], stride: usize, cuts: &[usize], f: F) -> Result<()>
+where
+    F: Fn(usize, usize, &mut [u16]) -> Result<()> + Sync,
+{
+    let bad = || Error::InvalidData("band cuts");
+    let mut bands: Vec<Band<'_>> = Vec::new();
+    bands
+        .try_reserve_exact(cuts.len().saturating_sub(1))
+        .map_err(|_| Error::OutOfMemory)?;
+    let mut rest = plane;
+    let mut at = 0;
+    for w in cuts.windows(2) {
+        let &[a, b] = w else { continue };
+        let len = b
+            .checked_sub(a)
+            .and_then(|r| r.checked_mul(stride))
+            .filter(|_| a == at)
+            .ok_or_else(bad)?;
+        let (head, tail) = std::mem::take(&mut rest)
+            .split_at_mut_checked(len)
+            .ok_or_else(bad)?;
+        bands.push(Mutex::new(Some((a, head))));
+        rest = tail;
+        at = b;
+    }
+    let f = &f;
+    let Some((first, others)) = bands.split_first() else {
+        return Ok(());
+    };
+    if others.is_empty() {
+        return run_band(f, 0, first);
+    }
+    thread::scope(|s| {
+        let mut handles = Vec::new();
+        handles
+            .try_reserve_exact(others.len())
+            .map_err(|_| Error::OutOfMemory)?;
+        for (i, band) in others.iter().enumerate() {
+            let h = thread::Builder::new()
+                .spawn_scoped(s, move || run_band(f, i + 1, band))
+                .ok();
+            handles.push(h);
+        }
+        let mut res = run_band(f, 0, first);
+        for (i, (band, h)) in others.iter().zip(handles).enumerate() {
+            let r = match h {
+                Some(h) => h
+                    .join()
+                    .unwrap_or(Err(Error::InvalidData("band worker panicked"))),
+                None => run_band(f, i + 1, band),
+            };
+            if res.is_ok() {
+                res = r;
+            }
+        }
+        res
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +521,7 @@ mod tests {
     use crate::ps::tests::{ledger, pps_bits, sps_bits};
     use crate::ps::{activate, parse_pps, parse_sps};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn active(w: u32, h: u32, tiles: u32, l: &Ledger) -> Active {
         let sps = Arc::new(parse_sps(&sps_bits(w, h)).unwrap());
@@ -525,5 +629,66 @@ mod tests {
         assert!(!f.available(&act, 32, 0, 64, 0));
         l.release(f.charged);
         l.release(act.charged);
+    }
+
+    #[test]
+    fn band_cuts() {
+        assert_eq!(band_rows(5, 2), [0, 2, 5]);
+        assert_eq!(band_rows(5, 64), [0, 1, 2, 3, 4, 5]);
+        assert_eq!(band_rows(5, 1), [0, 5]);
+        assert_eq!(band_rows(5, 0), [0, 5]);
+        assert_eq!(plane_cuts(&[0, 1, 2, 3], 32, 0, 72), [0, 32, 64, 72]);
+        assert_eq!(plane_cuts(&[0, 1, 2, 3], 32, 4, 72), [0, 28, 60, 72]);
+        assert_eq!(plane_cuts(&[0, 1, 2, 3], 16, 4, 36), [0, 12, 28, 36]);
+    }
+
+    #[test]
+    fn par_bands_first_error_in_band_order() {
+        let mut plane = vec![0u16; 4 * 8];
+        let calls = AtomicUsize::new(0);
+        let r = par_bands(&mut plane, 4, &[0, 2, 4, 8], |k, row0, band| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(row0, [0, 2, 4][k]);
+            band.fill(u16::try_from(k + 1).unwrap());
+            match k {
+                1 => Err(Error::InvalidData("one")),
+                2 => Err(Error::InvalidData("two")),
+                _ => Ok(()),
+            }
+        });
+        assert_eq!(r, Err(Error::InvalidData("one")));
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+        let want: Vec<u16> = [1, 1, 2, 2, 3, 3, 3, 3]
+            .iter()
+            .flat_map(|&v| [v; 4])
+            .collect();
+        assert_eq!(plane, want);
+    }
+
+    #[test]
+    fn par_bands_threads_and_bad_cuts() {
+        let me = thread::current().id();
+        let mut plane = vec![0u16; 16];
+        let ids = Mutex::new(Vec::new());
+        let note = |k: usize, _: usize, _: &mut [u16]| {
+            ids.lock().unwrap().push((k, thread::current().id()));
+            Ok(())
+        };
+        // One band: no scope, no spawn.
+        par_bands(&mut plane, 4, &[0, 4], note).unwrap();
+        assert_eq!(*ids.lock().unwrap(), [(0, me)]);
+        ids.lock().unwrap().clear();
+        // Several bands: band 0 stays on the calling thread, the others do not run on it.
+        par_bands(&mut plane, 4, &[0, 1, 2, 4], note).unwrap();
+        let got = ids.lock().unwrap().clone();
+        assert_eq!(got.len(), 3);
+        assert!(got.iter().all(|&(k, id)| (id == me) == (k == 0)));
+        let bad = |cuts: &[usize]| par_bands(&mut vec![0u16; 16], 4, cuts, |_, _, _| Ok(()));
+        let e = Err(Error::InvalidData("band cuts"));
+        assert_eq!(bad(&[0, 5]), e);
+        assert_eq!(bad(&[1, 2]), e);
+        assert_eq!(bad(&[0, 3, 2]), e);
+        assert_eq!(bad(&[0, 4]), Ok(()));
+        assert_eq!(bad(&[]), Ok(()));
     }
 }
