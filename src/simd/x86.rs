@@ -86,6 +86,16 @@ ld_st!(
     _mm_loadl_epi64,
     _mm_storel_epi64
 );
+ld_st!(
+    "avx2",
+    ld_u8x8,
+    st_u8x8,
+    u8,
+    8,
+    __m128i,
+    _mm_loadl_epi64,
+    _mm_storel_epi64
+);
 // 256 bits.
 ld_st!(
     "avx2",

@@ -487,12 +487,16 @@ Log2(nTbS) = 7 for 4x4); inverse transform: DST-VII 4x4 for luma intra 4x4, else
 spec 32x32 matrix transMatrix (8.6.4.2, coefficients written from the spec equations),
 first stage (vertical) then clip to 16 bits after shift 7, second stage shift 20 - BitDepth;
 cu_transquant_bypass: residual = TransCoeffLevel. Residual added to the prediction and clipped
-to 0..=(1 << BitDepth) - 1.
+to 0..=(1 << BitDepth) - 1. The work scales with the extent (rows, cols) of the non-zero
+coefficients that residual_coding returns: scaling, pass 1 and the inputs of pass 2 cover only
+that corner, a DC-only DCT block adds one value to every sample, and only the extent of the
+coefficient buffer is cleared afterwards (docs/safety.md, SIMD: transform).
 
 ```rust
-pub(crate) fn reconstruct(frame: &mut Frame, c_idx: usize, x0: usize, y0: usize, log2_size: u32,
-    coeffs: &mut [i32] /* nTbS*nTbS, raster */, p: &TuParams /* qp, bit_depth, transform_skip,
-    bypass, dst, scaling list + matrix_id */);
+pub(crate) fn reconstruct(frame: &mut Frame, act: &Active, c_idx: usize, x0: usize, y0: usize,
+    coeffs: &mut [i32] /* nTbS*nTbS, raster, zero outside ext; all zero on return */,
+    ext: (usize, usize) /* rows, cols */, res: &mut [i32] /* scratch */,
+    p: &TuParams /* qp, bit_depth, transform_skip, bypass, dst, matrix_id, log2_size */);
 ```
 
 ### deblock.rs and sao.rs

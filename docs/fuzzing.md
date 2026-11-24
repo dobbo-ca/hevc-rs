@@ -11,7 +11,7 @@
 | `decode` | `decode` with small `Limits`; the planes of every picture must match its `Info`. The low 4 bits of the last byte switch deblocking, SAO, metadata and the picture hash check off; the result and pictures with `max_threads` 3 must equal those with 1 |
 | `sao_tiers` | `__fuzz_sao::tiers`: band/edge offset rows built from the input, every SIMD tier vs scalar, bit-exact |
 | `heic` | `decode_heic` with small `Limits` (grids, overlays, identity items); an Ok image's luma plane must match its `Info` size, and the result with `max_threads` 4 must equal the one with 1 |
-| `transform_tiers` | `__fuzz_transform::tiers_agree`: every SIMD tier equals scalar on one block of at most 32x32 built from the bytes |
+| `transform_tiers` | `__fuzz_transform::tiers_agree`: one block of at most 32x32 built from the bytes, zero outside a bounding box from the header (DC-only and partial blocks); every tier, scalar included, given the tight extent and the whole block, equals the full scalar transform |
 | `intra_tiers` | `__fuzz_intra::run`: one intra block (size 4..32, mode 0..34, bit depth 8..16, luma/strong/raw flags) built from the bytes, every SIMD tier vs scalar, bit-exact |
 | `deblock_tiers` | `__fuzz_deblock::tiers`: one batch of 4 deblocking edge segments (luma or chroma, vertical or horizontal edge, bit depth 8 to 10, beta, tC and kept sides) and a 24x20 plane built from the input, every SIMD tier vs scalar, bit-exact |
 
