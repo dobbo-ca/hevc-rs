@@ -76,3 +76,10 @@ path = "fuzz_targets/sao_tiers.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "deblock_tiers"
+path = "fuzz_targets/deblock_tiers.rs"
+test = false
+doc = false
+bench = false

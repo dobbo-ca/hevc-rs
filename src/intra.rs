@@ -1,7 +1,7 @@
 //! Intra sample prediction (8.4.4.2) for ChromaArrayType 0 and 1.
 
 use crate::error::{Error, Result};
-use crate::frame::Frame;
+use crate::frame::{Avail, Frame};
 use crate::ps::Active;
 use crate::simd::{self, Tier};
 
@@ -145,10 +145,9 @@ fn predict_in(
         bit_depth,
     )?;
     for (y, row) in s.out.iter().take(n).enumerate() {
-        let dst = frame.row_mut(c_idx, x0, y0 + y, n)?;
-        for (d, &v) in dst.iter_mut().zip(row) {
-            *d = v;
-        }
+        frame
+            .row_mut(c_idx, x0, y0 + y, n)?
+            .copy_from_slice(row.get(..n).ok_or_else(bad)?);
     }
     Ok(())
 }
@@ -278,6 +277,10 @@ fn store(tier: Tier, pred: &Block, out: &mut Pred, n: usize, max: i32) {
 }
 
 /// Reference sample construction (8.4.4.2.1) and substitution (8.4.4.2.2).
+///
+/// 6.4.1 answers per min-TB cell (z-scan address and CTB are per cell), so the edges are walked
+/// in runs of the samples of one cell: one availability question per run, the samples of an
+/// available run copied as a slice, an unavailable run filled with its predecessor.
 #[allow(clippy::too_many_arguments)]
 fn gather(
     frame: &Frame,
@@ -290,70 +293,109 @@ fn gather(
     bit_depth: u32,
     p: &mut Refs,
 ) -> Result<()> {
-    let len = 4 * n + 1;
-    let to_i = |v: usize| i32::try_from(v).map_err(|_| bad());
-    let sub_i = to_i(sub)?;
-    let (xt, yt) = (to_i(x0)?, to_i(y0)?);
-    let (xt_y, yt_y) = (xt * sub_i, yt * sub_i);
-    let mut avail = [false; MAX_REF];
-    // 6.4.1 looks at the luma location through its min-TB cell (z-scan order) and its CTB, so
-    // neighbours in one cell share the answer: ask once per run of equal cells.
-    let shift = act.sps.log2_min_trafo_size;
-    let mut cached: Option<((i32, i32), bool)> = None;
-    // Component location of line index i.
-    for i in 0..len {
-        let (dx, dy) = if i < 2 * n {
-            (-1, to_i(2 * n - 1 - i)?)
-        } else if i == 2 * n {
-            (-1, -1)
-        } else {
-            (to_i(i - 2 * n - 1)?, -1)
-        };
-        let (xn, yn) = (xt + dx, yt + dy);
-        let sample = usize::try_from(xn)
-            .ok()
-            .zip(usize::try_from(yn).ok())
-            .and_then(|(x, y)| frame.sample(c, x, y));
-        let usable = sample.filter(|_| {
-            let (xl, yl) = (xn * sub_i, yn * sub_i);
-            let cell = (xl >> shift, yl >> shift);
-            match cached {
-                Some((c, a)) if c == cell => a,
-                _ => {
-                    let a = frame.available(act, xt_y, yt_y, xl, yl);
-                    cached = Some((cell, a));
-                    a
+    let (Some(plane), Some(&pw), Some(&ph), Some(&stride)) = (
+        frame.planes.get(c),
+        frame.width.get(c),
+        frame.height.get(c),
+        frame.stride.get(c),
+    ) else {
+        return Err(bad());
+    };
+    let line = p.r.get_mut(..4 * n + 1).ok_or_else(bad)?;
+    let mut cur = Avail::new(frame, act, x0 * sub, y0 * sub);
+    let mut avail = |x: usize, y: usize| cur.as_mut().is_some_and(|a| a.at(x * sub, y * sub));
+    // log2 of the component samples per min-TB cell along an edge.
+    let ul = act
+        .sps
+        .log2_min_trafo_size
+        .saturating_sub(sub.trailing_zeros());
+    let mut seen = false;
+    // Left column, line indexes 0..2n: p[-1][y] for y = 2n-1 down to 0. Rows below the plane
+    // are not available.
+    if let Some(xl) = x0.checked_sub(1) {
+        let end = y0 + 2 * n;
+        let mut y = end.min(ph).max(y0);
+        let mut i = end - y;
+        while y > y0 {
+            let lo = (((y - 1) >> ul) << ul).max(y0);
+            let k = y - lo;
+            let ok = avail(xl, y - 1);
+            if ok {
+                let col = plane
+                    .get(lo * stride + xl..=(y - 1) * stride + xl)
+                    .ok_or_else(bad)?;
+                let dst = line.get_mut(i..i + k).ok_or_else(bad)?;
+                for (d, &v) in dst.iter_mut().zip(col.iter().step_by(stride).rev()) {
+                    *d = i32::from(v);
                 }
             }
-        });
-        if let (Some(v), Some(a), Some(d)) = (usable, avail.get_mut(i), p.r.get_mut(i)) {
-            *a = true;
-            *d = i32::from(v);
+            settle(line, i, k, ok, &mut seen);
+            i += k;
+            y = lo;
         }
     }
-    let line = p.r.get_mut(..len).ok_or_else(bad)?;
-    let avail = avail.get(..len).ok_or_else(bad)?;
-    match avail.iter().position(|&a| a) {
-        // No sample available: 1 << (bitDepth - 1).
-        None => line.fill(1 << (bit_depth - 1)),
-        Some(first) => {
-            // Step 1: p[-1][2n-1] takes the first available value in search order.
-            let v = at(line, first);
-            if let Some(d) = line.first_mut() {
-                *d = v;
-            }
-            // Steps 2 and 3: an unavailable sample copies its predecessor in the line.
-            let mut prev = v;
-            for (d, &a) in line.iter_mut().zip(avail).skip(1) {
-                if a {
-                    prev = *d;
-                } else {
-                    *d = prev;
+    // Corner, line index 2n.
+    let corner = x0.checked_sub(1).zip(y0.checked_sub(1));
+    let ok = corner.is_some_and(|(x, y)| avail(x, y));
+    if let (true, Some((x, y))) = (ok, corner) {
+        let v = plane.get(y * stride + x).ok_or_else(bad)?;
+        *line.get_mut(2 * n).ok_or_else(bad)? = i32::from(*v);
+    }
+    settle(line, 2 * n, 1, ok, &mut seen);
+    // Top row, line indexes 2n+1..=4n: p[x][-1] for x = 0..2n. Columns right of the plane are
+    // not available, and so is the whole row at the top of the plane.
+    let x_end = if y0 > 0 {
+        (x0 + 2 * n).min(pw).max(x0)
+    } else {
+        x0
+    };
+    if let Some(yt) = y0.checked_sub(1) {
+        let row = plane
+            .get(yt * stride..yt * stride + x_end)
+            .ok_or_else(bad)?;
+        let mut x = x0;
+        while x < x_end {
+            let hi = (((x >> ul) + 1) << ul).min(x_end);
+            let (i, k) = (2 * n + 1 + x - x0, hi - x);
+            let ok = avail(x, yt);
+            if ok {
+                let dst = line.get_mut(i..i + k).ok_or_else(bad)?;
+                for (d, &v) in dst.iter_mut().zip(row.get(x..hi).ok_or_else(bad)?) {
+                    *d = i32::from(v);
                 }
             }
+            settle(line, i, k, ok, &mut seen);
+            x = hi;
         }
+    }
+    let i = 2 * n + 1 + x_end - x0;
+    settle(line, i, 4 * n + 1 - i, false, &mut seen);
+    if !seen {
+        // No sample available: 1 << (bitDepth - 1).
+        line.fill(1 << (bit_depth - 1));
     }
     Ok(())
+}
+
+/// Substitution (8.4.4.2.2) for the run `line[i..i + k]`, called for the runs in line order once
+/// an available run's samples are in place. The first available run gives its first value to
+/// every sample before it (step 1 and the copies of step 3 of all samples up to it); a later
+/// unavailable run copies its predecessor. `seen`: an available run came before.
+fn settle(line: &mut [i32], i: usize, k: usize, ok: bool, seen: &mut bool) {
+    if ok {
+        if !*seen {
+            *seen = true;
+            let v = at(line, i);
+            if let Some(d) = line.get_mut(..i) {
+                d.fill(v);
+            }
+        }
+    } else if *seen {
+        let v = at(line, i.wrapping_sub(1));
+        if let Some(d) = line.get_mut(i..i + k) {
+            d.fill(v);
+        }
+    }
 }
 
 /// 8.4.4.2.3.
@@ -619,7 +661,7 @@ mod tests {
     use super::*;
     use crate::frame::SliceParams;
     use crate::limits::Limits;
-    use crate::ps::tests::{ledger, pps_bits, sps_bits};
+    use crate::ps::tests::{ledger, pps_bits, sps_bits, sps_bits_ctb16};
     use crate::ps::{activate, parse_pps, parse_sps};
     use std::sync::Arc;
 
@@ -636,15 +678,10 @@ mod tests {
         super::predict(&mut Scratch::default(), f, act, c, x0, y0, log2, mode)
     }
 
-    /// 64x64 picture, every CTB started in slice 0.
-    fn setup() -> (Active, Frame) {
-        let l = ledger();
-        let sps = Arc::new(parse_sps(&sps_bits(64, 64)).unwrap());
-        let pps = Arc::new(parse_pps(&pps_bits(1)).unwrap());
-        let act = activate(sps, pps, &Limits::default(), &l).unwrap();
-        let mut f = Frame::new(&act, &l).unwrap();
-        let s = SliceParams {
-            slice_addr_rs: 0,
+    /// A slice segment record of the slice starting at CtbAddrInRs `addr`.
+    fn slice(addr: u32) -> SliceParams {
+        SliceParams {
+            slice_addr_rs: addr,
             qp_y: 26,
             cb_qp_offset: 0,
             cr_qp_offset: 0,
@@ -654,8 +691,17 @@ mod tests {
             loop_filter_across_slices: true,
             sao_luma: true,
             sao_chroma: true,
-        };
-        let idx = f.push_slice(s, &l).unwrap();
+        }
+    }
+
+    /// 64x64 picture, every CTB started in slice 0.
+    fn setup() -> (Active, Frame) {
+        let l = ledger();
+        let sps = Arc::new(parse_sps(&sps_bits(64, 64)).unwrap());
+        let pps = Arc::new(parse_pps(&pps_bits(1)).unwrap());
+        let act = activate(sps, pps, &Limits::default(), &l).unwrap();
+        let mut f = Frame::new(&act, &l).unwrap();
+        let idx = f.push_slice(slice(0), &l).unwrap();
         let ctbs = (act.sps.pic_width_in_ctbs_y * act.sps.pic_height_in_ctbs_y) as usize;
         for a in 0..ctbs {
             f.start_ctb(a, idx).unwrap();
@@ -773,6 +819,11 @@ mod tests {
             x ^= x << 17;
             self.0 = x;
             x
+        }
+
+        /// A value in 0..m.
+        fn below(&mut self, m: usize) -> usize {
+            (self.next_u64() % m as u64) as usize
         }
     }
 
@@ -911,7 +962,7 @@ mod tests {
         }
     }
 
-    /// The gather before the per-cell availability cache: one `available` call per sample.
+    /// The per-sample definition of the gather: one 6.4.1 `Frame::available` call per sample.
     #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
     fn gather_per_sample(
         frame: &Frame,
@@ -989,6 +1040,76 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// The run-based gather against the per-sample 6.4.1 definition on random pictures: CTB 16 or
+    /// 32, min TB 4 or 8, 1 to 3 tile columns and rows, random slice segments (independent and
+    /// dependent) over a random prefix of the tile scan with some CTBs never started, and random
+    /// blocks (aligned or not, sizes 4 to 32, luma and chroma). constrained_intra_pred_flag is not
+    /// varied: in an intra-only decoder every neighbour is intra, so it never removes a sample.
+    #[test]
+    fn gather_matches_per_sample_random() {
+        let l = ledger();
+        let mut rng = Rng(0x5eed_1234_abcd);
+        for round in 0..300 {
+            let (w, h) = (
+                8 * (2 + rng.below(11)) as u32,
+                8 * (2 + rng.below(11)) as u32,
+            );
+            let ctb16 = rng.below(2) == 0;
+            let bits = if ctb16 {
+                sps_bits_ctb16(w, h)
+            } else {
+                sps_bits(w, h)
+            };
+            let mut sps = parse_sps(&bits).unwrap();
+            if rng.below(2) == 0 {
+                sps.log2_min_trafo_size = 3;
+            }
+            let most = sps.pic_width_in_ctbs_y.min(sps.pic_height_in_ctbs_y).min(3);
+            let tiles = 1 + rng.below(most as usize) as u32;
+            let pps = parse_pps(&pps_bits(tiles)).unwrap();
+            let act = activate(Arc::new(sps), Arc::new(pps), &Limits::default(), &l).unwrap();
+            let mut f = Frame::new(&act, &l).unwrap();
+            let done = 1 + rng.below(act.ts_to_rs.len());
+            let (mut addr, mut seg) = (0, None);
+            for &rs in act.ts_to_rs.iter().take(done) {
+                if seg.is_none() || rng.below(4) == 0 {
+                    // A new segment: an independent slice or a dependent segment of the last one.
+                    if seg.is_none() || rng.below(2) == 0 {
+                        addr = rs;
+                    }
+                    seg = Some(f.push_slice(slice(addr), &l).unwrap());
+                }
+                if rng.below(8) != 0 {
+                    f.start_ctb(rs as usize, seg.unwrap()).unwrap();
+                }
+            }
+            for c in 0..3 {
+                for y in 0..f.height[c] {
+                    for x in 0..f.width[c] {
+                        f.set_sample(c, x, y, (rng.next_u64() & 0xff) as u16)
+                            .unwrap();
+                    }
+                }
+            }
+            for _ in 0..60 {
+                let c = rng.below(3);
+                let sub = if c == 0 { 1 } else { 2 };
+                let n = 4 << rng.below(4);
+                let (mut x0, mut y0) = (rng.below(f.width[c]), rng.below(f.height[c]));
+                if rng.below(2) == 0 {
+                    (x0, y0) = (x0 & !(n - 1), y0 & !(n - 1));
+                }
+                let mut a = Refs { r: [0; MAX_REF], n };
+                let mut b = a.clone();
+                gather(&f, &act, c, x0, y0, n, sub, 8, &mut a).unwrap();
+                gather_per_sample(&f, &act, c, x0, y0, n, sub, 8, &mut b);
+                assert!(a.r == b.r, "round {round} c {c} n {n} at {x0},{y0}");
+            }
+            l.release(f.charged);
+            l.release(act.charged);
         }
     }
 }

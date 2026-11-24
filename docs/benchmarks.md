@@ -57,6 +57,7 @@ What each PR gave (all classes, 1 thread unless noted; each run against the main
 | #17 | SIMD SAO | 4173.9 | 3520.0 |
 | #19 | deblocking and SAO in CTB-row bands (default threads) | 3519.0 nt | 3226.8 nt |
 | #18 | pictures in parallel; hash check opt-in (`Options::check_hash`) | 3523.8 / 3226.8 nt | 3106.5 / 1684.3 nt |
+| #25 | deblocking in edge batches of 16 lines, AVX2 and NEON kernels (bench runs 45481933675 and 45483838642 vs main run 45466964176) | 3041.1 / 1622.6 nt | 2783.2 / 1532.7 nt (second run 2803.0 / 1545.4 nt) |
 
 Kernels that gave no gain were removed (docs/safety.md, "Kernels removed"). Open for speed:
 parallel decode by tile / WPP row inside one picture.
