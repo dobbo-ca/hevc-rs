@@ -648,7 +648,7 @@ mod tests {
                 let r = lcg(&mut s);
                 if r.is_multiple_of(61) {
                     // PCM style: reader at the spec position, then re-initialisation.
-                    let n = (r >> 8) as u32 % 20;
+                    let n = (r >> 8) % 20;
                     assert_eq!(
                         rf.r.u(n).ok(),
                         nw.reader().u(n).ok(),
