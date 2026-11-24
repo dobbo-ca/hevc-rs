@@ -129,3 +129,29 @@ scalar code, which is the oracle). Offsets equal to `i16::MIN` or tier Scalar sk
 - Tests: `sao_simd::tests::tiers_equal_scalar` (rows, bit depth 8/10/12/16, extreme offsets and
   samples) and `sao::tests::tiers_equal_scalar` (whole pictures with slices, PCM cells). Fuzz
   target `sao_tiers` (`__fuzz_sao::tiers`).
+## SIMD: deblocking (`src/deblock.rs`, modules `x86k` and `armk`)
+
+Each edge is filtered in batches of 4 segments of 4 lines (16 lines along the edge). The band
+code first computes the parameters of the 4 segments (`Seg`: beta, tC, kept p or q side; tC 0
+means nothing to filter) straight from the metadata grids, then filters. A full batch goes to the
+kernel; a partial one (the right or bottom end of a plane) and everything on `Tier::Scalar` run
+`luma_segment` / `chroma_segment`, the scalar oracle.
+
+- Kernel layout: 16-bit lanes, one line per lane. A horizontal edge loads the 8 rows p3..q3 of
+  16 columns as they are; a vertical edge loads 16 rows of 8 samples and transposes them (two
+  8x8 transposes in the 128-bit halves on AVX2, two halves of 8 lines on NEON). dE, dEp, dEq and
+  the strong/normal choice of a segment come from its lines 0 and 3 inside the vectors (lanes 0
+  and 3 of each group of 4 added or and-ed, then broadcast) and are applied with blends, as are
+  the kept sides (PCM with pcm_loop_filter_disabled, cu_transquant_bypass).
+- Tiers: Scalar, AVX2, AVX-512 (dispatched to the AVX2 kernel), NEON. Bit depths above 10 run
+  scalar: `9 * (q0 - p0)` of a 12-bit sample does not fit 16 bits. Up to 10 bits every
+  intermediate is below 2^14.
+- `unsafe` blocks: the two calls in `kernel` (invariant: the CPU has AVX2 / NEON; checked by
+  `is_x86_feature_detected!("avx2")` in the match guard, and Neon comes only from
+  `simd::tier()` / `simd::available()`). `kernel` cuts the window of the batch out of the plane in
+  safe code (16 rows of 8 samples, or 8 rows of 16) and returns false when it does not fit; the
+  kernels take their arrays from that window with `first_chunk`, load and store through the
+  shared helpers of `src/simd/{x86,arm}.rs`.
+- Tests: `deblock::tests::tiers_match_scalar` (whole pictures: random bS, QpY, two slices with
+  random beta/tC offsets, PCM/bypass cells, bit depths 8, 9, 10 and 12, sizes with partial
+  batches) and `fuzz_tiers_random_bytes`. Fuzz target `deblock_tiers` (`__fuzz_deblock::tiers`).

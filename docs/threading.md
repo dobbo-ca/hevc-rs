@@ -114,7 +114,8 @@ threads the picture may use, see below). One band per 64 Ki luma samples: pictur
 luma samples (256x256, 352x288, 416x240) filter on the calling thread. The cap of 64 keeps the
 per-band bookkeeping (a few KiB) inside the small-allocation reserve. Band 0 runs on the thread
 that filters the picture. Band tests run 1, 2, 3, 5 and 64 bands against one (SAO on every SIMD
-tier; deblocking is scalar only).
+tier; deblocking on the tier of the process, and `deblock::tests::tiers_match_scalar` compares every
+tier with scalar).
 
 ## How the threads are split
 
@@ -153,8 +154,9 @@ count (`tests/threads.rs`, unit tests).
   before the split); all bands run to the end and the error of the lowest band is returned. A
   refused spawn runs that band on the calling thread.
 - Thread stacks are not charged (band threads 512 KiB, `frame::BAND_STACK`; picture workers the std default).
-- Cancel: the flag stops every thread. Every band reads it once per CTB row (SAO) or per row of
-  4 samples (deblocking); the planes are put back into the frame on every path. A panic inside a
+- Cancel: the flag stops every thread. Every band reads it once per CTB row (SAO) or per 16 rows
+  of vertical edges and per row of horizontal edges (deblocking); the planes are put back into
+  the frame on every path. A panic inside a
   picture job is caught in the worker and becomes an error result (then the replay), so the
   calling thread never waits for a result that cannot come.
 - A call joins its picture workers, band threads and grid workers by handle before it returns, so no thread of the call outlives it.
