@@ -279,6 +279,7 @@ impl Frame {
     }
 
     /// The sample at (x, y) of plane `c`; None outside the plane.
+    #[allow(dead_code, reason = "used by the tests only")]
     pub(crate) fn sample(&self, c: usize, x: usize, y: usize) -> Option<u16> {
         if x >= *self.width.get(c)? || y >= *self.height.get(c)? {
             return None;
