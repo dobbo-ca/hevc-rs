@@ -389,16 +389,18 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
                 done.store(true, Ordering::Relaxed);
             });
             assert!(same, "output differs with max_threads {max_threads}");
-            // The sampler, plus bands - 1 band threads (bands = min(max_threads, 4)).
+            // The sampler is one thread more; any other is a band thread. No upper bound here:
+            // a band thread joined at the end of one filter pass can still be listed while the
+            // next pass starts its own (the bound of the picture workers is checked below).
             let seen = seen.load(Ordering::Relaxed);
-            assert!(
-                seen <= base + max_threads.min(4),
-                "{seen} threads over the bands of max_threads {max_threads} (base {base})"
-            );
-            assert!(
-                max_threads == 1 || seen >= base + 2,
-                "no band thread ran with max_threads {max_threads} (base {base}, seen {seen})"
-            );
+            if max_threads == 1 {
+                assert!(seen <= base + 1, "a thread ran with max_threads 1");
+            } else {
+                assert!(
+                    seen >= base + 2,
+                    "no band thread ran with max_threads {max_threads} (base {base}, seen {seen})"
+                );
+            }
         }
     }
 
