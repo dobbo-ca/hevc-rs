@@ -13,7 +13,8 @@
  *   <name>.info   "W H chroma depthY depthC alpha": chroma 400/420/422/444, alpha 0/1; for a
  *                 monochrome image libheif has no chroma plane, so depthC is written as depthY
  * or <name>.err:  "convert" when libheif gives RGB or an interleaved layout, "decode" otherwise.
- * ignore_transformations = 1: no rotation, mirror or crop by the transforms. Security limits off.
+ * ignore_transformations = 1: no rotation, mirror or crop by the transforms, unless the environment
+ * has HEIC_TRANSFORMS=1 (then libheif applies them). Security limits off.
  */
 #define _POSIX_C_SOURCE 200809L
 #include <dirent.h>
@@ -130,7 +131,13 @@ static int decode_one(const char *path, const char *name, const char *out)
     if (getenv("HEIC_THREADS")) {
         heif_context_set_max_decoding_threads(ctx, atoi(getenv("HEIC_THREADS")));
     }
-    opt->ignore_transformations = 1;
+    /* HEIC_TRANSFORMS=1 (the second G7 pass of run.sh) leaves the transformations on: libheif
+       applies clap, irot and imir in ipma order, as examples/heic does with
+       Options::apply_transforms. */
+    {
+        const char *t = getenv("HEIC_TRANSFORMS");
+        opt->ignore_transformations = !(t && strcmp(t, "1") == 0);
+    }
     /* Keep the samples as decoded: with a NULL output profile libheif otherwise converts to sRGB
        defaults (full range), e.g. limited-range luma 233 becomes 253. */
     opt->output_image_nclx_profile_passthrough = 1;

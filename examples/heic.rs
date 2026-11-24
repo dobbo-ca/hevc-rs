@@ -6,7 +6,8 @@
 //! `<name>.alpha` (the alpha plane, same sample format; only when there is one) and `<name>.info`
 //! (`W H chroma depthY depthC alpha`, one line), or `<name>.err` (a token). `<name>` is the path
 //! relative to in-dir, without the extension, with `/` replaced by `__`. The image is not
-//! rotated, mirrored or cropped by its transforms.
+//! rotated, mirrored or cropped by its transforms, unless `HEIC_TRANSFORMS=1` is set: then it is
+//! decoded with `Options::apply_transforms` (the second G7 pass of tests/parity/run.sh).
 
 use hevc::{ChromaFormat, Error, Limits, Options, Plane, Samples};
 use std::path::{Path, PathBuf};
@@ -97,6 +98,9 @@ fn decode_one(name: &str, data: &[u8], outdir: &Path) {
         Ok("nosao") => opts.sao = false,
         _ => {}
     }
+    // The second G7 pass (tests/parity/run.sh): the transforms applied, against libheif with its
+    // transformations on.
+    opts.apply_transforms = std::env::var_os("HEIC_TRANSFORMS").is_some_and(|v| v == "1");
     // Bench only (tests/parity/bench.sh): HEIC_THREADS=N sets `max_threads`.
     let mut limits = Limits::default();
     if let Some(n) = std::env::var("HEIC_THREADS")

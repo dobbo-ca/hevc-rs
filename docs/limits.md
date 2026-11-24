@@ -66,6 +66,20 @@ The cancel flag is read before each NAL unit and before each CTU, and per row in
   `max_alloc`. A tile that does not fit its share is decoded again alone with all of
   `max_alloc - max_alloc / 4 - held`: the result and the error never depend on `max_threads`.
   The decoder inside a worker runs with `max_threads = 1`.
+- `Options::apply_transforms`: `isobmff::apply_transforms` runs after the decode, with
+  `isobmff::Limits { max_alloc: share, max_threads: 1, max_pixels: ours, ..default }`, where
+  `share` = `max_alloc - max_alloc / 4 - held` and `held` = the decoded planes and SEI messages
+  of the image plus the alpha plane (all alive during the call; for the alpha plane's own call,
+  the transformed image plus the alpha plane). The helper charges every buffer it makes (new
+  planes and their list) against `share` before allocating, and gives a replaced buffer back,
+  so the peak is the parse (`max_alloc / 8`) + `held` + `share` <= `max_alloc`; the item-bytes
+  eighth is free by then and is not used. `held` above `max_alloc - max_alloc / 4`, or a helper
+  that needs more than `share` (a rotation by 90 or 270 needs a full copy of the planes), is
+  `AllocLimit`. `max_pixels` is checked against the size before and after the transforms.
+  The cancel flag is passed through (the helper reads it between steps, per 64 x 64 tile of a
+  rotation and every 64 rows). `decode_heic_item` does the same with `max_alloc - max_alloc / 8
+  - held`. `tests/limits.rs` measures the real heap peak of a 256x256 rotated HEIC against
+  `max_alloc`.
 - `iovl`: `max_width`, `max_height` and `max_pixels` are checked against the overlay output
   size before any input is decoded; the canvas (all planes) is charged before it is allocated,
   with the first input and its SEI still alive; each later input is decoded with what is left,

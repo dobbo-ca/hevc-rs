@@ -158,7 +158,8 @@ RUN --mount=type=cache,id=hevc-rs-data,target=/data,sharing=locked,readonly \
 # diff: the report (summary.md, *.diff, status) is the build output (target parity-report), and
 # the workflow fails on `status`, as the report is wanted most when the gate is red.
 # PARITY_DECODE=1 (the default) gates the picture comparisons (dec265, ffmpeg, hash); 0 makes
-# them report only. The HEIC gate (G7: examples/heic vs libheif on the HEIC corpus) is always on.
+# them report only. The HEIC gate (G7: examples/heic vs libheif on the HEIC corpus) and its second
+# pass with the transforms applied on both sides (G7t) are always on.
 FROM ffmpeg-oracle AS parity
 COPY . .
 COPY --from=c-oracle /usr/local/bin/dec265 /usr/local/bin/dec265
