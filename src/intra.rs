@@ -343,8 +343,12 @@ fn gather(
     }
     settle(line, 2 * n, 1, ok, &mut seen);
     // Top row, line indexes 2n+1..=4n: p[x][-1] for x = 0..2n. Columns right of the plane are
-    // not available.
-    let x_end = (x0 + 2 * n).min(pw).max(x0);
+    // not available, and so is the whole row at the top of the plane.
+    let x_end = if y0 > 0 {
+        (x0 + 2 * n).min(pw).max(x0)
+    } else {
+        x0
+    };
     if let Some(yt) = y0.checked_sub(1) {
         let row = plane
             .get(yt * stride..yt * stride + x_end)
