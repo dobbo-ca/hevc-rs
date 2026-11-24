@@ -1,15 +1,15 @@
 # Threading
 
-`Limits::max_threads` (default `available_parallelism`; 0 counts as 1) caps the threads of one
-call, the calling thread included. With 1 no thread is spawned. The output and the errors are
-byte-identical to the serial path for every value; `oracle --threads 1` against the default is a
-parity gate (see [parity.md](parity.md)).
+`Limits::max_threads` (default `available_parallelism`; 0 counts as 1) caps the threads that work
+for one call at the same moment, the calling thread included. With 1 no thread is spawned and the
+shared pool is not touched. The output and the errors are byte-identical to the serial path for
+every value; `oracle --threads 1` against the default is a parity gate (see [parity.md](parity.md)).
 
 Three things run in parallel, from the outside in:
 
 1. The tiles of a HEIC grid ([HEIC grids](#heic-grids)).
 2. The pictures of one call that holds several ([Pictures in parallel](#pictures-in-parallel)).
-3. Deblocking and SAO inside one picture, in bands of CTB rows
+3. Deblocking and SAO inside one picture, in bands of CTB rows, as tasks on the shared pool
    ([Band-parallel filters](#band-parallel-filters)).
 
 Reconstruction (CABAC, prediction, transform) of one picture is serial, as are the hash check and
@@ -109,34 +109,61 @@ After a picture is reconstructed, deblocking and SAO split each plane into bands
 - SAO: each plane is read from the deblocked copy (charged as before) and written in bands of
   whole CTB rows; the neighbour samples across a band edge come from the shared copy.
 
-The number of bands is `min(workers, CTB rows, luma samples >> 16, 64)`, at least 1 (`workers`: the
-threads the picture may use, see below). One band per 64 Ki luma samples: pictures under 128 Ki
-luma samples (256x256, 352x288, 416x240) filter on the calling thread. The cap of 64 keeps the
-per-band bookkeeping (a few KiB) inside the small-allocation reserve. Band 0 runs on the thread
-that filters the picture. Band tests run 1, 2, 3, 5 and 64 bands against one (SAO on every SIMD
-tier; deblocking on the tier of the process, and `deblock::tests::tiers_match_scalar` compares every
-tier with scalar).
+The number of bands is `min(workers, CTB rows, luma samples >> 16, 64)`, at least 1 (`workers`:
+`max_threads`). One band per 64 Ki luma samples: pictures under 128 Ki luma samples (256x256,
+352x288, 416x240) filter on the thread that decodes them. The cap of 64 keeps the per-band
+bookkeeping (a few KiB) inside the small-allocation reserve. Band tests run 1, 2, 3, 5 and 64
+bands against one (SAO on every SIMD tier; deblocking on the tier of the process, and
+`deblock::tests::tiers_match_scalar` compares every tier with scalar).
+
+The bands of one pass (`frame::par_bands`) run on the thread that filters the picture and on the
+shared pool. Band 0 runs on the filtering thread; the other bands are taken in order from an atomic
+counter by the filtering thread and by up to `bands - 1` pool tasks, one for each thread the pass
+can take from the call's budget (below). With no thread left in the budget, or no pool, the
+filtering thread runs every band. The pass ends when every band is done (`in_place_scope`), and
+its threads go back to the budget. The pool tasks borrow the planes for the length of the pass
+only, which is what `std::thread::scope` allowed before, but no thread is started per pass.
+
+## The shared pool
+
+`pool::get` makes one `rayon_core::ThreadPool` on first use (a `OnceLock`) with
+`available_parallelism` threads named `hevc-pool-N`, 512 KiB stack each, and keeps it for the life
+of the process. It holds no other state. A call with `max_threads = 1` never makes or uses it.
+There is no API for a caller-supplied pool. If the pool cannot be made, the bands run on the
+filtering thread.
+
+Only band tasks run on the pool: they are short and never block. Picture workers and grid workers
+stay threads started per call (one `std::thread::scope` per call, or per grid): a picture worker
+waits on the job channel for the whole call, and a blocked pool thread would be lost to every
+other call; a grid worker decodes whole tiles. They start once per call, not once per pass.
 
 ## How the threads are split
 
-`max_threads` is the total of live threads of the call, the band threads included.
+`max_threads` counts the threads that work for the call at the same moment: the calling thread,
+its picture workers or grid workers, and its band tasks that hold a pool thread. Idle pool
+threads are not counted; they are alive whether or not a call runs (at most
+`available_parallelism` of them in the process).
 
-- A job on a picture worker filters with 1 band.
-- A job the calling thread runs while no picture worker exists (a call with one picture, such as a
-  HEIC item or a single still) filters with up to `max_threads` bands.
-- Once picture workers exist, a job the calling thread runs uses up to
-  `max(1, max_threads - spawned)` bands, where `spawned` is the number of picture workers started.
-  The calling thread, its `bands - 1` band threads and the `spawned` workers (one band each) are at
-  most `max_threads` threads. While the calling thread runs a job its front end waits,
-  so the count holds at every moment.
-- A tile decoded by a grid worker (two or more running) gets `max_threads = 1`: one thread, one band.
-  Tile 0, a tile decoded again alone, and the tiles of a grid decoded serially get the full
-  `max_threads`, because they run alone.
+- Each call has a budget of `max_threads - 1` threads (`pool::Budget`, an atomic counter). A picture
+  worker takes one when it starts and keeps it until the call ends. A band task takes one when its
+  pass starts and gives it back when the pass ends. When the budget is empty, no worker starts
+  (the job runs on the calling thread, as when every worker is busy) and the bands run on the
+  filtering thread.
+- Every job, on a picture worker or on the calling thread, splits the filters into up to
+  `max_threads` bands by the size gate above; the budget decides how many threads they get. Two
+  large pictures with `max_threads` 16 start 2 workers, and their bands use the 13 threads left.
+- A tile decoded by a grid worker (two or more running) gets `max_threads = 1`: one thread, one
+  band, no pool. Tile 0, a tile decoded again alone, and the tiles of a grid decoded serially get
+  the full `max_threads`, because they run alone.
 
 The split never changes a result: the picture and band paths are byte-identical for every thread
-count (`tests/threads.rs`, unit tests). The integration tests build real streams with a small test
-encoder (`tests/common`); `tests/limits.rs` also checks that a 512x512 picture runs band threads,
-and the heap peak against `max_alloc` while replaced parameter sets are held by pictures in flight.
+count (`tests/threads.rs`, unit tests). `frame::tests::par_bands_runs_at_most_max_threads_at_once`
+counts the bands that run at the same moment against `max_threads`. The integration tests build
+real streams with a small test encoder (`tests/common`); `tests/limits.rs` checks that
+`max_threads = 1` never makes the pool, that the pool has at most `available_parallelism` threads,
+that a one-picture call starts no thread outside the pool, that the threads outside the pool stay
+within `max_threads`, and the heap peak against `max_alloc` while replaced parameter sets are held
+by pictures in flight.
 
 
 ## Memory and cancel
@@ -151,34 +178,33 @@ and the heap peak against `max_alloc` while replaced parameter sets are held by 
   `Active::charged`. A picture gives its bytes back after its buffers are freed (`Cur::booked`
   is its last field), so a worker cannot reserve memory that is still in use. The CTU scratch
   lives on the stack of the decoding thread.
-- The bands share the planes and the one deblocked copy that SAO already charged, so band threads
+- The bands share the planes and the one deblocked copy that SAO already charged, so band tasks
   add no buffer to `max_alloc`. A band can only fail with `Cancelled` (every other error is raised
   before the split); all bands run to the end and the error of the lowest band is returned. A
-  refused spawn runs that band on the calling thread.
-- Thread stacks are not charged (band threads 512 KiB, `frame::BAND_STACK`; picture workers the std default).
+  band that panics fails with `InvalidData`.
+- Thread stacks are not charged to `max_alloc` (pool threads 512 KiB, `pool::STACK`; picture and
+  grid workers the std default). Nor is the pool's own memory: its thread records and queues, made
+  once per process, and a few KiB that a pool thread allocates the first time it runs a task. The
+  box rayon makes for each band task is a small fixed allocation, like the thread handles before.
 - Cancel: the flag stops every thread. Every band reads it once per CTB row (SAO) or per 16 rows
   of vertical edges and per row of horizontal edges (deblocking); the planes are put back into
   the frame on every path. A panic inside a
   picture job is caught in the worker and becomes an error result (then the replay), so the
   calling thread never waits for a result that cannot come.
-- A call joins its picture workers, band threads and grid workers by handle before it returns, so no thread of the call outlives it.
+- A call joins its picture workers and grid workers by handle before it returns, and every filter
+  pass waits for its band tasks, so no work of the call outlives it. The pool's threads stay, idle.
 
 ## Known deviations from the repository threading rule
 
-- There is no lazy shared pool (`OnceLock`) and no single scope per call for the filters. A
-  reused thread cannot borrow a per-picture `Frame` in safe Rust, and a pool crate would be a new
-  dependency. Picture jobs own their data (`Cur`), so they run on workers started inside one scope
-  per call. The filters borrow the planes, so each filter pass opens its own scope (up to 6 per
-  picture for deblocking and 3 for SAO), each spawning `bands - 1` threads. The `>> 16` gate keeps
-  small pictures serial; its value is a guess to tune from the bench. A HEIC grid opens one scope
-  per grid, and every grid (each grid input of an overlay, the primary, the alpha) opens its own,
-  one after the other, never nested (up to 65 536 for one overlay, plus the alpha's), so the
-  thread count never passes `max_threads`.
+- There is no single scope per call for everything. Picture jobs own their data (`Cur`), so they
+  run on workers started inside one scope per call; the bands run on the shared pool (see above).
+  The `>> 16` gate keeps small pictures on one thread; its value is a guess to tune from the
+  bench. A HEIC grid opens one scope per grid, and every grid (each grid input of an overlay, the
+  primary, the alpha) opens its own, one after the other, never nested (up to 65 536 for one
+  overlay, plus the alpha's), so the thread count never passes `max_threads`.
 - Small inputs use fewer workers (no picture worker for one picture, one more per job that finds
-  none free, one band per 64 Ki luma samples) instead of a pool.
-- Thread stacks are not charged to `max_alloc`.
-- A job on a picture worker always filters with 1 band, even when threads are idle (two large
-  pictures with `max_threads` 16 start 2 workers, 14 threads idle); main used up to 16 bands each.
+  none free, one band per 64 Ki luma samples).
+- Thread stacks and the pool's own memory are not charged to `max_alloc`.
 - A replay waits for the jobs in flight to end. They watch the caller's `cancel` flag only: a
   second, call-local stop flag would need every stage (CTU loop, deblocking, SAO, crop, hash) to
   read two flags, and a stop flag bridged by the front end would delay the caller's own cancel by

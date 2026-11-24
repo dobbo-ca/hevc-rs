@@ -13,10 +13,12 @@
 
 use crate::error::{Error, Result};
 use crate::ledger::{Ledger, filled, grow_one};
+use crate::pool::{self, Budget};
 use crate::ps::Active;
 use std::mem::size_of;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
-use std::thread;
 
 /// `slice_idx` of a CTB whose decoding has not started.
 pub(crate) const NO_SLICE: u32 = u32::MAX;
@@ -503,10 +505,7 @@ pub(crate) fn plane_cuts(ctb_cuts: &[usize], unit: usize, shift: usize, rows: us
         .collect()
 }
 
-/// Stack of a band worker: the filters do not recurse, so far less than the 2 MiB default.
-const BAND_STACK: usize = 512 * 1024;
-
-/// A band waiting for a worker: its first plane row and its samples.
+/// A band waiting for a thread: its first plane row and its samples.
 type Band<'a> = Mutex<Option<(usize, &'a mut [u16])>>;
 
 fn run_band<F>(f: &F, k: usize, band: &Band<'_>) -> Result<()>
@@ -518,12 +517,20 @@ where
 }
 
 /// Splits `plane` (rows of `stride` samples) at the sample-row `cuts` (`[0, .., end]`, band `k`
-/// is rows `cuts[k]..cuts[k + 1]`) and calls `f(k, first_row, band)` on every band, band 0 on the
-/// calling thread and the others on scoped threads (a refused spawn runs that band here). All
-/// bands run; the result is the error of the lowest failing band, whatever the thread timing.
-/// One band spawns nothing. A cut list that does not start at 0, goes back, or leaves the plane
-/// is `InvalidData`.
-pub(crate) fn par_bands<F>(plane: &mut [u16], stride: usize, cuts: &[usize], f: F) -> Result<()>
+/// is rows `cuts[k]..cuts[k + 1]`) and calls `f(k, first_row, band)` on every band. Band 0 runs
+/// on the calling thread; the others are taken in order from a shared counter by the calling
+/// thread and by up to `bands - 1` tasks on the shared pool, one per thread taken from `budget`
+/// (none left, or no pool: the calling thread runs them all). The threads go back to `budget`
+/// when every band is done. All bands run; the result is the error of the lowest failing band,
+/// whatever the thread timing (a band that panics fails with `InvalidData`). One band uses no
+/// pool. A cut list that does not start at 0, goes back, or leaves the plane is `InvalidData`.
+pub(crate) fn par_bands<F>(
+    plane: &mut [u16],
+    stride: usize,
+    cuts: &[usize],
+    budget: &Budget,
+    f: F,
+) -> Result<()>
 where
     F: Fn(usize, usize, &mut [u16]) -> Result<()> + Sync,
 {
@@ -548,39 +555,46 @@ where
         rest = tail;
         at = b;
     }
-    let f = &f;
-    let Some((first, others)) = bands.split_first() else {
-        return Ok(());
-    };
-    if others.is_empty() {
-        return run_band(f, 0, first);
-    }
-    thread::scope(|s| {
-        let mut handles = Vec::new();
-        handles
-            .try_reserve_exact(others.len())
-            .map_err(|_| Error::OutOfMemory)?;
-        for (i, band) in others.iter().enumerate() {
-            let h = thread::Builder::new()
-                .stack_size(BAND_STACK)
-                .spawn_scoped(s, move || run_band(f, i + 1, band))
-                .ok();
-            handles.push(h);
-        }
-        let mut res = run_band(f, 0, first);
-        for (i, (band, h)) in others.iter().zip(handles).enumerate() {
-            let r = match h {
-                Some(h) => h
-                    .join()
-                    .unwrap_or(Err(Error::InvalidData("band worker panicked"))),
-                None => run_band(f, i + 1, band),
-            };
-            if res.is_ok() {
-                res = r;
+    let (f, bands) = (&f, bands.as_slice());
+    let next = AtomicUsize::new(1);
+    let failed: Mutex<Option<(usize, Error)>> = Mutex::new(None);
+    let run = |k: usize, band: &Band<'_>| {
+        let r = catch_unwind(AssertUnwindSafe(|| run_band(f, k, band)))
+            .unwrap_or(Err(Error::InvalidData("band worker panicked")));
+        if let Err(e) = r {
+            let mut g = failed.lock().unwrap_or_else(PoisonError::into_inner);
+            if g.as_ref().is_none_or(|&(j, _)| k < j) {
+                *g = Some((k, e));
             }
         }
-        res
-    })
+    };
+    let drain = || {
+        loop {
+            let k = next.fetch_add(1, Ordering::Relaxed);
+            let Some(band) = bands.get(k) else { break };
+            run(k, band);
+        }
+    };
+    let all = || {
+        if let Some(band) = bands.first() {
+            run(0, band);
+        }
+        drain();
+    };
+    let helpers = (1..bands.len()).take_while(|_| budget.take()).count();
+    // The pool is made only when a pass has a thread for it, never with one band or one thread.
+    match (helpers > 0).then(pool::get).flatten() {
+        Some(p) => p.in_place_scope(|s| {
+            for _ in 0..helpers {
+                s.spawn(|_| drain());
+            }
+            all();
+        }),
+        None => all(),
+    }
+    budget.give(helpers);
+    let failed = failed.into_inner().unwrap_or_else(PoisonError::into_inner);
+    failed.map_or(Ok(()), |(_, e)| Err(e))
 }
 
 #[cfg(test)]
@@ -590,7 +604,7 @@ mod tests {
     use crate::ps::tests::{ledger, pps_bits, sps_bits};
     use crate::ps::{activate, parse_pps, parse_sps};
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread;
 
     fn active(w: u32, h: u32, tiles: u32, l: &Ledger) -> Active {
         let sps = Arc::new(parse_sps(&sps_bits(w, h)).unwrap());
@@ -721,25 +735,28 @@ mod tests {
 
     #[test]
     fn par_bands_first_error_in_band_order() {
-        let mut plane = vec![0u16; 4 * 8];
-        let calls = AtomicUsize::new(0);
-        let r = par_bands(&mut plane, 4, &[0, 2, 4, 8], |k, row0, band| {
-            calls.fetch_add(1, Ordering::Relaxed);
-            assert_eq!(row0, [0, 2, 4][k]);
-            band.fill(u16::try_from(k + 1).unwrap());
-            match k {
-                1 => Err(Error::InvalidData("one")),
-                2 => Err(Error::InvalidData("two")),
-                _ => Ok(()),
-            }
-        });
-        assert_eq!(r, Err(Error::InvalidData("one")));
-        assert_eq!(calls.load(Ordering::Relaxed), 3);
-        let want: Vec<u16> = [1, 1, 2, 2, 3, 3, 3, 3]
-            .iter()
-            .flat_map(|&v| [v; 4])
-            .collect();
-        assert_eq!(plane, want);
+        for threads in [1, 2, 8] {
+            let mut plane = vec![0u16; 4 * 8];
+            let calls = AtomicUsize::new(0);
+            let budget = Budget::new(threads);
+            let r = par_bands(&mut plane, 4, &[0, 2, 4, 8], &budget, |k, row0, band| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                assert_eq!(row0, [0, 2, 4][k]);
+                band.fill(u16::try_from(k + 1).unwrap());
+                match k {
+                    1 => Err(Error::InvalidData("one")),
+                    2 => Err(Error::InvalidData("two")),
+                    _ => Ok(()),
+                }
+            });
+            assert_eq!(r, Err(Error::InvalidData("one")), "threads {threads}");
+            assert_eq!(calls.load(Ordering::Relaxed), 3);
+            let want: Vec<u16> = [1, 1, 2, 2, 3, 3, 3, 3]
+                .iter()
+                .flat_map(|&v| [v; 4])
+                .collect();
+            assert_eq!(plane, want);
+        }
     }
 
     #[test]
@@ -748,20 +765,36 @@ mod tests {
         let mut plane = [0u16; 16];
         let ids = Mutex::new(Vec::new());
         let note = |k: usize, _: usize, _: &mut [u16]| {
-            ids.lock().unwrap().push((k, thread::current().id()));
+            let t = thread::current();
+            let pool = t.name().is_some_and(|n| n.starts_with("hevc-pool-"));
+            ids.lock().unwrap().push((k, t.id() == me, pool));
             Ok(())
         };
-        // One band: no scope, no spawn.
-        par_bands(&mut plane, 4, &[0, 4], note).unwrap();
-        assert_eq!(*ids.lock().unwrap(), [(0, me)]);
+        // One band: on the calling thread, no thread taken.
+        let budget = Budget::new(8);
+        par_bands(&mut plane, 4, &[0, 4], &budget, note).unwrap();
+        assert_eq!(*ids.lock().unwrap(), [(0, true, false)]);
         ids.lock().unwrap().clear();
-        // Several bands: band 0 stays on the calling thread, the others do not run on it.
-        par_bands(&mut plane, 4, &[0, 1, 2, 4], note).unwrap();
+        // No thread left in the budget: every band on the calling thread.
+        par_bands(&mut plane, 4, &[0, 1, 2, 4], &Budget::new(1), note).unwrap();
         let got = ids.lock().unwrap().clone();
         assert_eq!(got.len(), 3);
-        assert!(got.iter().all(|&(k, id)| (id == me) == (k == 0)));
-        let bad = |cuts: &[usize]| par_bands(&mut [0u16; 16], 4, cuts, |_, _, _| Ok(()));
+        assert!(got.iter().all(|&(_, on_me, _)| on_me));
+        ids.lock().unwrap().clear();
+        // Threads left: band 0 stays on the calling thread, the others run here or on the pool.
+        par_bands(&mut plane, 4, &[0, 1, 2, 4], &budget, note).unwrap();
+        let mut got = ids.lock().unwrap().clone();
+        got.sort_unstable();
+        assert_eq!(got.iter().map(|&(k, ..)| k).collect::<Vec<_>>(), [0, 1, 2]);
+        assert!(
+            got.iter()
+                .all(|&(k, on_me, pool)| (k == 0 && on_me) || (k > 0 && (on_me || pool)))
+        );
+        // Every thread taken was given back.
+        assert_eq!((0..8).filter(|_| budget.take()).count(), 7);
+        let bad = |cuts: &[usize]| par_bands(&mut [0u16; 16], 4, cuts, &budget, |_, _, _| Ok(()));
         let e = Err(Error::InvalidData("band cuts"));
+        budget.give(7);
         assert_eq!(bad(&[0, 5]), e);
         assert_eq!(bad(&[1, 2]), e);
         assert_eq!(bad(&[0, 3, 2]), e);
@@ -769,18 +802,23 @@ mod tests {
         assert_eq!(bad(&[]), Ok(()));
     }
 
-    /// Threads used never exceed the bands (a process-wide /proc sampler would race with the other
-    /// unit tests, so the threads are counted by id).
+    /// At most `max_threads` bands run at the same time, the calling thread included (counted
+    /// inside the bands: a process-wide /proc sampler would race with the other unit tests, and
+    /// the pool's idle threads are alive anyway).
     #[test]
-    fn par_bands_uses_at_most_one_thread_per_band() {
-        let ids = Mutex::new(std::collections::HashSet::new());
-        let mut plane = [0u16; 64];
-        let cuts: Vec<usize> = (0..=8).collect();
-        par_bands(&mut plane, 8, &cuts, |_, _, _| {
-            ids.lock().unwrap().insert(thread::current().id());
-            Ok(())
-        })
-        .unwrap();
-        assert!(ids.lock().unwrap().len() <= 8);
+    fn par_bands_runs_at_most_max_threads_at_once() {
+        for threads in [1, 2, 3, 8] {
+            let (now, peak) = (AtomicUsize::new(0), AtomicUsize::new(0));
+            let mut plane = [0u16; 64];
+            let cuts: Vec<usize> = (0..=8).collect();
+            par_bands(&mut plane, 8, &cuts, &Budget::new(threads), |_, _, _| {
+                peak.fetch_max(now.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                thread::sleep(std::time::Duration::from_millis(5));
+                now.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .unwrap();
+            assert!(peak.load(Ordering::SeqCst) <= threads, "threads {threads}");
+        }
     }
 }

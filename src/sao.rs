@@ -8,6 +8,7 @@
 use crate::error::{Error, Result};
 use crate::frame::{Frame, band_rows, par_bands, plane_cuts};
 use crate::ledger::Ledger;
+use crate::pool::Budget;
 use crate::ps::Active;
 use crate::sao_simd::{bo_row, eo_row};
 use crate::simd::{self, Tier};
@@ -251,6 +252,7 @@ fn sao_plane(
     c: usize,
     cancel: &AtomicBool,
     workers: usize,
+    budget: &Budget,
 ) -> Result<()> {
     let (Some(&w), Some(&h), Some(&stride)) =
         (frame.width.get(c), frame.height.get(c), frame.stride.get(c))
@@ -276,7 +278,7 @@ fn sao_plane(
             let unit = act.sps.ctb_size_y as usize / sh.max(1);
             let ctb_rows = band_rows(act.sps.pic_height_in_ctbs_y as usize, workers);
             let cuts = plane_cuts(&ctb_rows, unit, 0, h);
-            par_bands(&mut dst, stride, &cuts, |k, row0, band| {
+            par_bands(&mut dst, stride, &cuts, budget, |k, row0, band| {
                 let (Some(&r0), Some(&r1)) = (ctb_rows.get(k), ctb_rows.get(k + 1)) else {
                     return Ok(());
                 };
@@ -306,8 +308,9 @@ pub(crate) fn sao(
     ledger: &Ledger,
     cancel: &AtomicBool,
     workers: usize,
+    budget: &Budget,
 ) -> Result<()> {
-    sao_with(simd::tier(), frame, act, ledger, cancel, workers)
+    sao_with(simd::tier(), frame, act, ledger, cancel, workers, budget)
 }
 
 /// [`sao`] on an explicit tier (tests run every available one).
@@ -318,6 +321,7 @@ fn sao_with(
     ledger: &Ledger,
     cancel: &AtomicBool,
     workers: usize,
+    budget: &Budget,
 ) -> Result<()> {
     for c in 0..frame.num_planes() {
         if !frame
@@ -334,7 +338,7 @@ fn sao_with(
             .checked_mul(2)
             .ok_or(Error::AllocLimit)?;
         ledger.reserve(bytes)?;
-        let r = sao_plane(tier, frame, act, c, cancel, workers);
+        let r = sao_plane(tier, frame, act, c, cancel, workers, budget);
         ledger.release(bytes);
         r?;
     }
@@ -396,7 +400,15 @@ mod tests {
             offset_val: [[0, 4, 2, -2, -4], [0; 5], [0; 5]],
             ..Default::default()
         };
-        sao(&mut f, &act, &l, &AtomicBool::new(false), 1).unwrap();
+        sao(
+            &mut f,
+            &act,
+            &l,
+            &AtomicBool::new(false),
+            1,
+            &Budget::new(1),
+        )
+        .unwrap();
         // Local min (edgeIdx 1: +4), local max (edgeIdx 4: -4), slopes (+2 / -2 from edgeIdx 2 / 3
         // after the remap), flat 128 untouched.
         assert_eq!(
@@ -419,7 +431,15 @@ mod tests {
                 offset_val: [[0, 4, 2, -2, -4], [0; 5], [0; 5]],
                 ..Default::default()
             };
-            sao(&mut f, &act, &l, &AtomicBool::new(false), 1).unwrap();
+            sao(
+                &mut f,
+                &act,
+                &l,
+                &AtomicBool::new(false),
+                1,
+                &Budget::new(1),
+            )
+            .unwrap();
             // The right neighbour is in slice B, which comes later and decides.
             assert_eq!(f.sample(0, 31, 5), Some(if across { 132 } else { 136 }));
         }
@@ -440,7 +460,15 @@ mod tests {
             ..Default::default()
         };
         f.fill_no_filter(0, 8, 4, 4, 1).unwrap();
-        sao(&mut f, &act, &l, &AtomicBool::new(false), 1).unwrap();
+        sao(
+            &mut f,
+            &act,
+            &l,
+            &AtomicBool::new(false),
+            1,
+            &Budget::new(1),
+        )
+        .unwrap();
         // bandShift 3: bands 16..19 get offsets 1..=4; band 20 and band 12 are untouched.
         assert_eq!(row(&f, 0, 0, 6), [131, 133, 149, 147, 160, 100]);
         assert_eq!(f.sample(0, 40, 0), Some(128)); // CTB 1: SaoTypeIdx 0
@@ -533,11 +561,21 @@ mod tests {
                 &l,
                 &AtomicBool::new(false),
                 1,
+                &Budget::new(1),
             )
             .unwrap();
             for t in simd::available() {
                 let (act, mut got) = random_frame(seed.is_multiple_of(2), seed * 0x9e37_79b9);
-                sao_with(t, &mut got, &act, &l, &AtomicBool::new(false), 1).unwrap();
+                sao_with(
+                    t,
+                    &mut got,
+                    &act,
+                    &l,
+                    &AtomicBool::new(false),
+                    1,
+                    &Budget::new(1),
+                )
+                .unwrap();
                 assert_eq!(got.planes, want.planes, "{} seed {seed}", t.name());
             }
         }
@@ -560,14 +598,23 @@ mod tests {
                 for t in simd::available() {
                     let (act, mut want) = random_sized(across, seed * 0x9e37_79b9, w, h, ctb16);
                     let orig = want.planes.clone();
-                    sao_with(t, &mut want, &act, &l, &cancel, 1).unwrap();
+                    sao_with(t, &mut want, &act, &l, &cancel, 1, &Budget::new(1)).unwrap();
                     assert!(
                         orig != want.planes,
                         "not filtered: {w}x{h} ctb16 {ctb16} seed {seed}"
                     );
                     for workers in [2, 3, 5, 64] {
                         let (act, mut got) = random_sized(across, seed * 0x9e37_79b9, w, h, ctb16);
-                        sao_with(t, &mut got, &act, &l, &cancel, workers).unwrap();
+                        sao_with(
+                            t,
+                            &mut got,
+                            &act,
+                            &l,
+                            &cancel,
+                            workers,
+                            &Budget::new(workers),
+                        )
+                        .unwrap();
                         assert!(
                             got.planes == want.planes,
                             "{} {w}x{h} ctb16 {ctb16} seed {seed} workers {workers}",
@@ -580,7 +627,15 @@ mod tests {
         let (act, mut f) = random_sized(true, 7, 200, 136, false);
         let orig = f.planes.clone();
         assert_eq!(
-            sao_with(Tier::Scalar, &mut f, &act, &l, &AtomicBool::new(true), 3),
+            sao_with(
+                Tier::Scalar,
+                &mut f,
+                &act,
+                &l,
+                &AtomicBool::new(true),
+                3,
+                &Budget::new(3)
+            ),
             Err(Error::Cancelled)
         );
         assert!(f.planes == orig);
@@ -592,14 +647,21 @@ mod tests {
         let (act, mut f) = setup(&l, true);
         f.sao_at_mut(0).unwrap().type_idx = [1, 0, 0];
         assert_eq!(
-            sao(&mut f, &act, &l, &AtomicBool::new(true), 1),
+            sao(&mut f, &act, &l, &AtomicBool::new(true), 1, &Budget::new(1)),
             Err(Error::Cancelled)
         );
         assert_eq!(f.sample(0, 0, 0), Some(128)); // plane put back
         let tiny = Ledger::default();
         tiny.reset(crate::ledger::SMALL + 100, 0).unwrap();
         assert_eq!(
-            sao(&mut f, &act, &tiny, &AtomicBool::new(false), 1),
+            sao(
+                &mut f,
+                &act,
+                &tiny,
+                &AtomicBool::new(false),
+                1,
+                &Budget::new(1)
+            ),
             Err(Error::AllocLimit)
         );
         assert_eq!(tiny.left(), 100);

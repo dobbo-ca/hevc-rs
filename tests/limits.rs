@@ -192,8 +192,10 @@ fn stream_n(size: u32, data: usize, n: usize) -> Vec<u8> {
     s
 }
 
+/// Live threads of the process outside the crate's shared pool (`pool: false`), or of the pool
+/// (`pool: true`, its threads are named `hevc-pool-N`).
 #[cfg(target_os = "linux")]
-fn threads_now() -> usize {
+fn live_threads(pool: bool) -> usize {
     let Ok(dir) = std::fs::read_dir("/proc/self/task") else {
         return 0;
     };
@@ -203,6 +205,10 @@ fn threads_now() -> usize {
     // threads count.
     dir.filter_map(Result::ok)
         .filter(|e| {
+            std::fs::read_to_string(e.path().join("comm"))
+                .is_ok_and(|c| c.starts_with("hevc-pool-") == pool)
+        })
+        .filter(|e| {
             std::fs::read_to_string(e.path().join("stat")).is_ok_and(|s| {
                 let mut f = s.rsplit_once(')').map_or("", |(_, r)| r).split_whitespace();
                 let state = f.next().unwrap_or("Z");
@@ -211,6 +217,13 @@ fn threads_now() -> usize {
             })
         })
         .count()
+}
+
+/// Live threads outside the shared pool: the pool's threads are made once per process and are
+/// not counted as threads of a call while idle (docs/threading.md).
+#[cfg(target_os = "linux")]
+fn threads_now() -> usize {
+    live_threads(false)
 }
 
 /// Runs `f` and returns whether it failed with `AllocLimit` and the heap peak above the live
@@ -234,6 +247,38 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
         let c = peaked(|| hevc::intra_prefix(&stream, limits).map(drop));
         [a, b, c]
     };
+
+    // The shared pool: a call with max_threads 1 never makes it; a call with more makes it once,
+    // with at most available_parallelism threads, and it stays for the process. Its own memory
+    // (thread records, queues, a few KiB per thread the first time a thread runs a task) is not
+    // charged to a call, so it is made and used here, before any heap peak is taken.
+    let real = common::stream(&common::Spec {
+        width: 512,
+        height: 512,
+        pictures: 1,
+        ..Default::default()
+    });
+    let one = Limits {
+        max_threads: 1,
+        ..Limits::default()
+    };
+    assert!(hevc::decode(&real, &opts, &one, &cancel).is_ok_and(|p| p.len() == 1));
+    #[cfg(target_os = "linux")]
+    assert_eq!(live_threads(true), 0, "max_threads 1 made the pool");
+    let warm = Limits {
+        max_threads: Limits::default().max_threads.max(2),
+        ..Limits::default()
+    };
+    for _ in 0..8 {
+        assert!(hevc::decode(&real, &opts, &warm, &cancel).is_ok());
+    }
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    #[cfg(target_os = "linux")]
+    {
+        let n = live_threads(true);
+        let most = std::thread::available_parallelism().map_or(1, |n| n.get());
+        assert!(n >= 1 && n <= most, "pool threads {n}, available {most}");
+    }
 
     // What a decode needs: the frame (at least the luma plane) was really allocated.
     let (limit, need) = run(&Limits::default())[0];
@@ -353,21 +398,12 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
 
     // Band-parallel filters on a real picture: one 512x512 picture (four bands of 64 Ki luma
     // samples; one picture, so no picture worker) gives the same output for every max_threads,
-    // and with two or more a band thread runs next to the calling thread. The checks come after
-    // the scope, so a failure cannot leave the sampler running.
+    // and no thread outside the shared pool runs next to the calling thread: the bands run on the
+    // pool (`frame::tests::par_bands_runs_at_most_max_threads_at_once` counts how many at once).
+    // The checks come after the scope, so a failure cannot leave the sampler running.
     #[cfg(target_os = "linux")]
     {
-        let big = common::stream(&common::Spec {
-            width: 512,
-            height: 512,
-            pictures: 1,
-            ..Default::default()
-        });
-        let one = Limits {
-            max_threads: 1,
-            ..Limits::default()
-        };
-        let want = hevc::decode(&big, &opts, &one, &cancel);
+        let want = hevc::decode(&real, &opts, &one, &cancel);
         assert!(
             want.as_ref().is_ok_and(|p| p.len() == 1),
             "the coded picture must decode: {:?}",
@@ -397,28 +433,25 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
                     ..Limits::default()
                 };
                 for _ in 0..10 {
-                    same &= hevc::decode(&big, &opts, &limits, &cancel) == want;
+                    same &= hevc::decode(&real, &opts, &limits, &cancel) == want;
                 }
                 done.store(true, Ordering::Relaxed);
             });
             assert!(same, "output differs with max_threads {max_threads}");
-            // The sampler is one thread more; any other is a band thread. No upper bound here:
-            // a band thread joined at the end of one filter pass can still be listed while the
-            // next pass starts its own (the bound of the picture workers is checked below).
+            // The sampler is one thread more.
             let seen = seen.load(Ordering::Relaxed);
-            if max_threads == 1 {
-                assert!(seen <= base + 1, "a thread ran with max_threads 1");
-            } else {
-                assert!(
-                    seen >= base + 2,
-                    "no band thread ran with max_threads {max_threads} (base {base}, seen {seen})"
-                );
-            }
+            assert!(
+                seen <= base + 1,
+                "a thread outside the pool ran with max_threads {max_threads} (base {base}, seen {seen})"
+            );
         }
     }
 
     // Threads: the peak during decodes is the test's own, plus the sampler, plus at most
-    // max_threads - 1 workers (none at max_threads 1). Six pictures, so the workers start.
+    // max_threads - 1 picture workers (none at max_threads 1). Six pictures, so the workers start.
+    // The pool is not counted: each worker holds one thread of the call's budget, and a band task
+    // on the pool holds one while it runs, so workers and band tasks together stay at
+    // max_threads - 1 (docs/threading.md).
     #[cfg(target_os = "linux")]
     {
         for max_threads in [1usize, 2, 4] {
