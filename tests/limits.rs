@@ -172,6 +172,11 @@ fn stream(size: u32, data: usize) -> Vec<u8> {
 
 /// Like [`stream`] with `n` copies of the IDR picture.
 fn stream_n(size: u32, data: usize, n: usize) -> Vec<u8> {
+    stream_with(size, data, n, false)
+}
+
+/// Like [`stream_n`]; with `repeat`, the VPS, SPS and PPS come again before every picture.
+fn stream_with(size: u32, data: usize, n: usize, repeat: bool) -> Vec<u8> {
     let mut x = 0x9E37_79B9_7F4A_7C15u64;
     let mut slice = vec![0xAC, 0xC0]; // first_slice, pps 0, I, no SAO, qp delta 0, alignment
     for _ in 0..data {
@@ -182,7 +187,12 @@ fn stream_n(size: u32, data: usize, n: usize) -> Vec<u8> {
     }
     let mut s = Vec::new();
     let mut nals = vec![(32u8, vec![0x0C, 0xFF]), (33, sps(size, size)), (34, pps())];
-    nals.extend((0..n).map(|_| (19, slice.clone())));
+    for i in 0..n {
+        if repeat && i > 0 {
+            nals.extend([(32u8, vec![0x0C, 0xFF]), (33, sps(size, size)), (34, pps())]);
+        }
+        nals.push((19, slice.clone()));
+    }
     for (kind, p) in nals {
         s.extend_from_slice(&[0, 0, 0, 1, kind << 1, 1]);
         s.extend_from_slice(&escape(&p));
@@ -256,9 +266,9 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
                 max_threads,
                 ..Limits::default()
             };
-            for (limit, peak) in run(&limits) {
+            for (_, peak) in run(&limits) {
                 assert!(
-                    limit || peak <= max_alloc,
+                    peak <= max_alloc,
                     "heap peak {peak} over max_alloc {max_alloc} (threads {max_threads})"
                 );
             }
@@ -297,12 +307,32 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
                 max_threads,
                 ..Limits::default()
             };
-            let (limit, peak) = peaked(|| hevc::decode(&many, &opts, &limits, &cancel).map(drop));
+            let (_, peak) = peaked(|| hevc::decode(&many, &opts, &limits, &cancel).map(drop));
             assert!(
-                limit || peak <= max_alloc,
+                peak <= max_alloc,
                 "heap peak {peak} over max_alloc {max_alloc} (threads {max_threads}, six pictures)"
             );
         }
+    }
+
+    // Parameter sets repeated before every picture (the replaced sets are still shared by the
+    // pictures in flight): the heap peak of eight threads stays within the budget. A smoke test:
+    // the bytes of one replaced SPS/PPS pair fit in the small reserve, so it cannot tell whether
+    // the replaced sets stay booked (`Decoder::stream`, the 32..=34 arm, does that).
+    let repeated = stream_with(64, 2048, 6, true);
+    let (_, rep_need) =
+        peaked(|| hevc::decode(&repeated, &opts, &Limits::default(), &cancel).map(drop));
+    for max_alloc in [small, rep_need / 2, rep_need, rep_need + (64 << 10)] {
+        let limits = Limits {
+            max_alloc,
+            max_threads: 8,
+            ..Limits::default()
+        };
+        let (_, peak) = peaked(|| hevc::decode(&repeated, &opts, &limits, &cancel).map(drop));
+        assert!(
+            peak <= max_alloc,
+            "heap peak {peak} over max_alloc {max_alloc} (repeated parameter sets)"
+        );
     }
 
     // Threads: the peak during decodes is the test's own, plus the sampler, plus at most

@@ -5,7 +5,7 @@
 //! CPU does not have, or an unknown value, selects the best detected tier.
 
 // Per-tier load/store helpers: the only `unsafe` besides the dispatch of each kernel family
-// (docs/safety.md). Unused until the kernels that call them land.
+// (docs/safety.md). dead_code: each kernel family uses only some helpers.
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code, dead_code)]
 pub(crate) mod arm;

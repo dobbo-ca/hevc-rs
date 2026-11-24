@@ -10,13 +10,15 @@ macro_rules! ld_st {
         #[inline]
         #[target_feature(enable = $feat)]
         pub(crate) fn $ld(a: &[$t; $n]) -> $v {
-            // SAFETY: `a` is `size_of::<$v>()` readable bytes; the intrinsic is unaligned.
+            // SAFETY: the intrinsic reads at most `size_of::<[$t; $n]>()` bytes, all inside `a`; it is
+            // unaligned.
             unsafe { $load(a.as_ptr().cast()) }
         }
         #[inline]
         #[target_feature(enable = $feat)]
         pub(crate) fn $st(a: &mut [$t; $n], v: $v) {
-            // SAFETY: `a` is `size_of::<$v>()` writable bytes; the intrinsic is unaligned.
+            // SAFETY: the intrinsic writes at most `size_of::<[$t; $n]>()` bytes, all inside `a`; it is
+            // unaligned.
             unsafe { $store(a.as_mut_ptr().cast(), v) }
         }
     };
@@ -114,55 +116,4 @@ ld_st!(
     __m256i,
     _mm256_loadu_si256,
     _mm256_storeu_si256
-);
-ld_st!(
-    "avx2",
-    ld_u8x32,
-    st_u8x32,
-    u8,
-    32,
-    __m256i,
-    _mm256_loadu_si256,
-    _mm256_storeu_si256
-);
-// 512 bits.
-ld_st!(
-    "avx512f",
-    ld_u16x32,
-    st_u16x32,
-    u16,
-    32,
-    __m512i,
-    _mm512_loadu_si512,
-    _mm512_storeu_si512
-);
-ld_st!(
-    "avx512f",
-    ld_i16x32,
-    st_i16x32,
-    i16,
-    32,
-    __m512i,
-    _mm512_loadu_si512,
-    _mm512_storeu_si512
-);
-ld_st!(
-    "avx512f",
-    ld_i32x16,
-    st_i32x16,
-    i32,
-    16,
-    __m512i,
-    _mm512_loadu_si512,
-    _mm512_storeu_si512
-);
-ld_st!(
-    "avx512f",
-    ld_u8x64,
-    st_u8x64,
-    u8,
-    64,
-    __m512i,
-    _mm512_loadu_si512,
-    _mm512_storeu_si512
 );

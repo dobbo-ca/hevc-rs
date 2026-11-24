@@ -40,7 +40,7 @@ SPS and in `probe`. `max_pictures` counts pictures started in one call.
 
 ## Cancellation
 
-The cancel flag is read before each NAL unit and before each CTU; set means `Error::Cancelled`.
+The cancel flag is read before each NAL unit and before each CTU, and per row in deblocking, SAO, the picture hash and the crop; set means `Error::Cancelled`.
 
 ## decode_heic
 
