@@ -702,7 +702,13 @@ impl<'a, 'p> Decoder<'a, 'p> {
             match nal.kind {
                 32..=34 => {
                     let old = self.store.param_set(&nal, self.ledger)?;
-                    self.release(old);
+                    // The picture being built may share the replaced set (an `Arc`): its bytes
+                    // stay booked with it and come back after the set is freed.
+                    if let Some(cur) = self.cur.as_mut() {
+                        cur.booked.n += old;
+                    } else {
+                        self.release(old);
+                    }
                 }
                 // End of sequence: the picture is complete; the DPB is left alone, so the next
                 // IRAP's C.5.2.2 handling decides between discard and flush.
@@ -1235,6 +1241,10 @@ impl<'a, 'p> Decoder<'a, 'p> {
 
     /// Waits for every job and outputs every bumped picture.
     fn finish_jobs(&mut self) -> Result<()> {
+        // Pictures that are not output are in no queue: drain every job, so their errors count.
+        while self.pool.inflight > 0 {
+            self.collect(true);
+        }
         self.commit(true)?;
         self.check()
     }
@@ -1581,7 +1591,7 @@ fn probe_nals<'a>(nals: impl Iterator<Item = Result<Nal<'a>>>, limits: &Limits) 
 ///
 /// # Errors
 ///
-/// [`Error::InvalidData`], [`Error::Unsupported`], [`Error::NoPicture`] (no SPS),
+/// [`Error::InvalidData`] (also when there is no SPS), [`Error::Unsupported`],
 /// [`Error::WidthLimit`], [`Error::HeightLimit`], [`Error::PixelLimit`], [`Error::AllocLimit`]
 /// and [`Error::OutOfMemory`].
 pub fn probe(stream: &[u8], limits: &Limits) -> Result<Info> {
@@ -1594,7 +1604,7 @@ pub fn probe(stream: &[u8], limits: &Limits) -> Result<Info> {
 ///
 /// # Errors
 ///
-/// [`Error::InvalidData`], [`Error::Unsupported`], [`Error::NoPicture`], [`Error::WidthLimit`],
+/// [`Error::InvalidData`], [`Error::Unsupported`], [`Error::WidthLimit`],
 /// [`Error::HeightLimit`], [`Error::PixelLimit`], [`Error::AllocLimit`] and
 /// [`Error::OutOfMemory`].
 pub fn probe_hvcc(config: &[u8], limits: &Limits) -> Result<Info> {

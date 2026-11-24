@@ -45,8 +45,6 @@ All of this runs in CI only; nothing is built or run on a developer machine.
    `streams.tsv`) that feed G2; reported, not a separate gate.
 4. G4 decoded picture hash: no `.info` line is `bad`.
 5. G5 `--threads 1` equals the default.
-8. G8 (run after G5) `HEVC_SIMD=scalar` and `HEVC_SIMD=avx2` equal the default (best) tier,
-   AVX-512 on the CI hosts. `parity-arm64` does the same for scalar against NEON.
 6. G6 diagnostic, report only: `--no-filters` against dec265 with deblocking and SAO disabled.
 7. G7 HEIC: hevc-rs against libheif on the HEIC corpus. Not soft: it fails whatever
    `PARITY_DECODE` is. For every file both decode, `.yuv` and `.alpha` are byte-equal and `.info`
@@ -74,6 +72,8 @@ All of this runs in CI only; nothing is built or run on a developer machine.
    A file both reject is only counted. `heic-errors.txt` has the error token of every rejected
    file on each side. The summary has the counts: files, decoded by each, decoded by both, equal,
    alpha planes compared, rejected by both, explained.
+8. G8 (run after G5) `HEVC_SIMD=scalar` and `HEVC_SIMD=avx2` equal the default (best) tier,
+   AVX-512 on the CI hosts. `parity-arm64` does the same for scalar against NEON.
 
 ## Counts
 

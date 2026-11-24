@@ -25,13 +25,17 @@ stream and on every file of the HEIC corpus. `.github/workflows/bench.yml` runs 
 
 ## Results
 
-bench run on main 2026-11-23 (after #5), 150 streams timed by both tools, best of 3, one thread,
-scalar code (no SIMD yet):
+Current numbers: the `summary.md` of the `bench` artifact of the main bench run for 5b860a0
+(run 45312989791): per class (main, main10, rext, heic) and total, for dec265, ffmpeg (libheif for
+heic) and hevc-rs at 1 thread and at default threads, the `HEVC_SIMD=scalar` and `HEVC_SIMD=avx2`
+1-thread times and the v4 build. They are not copied here until a run's table is pasted in.
+
+Before the SIMD kernels and the threading (main 2026-11-23, after #5; 150 streams timed by both
+tools, best of 3, one thread, scalar code), for reference only:
 
 | | dec265 | hevc-rs | hevc-rs / dec265 |
 |---|---|---|---|
 | total, ms | 3372.93 | 5929.69 | 1.76 |
 | per stream | | | 0.83 (DBLK_A_MAIN10) .. 2.23 (AMP_D) |
 
-Next for speed: SIMD for the inverse transforms, and intra prediction (scalar code as
-the oracle), then parallel decode by tile / WPP row.
+Open for speed: parallel decode by tile / WPP row.

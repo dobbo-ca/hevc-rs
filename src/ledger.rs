@@ -5,11 +5,12 @@ use crate::error::Error;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Booked at the start of every call for the small, short-lived allocations that do not scale
-/// with the input and are not charged one by one: the iterator state of the NAL loop, the NAL
-/// list of an `hvcC` record (at most 1024 slices of 16 bytes), and the one `Pps` copy that
-/// `ps::activate` makes per picture (at most about 17 KiB with its tile vectors and scaling
-/// list). 64 KiB covers them. The parameter set store, the output list and the pictures are
-/// charged one by one. A `max_alloc` below this is `Error::AllocLimit` at once.
+/// with the input and are not charged one by one: the iterator state of the NAL loop and the NAL
+/// list of an `hvcC` record (at most 1024 slices of 16 bytes). The `Pps` copy that `ps::activate`
+/// makes per picture is charged (`Active::charged`), and a parameter set replaced while a picture
+/// may share it stays booked with that picture (`Cur::booked`). 64 KiB covers the rest. The
+/// parameter set store, the output list and the pictures are charged one by one. A `max_alloc`
+/// below this is `Error::AllocLimit` at once.
 ///
 /// With threads, the bookkeeping of the front end is also not charged and also covered here:
 /// the maps and queues of the tickets (`done`, `spent`, `late`, `order`; at most the pictures in

@@ -39,15 +39,15 @@ RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + && cargo fmt --check
 RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + && cargo clippy --locked --all-targets -- -D warnings
-# The SIMD modules (later) are not all compiled for x86_64, so lint the aarch64 target too.
+# The NEON modules are not all compiled for x86_64, so lint the aarch64 target too.
 RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + && cargo clippy --locked --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
 RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + && cargo test --locked --no-fail-fast
 RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + && HEVC_SIMD=scalar cargo test --locked --no-fail-fast
-# (Nothing reads HEVC_SIMD yet, so this second run repeats the first; it starts to count with the
-# SIMD phase and is kept so the scalar tier is wired from the start.)
+# The second run forces the scalar tier through HEVC_SIMD=scalar for every test that decodes through
+# simd::tier(); the cross-tier tests compare every tier in simd::available() whatever HEVC_SIMD is.
 # The examples are built too, so the cross linker runs (a lib alone is not linked).
 RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + && cargo build --locked --release --target aarch64-unknown-linux-gnu --examples
@@ -62,14 +62,14 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER="qemu-aarch64 -L /usr/aarch64-
 FROM qemu-tools AS qemu-arm64
 COPY . .
 
-# aarch64 unit tests under qemu-user, both HEVC_SIMD tiers (HEVC_SIMD=scalar forces the scalar
-# one). There is no SIMD yet, so for now this is the whole lib test suite; narrow it to the
-# kernel tests when the SIMD phase lands.
+# aarch64 kernel tests under qemu-user, both HEVC_SIMD tiers (HEVC_SIMD=scalar forces the scalar
+# one): the NEON kernel and cross-tier tests (names with tiers_, fuzz_, frames_match_scalar) and the
+# dispatch tests (simd::tests). The full suite runs natively in the test job.
 FROM qemu-arm64 AS arm64
 RUN --mount=type=cache,id=hevc-rs-target-arm64,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + \
-    && cargo test --locked --target aarch64-unknown-linux-gnu --lib \
-    && HEVC_SIMD=scalar cargo test --locked --target aarch64-unknown-linux-gnu --lib
+    && cargo test --locked --target aarch64-unknown-linux-gnu --lib -- tiers_ frames_match_scalar simd::tests fuzz_ \
+    && HEVC_SIMD=scalar cargo test --locked --target aarch64-unknown-linux-gnu --lib -- tiers_ frames_match_scalar simd::tests fuzz_
 
 # libde265 oracle (CI only, never linked into the crate): dec265 built from the tag, static
 # libde265. LGPL: it is a test tool here, nothing of it is copied into the crate.
@@ -222,6 +222,20 @@ RUN --mount=type=cache,id=hevc-rs-data,target=/data,sharing=locked,readonly \
     && cp tests/fuzz/seeds/annexb/* tests/fuzz/seeds/probe/ \
     && cp tests/fuzz/seeds/annexb/* tests/fuzz/seeds/decode/ \
     && cargo +nightly fuzz build --fuzz-dir tests/fuzz
+
+# The three tier targets built for aarch64 (no sanitizer: ASan does not run under qemu-user), run
+# under qemu-aarch64 by fuzz.yml (`fuzz-arm64`): they compare the NEON kernels with scalar.
+FROM fuzz-tools AS fuzz-arm64-tools
+RUN apt-get update && apt-get install -y --no-install-recommends qemu-user g++-aarch64-linux-gnu \
+    && rm -rf /var/lib/apt/lists/* && rustup target add aarch64-unknown-linux-gnu --toolchain nightly
+ENV CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
+
+FROM fuzz-arm64-tools AS fuzz-arm64
+COPY . .
+# `cargo fuzz build` takes one target.
+RUN for t in transform_tiers intra_tiers sao_tiers; do \
+      cargo +nightly fuzz build --fuzz-dir tests/fuzz --sanitizer none --target aarch64-unknown-linux-gnu $t || exit 1; \
+    done
 
 # Benchmark (bench.yml, tests/parity/bench.sh): libde265 (dec265), ffmpeg, libheif (heic-oracle)
 # and hevc-rs on the same corpus, in one container, so the ratios compare the same machine.

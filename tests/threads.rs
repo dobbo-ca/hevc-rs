@@ -82,13 +82,13 @@ fn sps(w: u32, h: u32) -> Vec<u8> {
     b.rbsp()
 }
 
-/// A PPS with no tiles, no sync, default everything.
-fn pps() -> Vec<u8> {
+/// A PPS with no tiles, no sync, default everything (`output_flag_present_flag` as given).
+fn pps(output_flag_present: bool) -> Vec<u8> {
     let mut b = W::default();
     b.ue(0);
     b.ue(0);
     b.flag(false);
-    b.flag(false);
+    b.flag(output_flag_present);
     b.u(3, 0);
     b.flag(true); // sign data hiding
     b.flag(false);
@@ -132,10 +132,25 @@ fn escape(p: &[u8]) -> Vec<u8> {
 /// `data` pseudo-random slice bytes of its own), then, with `inter`, a TRAIL_R slice that starts
 /// a picture and is a P slice.
 fn stream_n(size: u32, data: usize, n: usize, inter: bool) -> Vec<u8> {
-    let mut nals = vec![(32u8, vec![0x0C, 0xFF]), (33, sps(size, size)), (34, pps())];
+    stream_with(size, data, n, inter, false)
+}
+
+/// As `stream_n`; with `hidden` the PPS has output_flag_present_flag and every picture has
+/// pic_output_flag 0 (never output, so in no output queue).
+fn stream_with(size: u32, data: usize, n: usize, inter: bool, hidden: bool) -> Vec<u8> {
+    let mut nals = vec![
+        (32u8, vec![0x0C, 0xFF]),
+        (33, sps(size, size)),
+        (34, pps(hidden)),
+    ];
     for i in 0..n {
         let mut x = 0x9E37_79B9_7F4A_7C15u64 ^ ((i as u64 + 1) << 32);
-        let mut slice = vec![0xAC, 0xC0]; // first_slice, pps 0, I, no SAO, qp delta 0, alignment
+        // first_slice, pps 0, I, [pic_output_flag 0,] no SAO, qp delta 0, alignment
+        let mut slice = if hidden {
+            vec![0xAC, 0x60]
+        } else {
+            vec![0xAC, 0xC0]
+        };
         for _ in 0..data {
             x ^= x << 13;
             x ^= x >> 7;
@@ -267,5 +282,23 @@ fn cancel_gives_cancelled_and_no_pictures() {
         let (r, out) = run(&s, &opts, &with_threads(t), &cancel);
         assert_eq!(r, Err(Error::Cancelled), "threads {t}");
         assert!(out.is_empty());
+    }
+}
+
+#[test]
+fn errors_of_pictures_that_are_not_output_count_for_every_thread_count() {
+    let cancel = AtomicBool::new(false);
+    let opts = Options::default();
+    for (data, n) in [(64, 1), (400, 3)] {
+        let s = stream_with(64, data, n, false, true);
+        let want = run(&s, &opts, &with_threads(1), &cancel);
+        assert!(want.0.is_err(), "hidden pictures {n}: {:?}", want.0);
+        for t in [2, 3, 8] {
+            assert_eq!(
+                run(&s, &opts, &with_threads(t), &cancel),
+                want,
+                "threads {t}, pictures {n}"
+            );
+        }
     }
 }
