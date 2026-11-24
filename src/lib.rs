@@ -90,6 +90,7 @@ mod nal;
 mod ps;
 mod residual;
 mod sao;
+mod sao_simd;
 mod scaling;
 mod sei;
 mod simd;
@@ -264,5 +265,15 @@ pub mod __fuzz_intra {
     /// returns true when all of them give the scalar result.
     pub fn run(data: &[u8]) -> bool {
         crate::intra::fuzz_tiers(data)
+    }
+}
+
+/// Cross-tier fuzz entry for the SAO row kernels. Not public API.
+#[doc(hidden)]
+pub mod __fuzz_sao {
+    /// Builds rows from `data`, runs every SIMD tier of this CPU and returns whether all equal
+    /// the scalar tier.
+    pub fn tiers(data: &[u8]) -> bool {
+        crate::sao_simd::fuzz_tiers(data)
     }
 }

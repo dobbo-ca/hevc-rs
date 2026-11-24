@@ -9,6 +9,8 @@ use crate::error::{Error, Result};
 use crate::frame::Frame;
 use crate::ledger::Ledger;
 use crate::ps::Active;
+use crate::sao_simd::{bo_row, eo_row};
+use crate::simd::{self, Tier};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Table 8-13: (hPos[0], vPos[0], hPos[1], vPos[1]) by SaoEoClass.
@@ -56,6 +58,7 @@ fn neighbour_usable(frame: &Frame, act: &Active, addr: usize, nrx: i64, nry: i64
 /// One CTB of component `c`: reads `src` (deblocked), writes `dst`.
 #[allow(clippy::too_many_arguments)]
 fn sao_ctb(
+    tier: Tier,
     frame: &Frame,
     act: &Active,
     c: usize,
@@ -143,8 +146,65 @@ fn sao_ctb(
         src.get(ny * stride + nx).map(|&v| i32::from(v))
     };
 
+    // SIMD tiers: the offsets as a lookup table (`i16::MIN` cannot be negated, scalar handles it).
+    let tab = (tier != Tier::Scalar && offs.iter().all(|&v| v != i16::MIN)).then(|| {
+        let [o0, o1, o2, o3, o4] = *offs;
+        if ty == 2 {
+            [o1, o2, o0, o3, o4]
+        } else {
+            [o1, o2, o3, o4, 0]
+        }
+    });
+    let shift = depth.saturating_sub(5).min(16);
+    let max16 = u16::try_from(max).unwrap_or(u16::MAX);
+    let step = (4 / sw).max(1);
+
     for y in y0..y1 {
-        for x in x0..x1 {
+        // The run of this row that a row kernel handles: no PCM/bypass cell, and for edge offset
+        // the columns whose neighbours are inside this CTB column and picture, and a usable
+        // CTB row. Everything else (and Tier::Scalar: all of it) takes the per-sample path.
+        let span = tab
+            .and_then(|tab| {
+                let (fs, fe) = if ty == 2 {
+                    (x0 + 1, x1.saturating_sub(1))
+                } else {
+                    (x0, x1)
+                };
+                if fs >= fe
+                    || !(fs / step..=(fe - 1) / step)
+                        .all(|cx| frame.no_filter_at(cx * step * sw, y * sh) == Some(0))
+                {
+                    return None;
+                }
+                let row = y * stride;
+                let cur = src.get(row + fs..row + fe)?;
+                let out = dst.get_mut(row + fs..row + fe)?;
+                if ty == 2 {
+                    let nbrow = |dh: isize, dv: isize| -> Option<&[u16]> {
+                        let ny = usize::try_from(y as isize + dv).ok().filter(|&n| n < h)?;
+                        let dy = if ny < y0 {
+                            0
+                        } else if ny >= y0 + ch {
+                            2
+                        } else {
+                            1
+                        };
+                        if !usable.get(dy * 3 + 1).copied().unwrap_or(false) {
+                            return None;
+                        }
+                        let start = ny * stride + usize::try_from(fs as isize + dh).ok()?;
+                        src.get(start..start + (fe - fs))
+                    };
+                    let (a, b) = (nbrow(eo_h0, eo_v0)?, nbrow(eo_h1, eo_v1)?);
+                    eo_row(tier, cur, a, b, out, &tab, max16);
+                } else {
+                    let bp = u16::try_from(band_pos).unwrap_or(0);
+                    bo_row(tier, cur, out, &tab, bp, shift, max16);
+                }
+                Some(fs..fe)
+            })
+            .unwrap_or(x0..x0);
+        for x in (x0..span.start).chain(span.end..x1) {
             // pcm with pcm_loop_filter_disabled_flag, or cu_transquant_bypass: not modified.
             if frame.no_filter_at(x * sw, y * sh).is_none_or(|f| f != 0) {
                 continue;
@@ -180,7 +240,13 @@ fn sao_ctb(
     }
 }
 
-fn sao_plane(frame: &mut Frame, act: &Active, c: usize, cancel: &AtomicBool) -> Result<()> {
+fn sao_plane(
+    tier: Tier,
+    frame: &mut Frame,
+    act: &Active,
+    c: usize,
+    cancel: &AtomicBool,
+) -> Result<()> {
     let (Some(&w), Some(&h), Some(&stride)) =
         (frame.width.get(c), frame.height.get(c), frame.stride.get(c))
     else {
@@ -201,7 +267,16 @@ fn sao_plane(frame: &mut Frame, act: &Active, c: usize, cancel: &AtomicBool) -> 
                     return Err(Error::Cancelled);
                 }
                 for rx in 0..act.sps.pic_width_in_ctbs_y as usize {
-                    sao_ctb(frame, act, c, (rx, ry), &src, &mut dst, (w, h, stride));
+                    sao_ctb(
+                        tier,
+                        frame,
+                        act,
+                        c,
+                        (rx, ry),
+                        &src,
+                        &mut dst,
+                        (w, h, stride),
+                    );
                 }
             }
             Ok(())
@@ -214,6 +289,17 @@ fn sao_plane(frame: &mut Frame, act: &Active, c: usize, cancel: &AtomicBool) -> 
 
 /// Applies SAO to the deblocked picture in place.
 pub(crate) fn sao(
+    frame: &mut Frame,
+    act: &Active,
+    ledger: &Ledger,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    sao_with(simd::tier(), frame, act, ledger, cancel)
+}
+
+/// [`sao`] on an explicit tier (tests run every available one).
+fn sao_with(
+    tier: Tier,
     frame: &mut Frame,
     act: &Active,
     ledger: &Ledger,
@@ -234,7 +320,7 @@ pub(crate) fn sao(
             .checked_mul(2)
             .ok_or(Error::AllocLimit)?;
         ledger.reserve(bytes)?;
-        let r = sao_plane(frame, act, c, cancel);
+        let r = sao_plane(tier, frame, act, c, cancel);
         ledger.release(bytes);
         r?;
     }
@@ -346,6 +432,68 @@ mod tests {
         assert_eq!(f.sample(0, 40, 0), Some(128)); // CTB 1: SaoTypeIdx 0
         assert_eq!(f.sample(0, 0, 8), Some(128)); // no_filter cell
         assert_eq!(f.sample(0, 4, 8), Some(131));
+    }
+
+    /// Random samples, SAO parameters and no-filter cells, the same for the same `seed`.
+    fn random_frame(across: bool, seed: u64) -> (Active, Frame) {
+        let l = ledger();
+        let (act, mut f) = setup(&l, across);
+        let mut s = seed;
+        let mut rnd = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        let extreme = seed.is_multiple_of(3);
+        for c in 0..f.num_planes() {
+            for y in 0..f.height[c] {
+                for x in 0..f.width[c] {
+                    let v = if extreme {
+                        [0, 255, 1, 254][(rnd() % 4) as usize]
+                    } else {
+                        128 + (rnd() % 5) as u16
+                    };
+                    f.set_sample(c, x, y, v).unwrap();
+                }
+            }
+        }
+        for addr in 0..4 {
+            let mut p = SaoParams::default();
+            for c in 0..3 {
+                p.type_idx[c] = (rnd() % 3) as u8;
+                p.band_position[c] = (rnd() % 32) as u8;
+                p.eo_class[c] = (rnd() % 4) as u8;
+                for o in &mut p.offset_val[c] {
+                    *o = match rnd() % 5 {
+                        0 => i16::MAX,
+                        1 => -i16::MAX,
+                        _ => (rnd() % 17) as i16 - 8,
+                    };
+                }
+            }
+            *f.sao_at_mut(addr).unwrap() = p;
+        }
+        for _ in 0..6 {
+            let (x, y) = ((rnd() % 48) as usize, (rnd() % 56) as usize);
+            f.fill_no_filter(x, y, 1 + (rnd() % 8) as usize, 4, 1)
+                .unwrap();
+        }
+        (act, f)
+    }
+
+    #[test]
+    fn tiers_equal_scalar() {
+        let l = ledger();
+        for seed in 1..40u64 {
+            let (act, mut want) = random_frame(seed.is_multiple_of(2), seed * 0x9e37_79b9);
+            sao_with(Tier::Scalar, &mut want, &act, &l, &AtomicBool::new(false)).unwrap();
+            for t in simd::available() {
+                let (act, mut got) = random_frame(seed.is_multiple_of(2), seed * 0x9e37_79b9);
+                sao_with(t, &mut got, &act, &l, &AtomicBool::new(false)).unwrap();
+                assert_eq!(got.planes, want.planes, "{} seed {seed}", t.name());
+            }
+        }
     }
 
     #[test]
