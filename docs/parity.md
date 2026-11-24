@@ -88,8 +88,9 @@ From the CI runs of 2026-11-23 with every gate green (main 6dbe2a7 and the PR ru
 | pictures with decoded picture hash ok / none / bad | 249 / 58 / 0 |
 | streams confirmed (G2) | 152 / 152 |
 | explained oracle disagreements | 3 (`disagreements.txt`: ffmpeg on `SAODBLK_A`; ffmpeg drops 4 of 6 pictures of `VPSSPSPPS_A` at its size changes; ffprobe size of `VPSSPSPPS_A`) |
-| HEIC files / decoded by both / equal to libheif (yuv, alpha, info) | 176 / 56 / 56 (3 alpha planes) |
-| HEIC files libheif decodes and hevc-rs rejects (explained) | 6 when measured: overlay/identity primaries (C008, C014, C039), 4:4:4 (MIAF003), the `mini` form (lightning_mini, C71); overlay and identity primaries are decoded since, re-measure |
+| HEIC files / decoded by both / equal to libheif (yuv, alpha, info) | 177 / 60 / 60 (3 alpha planes; includes the `mini` files C71 and libheif `lightning_mini`, PR #23 run 45470257821) |
+| HEIC files libheif decodes and hevc-rs rejects (explained) | 2: C039 (`unsupported`), 4:4:4 (MIAF003); hevc-rs decodes and libheif fails: 1 (`iff_hevc_tile_multiple_items_tbas`) |
+| HEIC files rejected by both | 114 (among them imazen `lightning_mini.heif`, the pre-final `mini` draft: hevc-rs `container`, libheif `decode`) |
 
 Two oracle settings matter: ffmpeg runs with `-flags unaligned -autoscale 0` (else it aligns the
 left crop and scales pictures that change size), and libheif with
