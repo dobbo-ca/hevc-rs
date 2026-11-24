@@ -122,6 +122,7 @@ From the CI runs of 2026-11-23 with every gate green (main 6dbe2a7 and the PR ru
 | HEIC files / decoded by both / equal to libheif (yuv, alpha, info) | 177 / 60 / 60 (3 alpha planes; includes the `mini` files C71 and libheif `lightning_mini`, PR #23 run 45470257821) |
 | HEIC files libheif decodes and hevc-rs rejects (explained) | 2: C039 (`unsupported`), 4:4:4 (MIAF003); hevc-rs decodes and libheif fails: 1 (`iff_hevc_tile_multiple_items_tbas`) |
 | HEIC files rejected by both | 114 (among them imazen `lightning_mini.heif`, the pre-final `mini` draft: hevc-rs `container`, libheif `decode`) |
+| G7t (transforms applied): decoded by both / equal / changed by their transforms | 60 / 60 / 9 (PR #28 run 45502344744). libheif 4:4:4 cases: 0 (no corpus file has an odd crop offset or odd side under a transform). Alpha planes scaled by libheif: 0. Explained: 2 (`iff_hevc_tile_multiple_items_tbas` and MIAF003, as in G7). With the transforms on, libheif also rejects C039 (an `iden` of an `iden`) |
 
 Two oracle settings matter: ffmpeg runs with `-flags unaligned -autoscale 0` (else it aligns the
 left crop and scales pictures that change size), and libheif with
