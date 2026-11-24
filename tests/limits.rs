@@ -371,7 +371,15 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
             want.as_ref().map(Vec::len)
         );
         for max_threads in [1usize, 2, 4, 8] {
-            let base = threads_now();
+            // The fewest threads over 20 ms: a thread joined just before (the last sampler) can
+            // still be listed for a moment, and would raise the base.
+            let base = (0..20)
+                .map(|_| {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    threads_now()
+                })
+                .min()
+                .unwrap_or(0);
             let done = AtomicBool::new(false);
             let seen = AtomicUsize::new(base);
             let mut same = true;
