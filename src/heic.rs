@@ -409,13 +409,18 @@ where
             }
         };
         std::thread::scope(|sc| {
+            let mut handles = Vec::new();
             for _ in 1..nw {
                 // A refused spawn only means fewer workers.
-                if std::thread::Builder::new().spawn_scoped(sc, work).is_err() {
-                    break;
+                match std::thread::Builder::new().spawn_scoped(sc, work) {
+                    Ok(h) => handles.push(h),
+                    Err(_) => break,
                 }
             }
             work();
+            for h in handles {
+                let _ = h.join();
+            }
         });
         slots = shared.into_inner().unwrap_or_else(PoisonError::into_inner);
     }

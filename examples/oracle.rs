@@ -131,7 +131,11 @@ fn main() {
         _ => String::new(),
     };
     let mut limits = Limits::default();
-    let mut opts = Options::default();
+    // The parity gate G4 reads the hash column.
+    let mut opts = Options {
+        check_hash: true,
+        ..Options::default()
+    };
     let mut pos = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {

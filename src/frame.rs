@@ -12,7 +12,7 @@
 //! 4x4 cell the block touches. Per-CTB records are indexed by CtbAddrInRs.
 
 use crate::error::{Error, Result};
-use crate::ledger::{Ledger, filled};
+use crate::ledger::{Ledger, filled, grow_one};
 use crate::ps::Active;
 use std::mem::size_of;
 use std::sync::{Mutex, PoisonError};
@@ -324,14 +324,8 @@ impl Frame {
             .ok()
             .filter(|&i| i != NO_SLICE)
             .ok_or(Error::InvalidData("too many slice segments"))?;
-        let n = size_of::<SliceParams>();
-        ledger.reserve(n)?;
-        if self.slices.try_reserve(1).is_err() {
-            ledger.release(n);
-            return Err(Error::OutOfMemory);
-        }
+        self.charged += grow_one(&mut self.slices, ledger)?;
         self.slices.push(p);
-        self.charged += n;
         Ok(idx)
     }
 
@@ -582,7 +576,15 @@ mod tests {
         let held = f.charged;
         let i = f.push_slice(slice(0), &l).unwrap();
         assert_eq!(i, 0);
-        assert_eq!(f.charged, held + size_of::<SliceParams>());
+        // The first push grows the Vec to 4 records, and all 4 are booked.
+        assert_eq!(f.charged, held + 4 * size_of::<SliceParams>());
+        for k in 1..5 {
+            assert_eq!(f.push_slice(slice(0), &l).unwrap(), k);
+        }
+        assert_eq!(
+            f.charged,
+            held + f.slices.capacity() * size_of::<SliceParams>()
+        );
         l.release(f.charged);
         l.release(act.charged);
         assert_eq!(l.left(), start);

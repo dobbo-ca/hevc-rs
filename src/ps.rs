@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::Vui;
 use crate::bits::BitReader;
 use crate::error::{Error, Result};
-use crate::ledger::Ledger;
+use crate::ledger::{Held, Ledger};
 use crate::limits::Limits;
 use crate::scaling::ScalingList;
 
@@ -946,21 +946,27 @@ pub(crate) fn activate(
     }
     sps.check_limits(limits)?;
     // 7.4.3.3.1: a Main / Main 10 / Main Still Picture decoder ignores the PPS extension.
-    let pps = if (1..=3).contains(&sps.profile_idc)
+    // The copy is the picture's own (the stored set is booked by the decoder), so it is booked
+    // here and goes into `Active::charged`.
+    // `copy` (the booking) is bound first, so it drops after `pps`: the bytes go back to the
+    // ledger only once the copy is freed.
+    let (copy, pps) = if (1..=3).contains(&sps.profile_idc)
         && (pps.extension_error.is_some()
             || pps.log2_sao_offset_scale_luma != 0
             || pps.log2_sao_offset_scale_chroma != 0)
     {
-        Arc::new(Pps {
+        let held = ledger.charge(crate::decoder::pps_cost(&pps))?;
+        let copy = Arc::new(Pps {
             extension_error: None,
             log2_sao_offset_scale_luma: 0,
             log2_sao_offset_scale_chroma: 0,
             ..(*pps).clone()
-        })
+        });
+        (Some(held), copy)
     } else if let Some(e) = &pps.extension_error {
         return Err(e.clone());
     } else {
-        pps
+        (None, pps)
     };
     // init_qp_minus26 in -(26 + QpBdOffsetY)..=25.
     if !(-sps.qp_bd_offset_y..=51).contains(&pps.init_qp) {
@@ -995,6 +1001,7 @@ pub(crate) fn activate(
         .ok_or(Error::AllocLimit)?;
     let charged = words.checked_mul(4).ok_or(Error::AllocLimit)?;
     ledger.reserve(charged)?;
+    let charged = charged + copy.map_or(0, Held::keep);
     build(sps, pps, n_ctbs, stride, grid, charged).inspect_err(|_| ledger.release(charged))
 }
 
@@ -1393,6 +1400,24 @@ pub(crate) mod tests {
         assert_eq!(s.delta_poc, [-1, -3, 3]);
         assert_eq!(s.used, [true, false, true]);
         assert_eq!((s.num_negative, s.num_positive), (2, 1));
+    }
+
+    #[test]
+    fn pps_copy_for_a_main_profile_is_charged() {
+        // Profile 1 ignores the PPS extension: the copy without it is booked in `charged`.
+        let sps = Arc::new(parse_sps(&sps_bits(128, 128)).unwrap());
+        let plain = Arc::new(parse_pps(&pps_bits(2)).unwrap());
+        let ext = Arc::new(Pps {
+            log2_sao_offset_scale_luma: 1,
+            ..(*plain).clone()
+        });
+        let l = ledger();
+        let a = activate(sps.clone(), plain.clone(), &Limits::default(), &l).unwrap();
+        let b = activate(sps, ext, &Limits::default(), &l).unwrap();
+        assert_eq!(b.charged, a.charged + crate::decoder::pps_cost(&plain));
+        assert_eq!(b.pps.log2_sao_offset_scale_luma, 0);
+        l.release(a.charged);
+        l.release(b.charged);
     }
 
     #[test]

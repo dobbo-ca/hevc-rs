@@ -4,7 +4,7 @@ All of this runs in CI only; nothing is built or run on a developer machine.
 
 ## Oracles
 
-- `examples/oracle.rs`: `oracle [--threads N] [--no-filters] <in-dir> <out-dir>` decodes every
+- `examples/oracle.rs`: `oracle [--threads N] [--no-filters] <in-dir> <out-dir>` (it sets `Options::check_hash`, so the hash column and gate G4 are unchanged) decodes every
   `*.bit`, `*.bin`, `*.hevc` and `*.265` file (Annex B) and writes `<name>.yuv` (all output
   pictures, planes Y, Cb, Cr, cropped, 1 byte per sample at bit depth 8 else 2 bytes little-endian)
   and `<name>.info` (one line per picture: `poc W H chroma depthY depthC hash`, hash is

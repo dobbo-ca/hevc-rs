@@ -33,7 +33,7 @@ chroma_format_idc 1 (4:2:0) and 0 (4:0:0); bit depth 8..=12 per component (luma 
 differ); tiles, wavefront (entry_coding_sync), dependent slice segments, multiple slices; PCM;
 transform skip (4x4); sign data hiding; scaling lists (SPS and PPS, prediction, defaults);
 cu_qp_delta; pps/slice chroma QP offsets; deblocking; SAO; conformance window cropping;
-decoded picture hash SEI (MD5, CRC, checksum) checked when present.
+decoded picture hash SEI (MD5, CRC, checksum) checked when present and `Options::check_hash` is true.
 
 Rejected with a distinct error:
 
@@ -66,8 +66,12 @@ pub struct Options {
     pub sao: bool,
     /// Keep the metadata (default true): `Picture::sei` and `Info::vui`. See "Metadata" below.
     pub metadata: bool,
+    /// Check the decoded picture hash SEI (default false). false: `Picture::hash_ok` is `None` and
+    /// no MD5, CRC or checksum is computed. `examples/oracle.rs` sets it, so the parity gate G4 is
+    /// unchanged.
+    pub check_hash: bool,
 }
-impl Default for Options { /* all true */ }
+impl Default for Options { /* all true except check_hash */ }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChromaFormat { Mono, Yuv420 }
@@ -111,8 +115,9 @@ pub struct Picture {
     pub planes: Vec<Plane>,
     /// PicOrderCntVal.
     pub poc: i32,
-    /// Some(true/false) when a decoded picture hash SEI was present and checked (over the
-    /// uncropped decoded picture); None when absent.
+    /// Some(true/false) when `Options::check_hash` is true and a decoded picture hash SEI was
+    /// present (the check is over the
+    /// uncropped decoded picture); None when absent or `check_hash` is false.
     pub hash_ok: Option<bool>,
     /// Every SEI message of the access unit in bitstream order; empty when metadata is off.
     pub sei: Vec<SeiMessage>,
@@ -165,10 +170,11 @@ WidthLimit, HeightLimit, PixelLimit, PictureLimit, AllocLimit, OutOfMemory, Canc
 Parity error tokens (examples/oracle.rs): `invalid`, `unsupported`, `inter`, `nopicture`,
 `limit`, `cancelled`.
 
-Threading: reconstruction is serial. Deblocking and SAO run in bands of whole CTB rows on up to
-`max_threads` scoped threads (`frame::par_bands`; 1 spawns nothing), byte-identical to serial for
-every thread count; see [threading.md](threading.md). Parallel decode by tile / WPP row and of
-whole pictures is not done.
+Threading: with `max_threads` above 1 the pictures of one call are decoded in parallel, and
+deblocking and SAO run in bands of whole CTB rows on scoped threads (`frame::par_bands`); the
+tiles of a HEIC grid are decoded in parallel too. `max_threads = 1` spawns nothing. The output
+and the errors are byte-identical to the serial path for every thread count; see
+[threading.md](threading.md). Parallel decode by tile / WPP row is not done.
 
 Cancellation: the flag is read before each NAL unit and before each CTU; set → `Cancelled`.
 
@@ -511,7 +517,7 @@ comparison and the slice_loop_filter_across_slices_enabled_flag of the right sli
 loop_filter_across_tiles_enabled_flag). bitDepth-based band shift = bitDepth - 5.
 
 Both filters run in bands of whole CTB rows (`workers` bands, `decoder::filter_workers`; 1 = the
-calling thread, no spawn). Vertical edges never leave their row. A horizontal edge reaches 4 rows
+calling thread, no spawn; a job on a picture worker uses 1 band, a job on the calling thread uses `filter_workers(max(1, max_threads - spawned))`, see threading.md). Vertical edges never leave their row. A horizontal edge reaches 4 rows
 above and 3 below it, so the band that owns the edges of CTB rows `[B, B')` is the plane slice
 `[B - 4, B' - 4)`; a pass ends when its bands have joined. SAO bands write their own rows and read
 the shared deblocked copy. Details and the deviation from the pool convention: threading.md.
@@ -521,7 +527,7 @@ the shared deblocked copy. Details and the deviation from the pool convention: t
 - NAL loop over the stream (Annex B or length-prefixed), skip layer_id > 0, store parameter
   sets, collect SEI hashes (suffix SEI after the picture's VCL NALs), decode slice segments.
 - First slice segment of a picture (first_slice_segment_in_pic_flag = 1): finish the previous
-  picture (filters, hash check, push to DPB), activate SPS/PPS, check limits
+  picture (queue its decode job), activate SPS/PPS, check limits
   (max_width/height/pixels against the coded size), allocate the Frame (ledger), compute POC
   (8.3.1, prevTid0Pic rules; NoRaslOutputFlag = 1 for IDR/BLA/first picture/after EOS), skip
   RASL pictures when the associated IRAP has NoRaslOutputFlag = 1, apply C.5.2.2 (IRAP with
@@ -540,6 +546,12 @@ the shared deblocked copy. Details and the deviation from the pool convention: t
   next IRAP applies C.5.2.2 (CRA after EOS discards); EOB (37) and end of stream flush.
 - A picture is complete when the next picture starts, at EOS/EOB, or at the end of the stream.
   A picture whose CTBs are not all covered by slices → InvalidData.
+- Front end and jobs: the NAL loop (parameter sets, slice headers, POC, DPB / C.5.2) is serial.
+  A slice segment NAL is only parsed and queued (`Pending`, its rbsp stays charged); the slice
+  data, the coverage check, the filters, the hash check (`Options::check_hash`) and the output
+  conversion run in `decode_picture`, one job per picture, when the picture is complete. With
+  `max_threads = 1` the job runs inline at that point. See `docs/threading.md` for the workers,
+  the output order (tickets) and the error rules.
 - Slices of the picture must use the same PPS id? (no: PPS may differ per slice only in
   allowed fields; v1: require the same pps_id within a picture, else InvalidData).
 - Output: crop to the conformance window and convert to `Samples::U8` (bit depth 8) or
@@ -623,7 +635,7 @@ pub enum Transform { Clap(Clap), Rotate(u16), Mirror(Axis) }   // own types, sam
 - Not applied: `irot`, `imir`, `clap` come back raw and in file order in `transforms`. The caller
   applies them.
 - Metadata is kept raw (the owner rule above): `image.sei`, `image.info.vui` and `poc` are the
-  first tile's; `hash_ok` is `Some(true)` only if every tile's hash was checked and passed.
+  first tile's; `hash_ok` is `Some(true)` only if every tile's hash was checked and passed (so `None` unless `Options::check_hash` is true).
   `Options::metadata` false drops them.
 - `alpha` is the luma plane of the auxiliary alpha item (`Image::alpha` of isobmff:
   `urn:mpeg:hevc:2015:auxid:1`, `urn:mpeg:mpegB:cicp:systems:auxiliary:alpha` or

@@ -7,17 +7,28 @@ mod common;
 use common::{NO, limits};
 
 // Whatever the stream is, every picture that comes back has the planes its Info says. The low
-// 3 bits of the last byte pick deblocking, SAO and metadata; the stream is the whole input.
+// 4 bits of the last byte pick deblocking, SAO, metadata and the hash check; the stream is the whole
+// input. The result and the pictures must not depend on max_threads (3 against 1).
 fuzz_target!(|data: &[u8]| {
     let bits = data.last().copied().unwrap_or(0);
     let opts = Options {
         deblocking: bits & 1 == 0,
         sao: bits & 2 == 0,
         metadata: bits & 4 == 0,
+        check_hash: bits & 8 == 0,
     };
-    let Ok(pictures) = hevc::decode(data, &opts, &limits(), &NO) else {
+    let mut pictures = Vec::new();
+    let one = hevc::decode_into(data, &opts, &limits(), &NO, &mut pictures);
+    let three = hevc::Limits {
+        max_threads: 3,
+        ..limits()
+    };
+    let mut other = Vec::new();
+    assert_eq!(one, hevc::decode_into(data, &opts, &three, &NO, &mut other));
+    assert_eq!(pictures, other);
+    if one.is_err() {
         return;
-    };
+    }
     for pic in &pictures {
         let i = &pic.info;
         let (w, h) = (i.width as usize, i.height as usize);
