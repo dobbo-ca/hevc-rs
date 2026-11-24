@@ -1540,7 +1540,7 @@ mod tests {
     }
 
     /// A `mini` box file (ISO/IEC 23008-12 Annex O, `ftyp` minor version `heic`): a 64 x 48
-    /// 4:2:0 8-bit `hvc1` image with the `hvcC` record and item data of `one_item_file`,
+    /// 4:2:0 8-bit `hvc1` image with the `hvcC` record of `one_item_file` and junk item data,
     /// orientation 5, an alpha item that shares the main configuration, and an Exif chunk.
     fn mini_file() -> Vec<u8> {
         let cfg = [
@@ -1603,15 +1603,11 @@ mod tests {
         // The Exif chunk stays readable as stored (a mini box has no exif_tiff_header_offset).
         let md = heif.metadata(&file, 1, &iso, &cancel).unwrap();
         assert_eq!(md.exif.as_deref(), Some(&b"II*\0EXIF"[..]));
-        // The same hvcC and item bytes as `one_item_file` reach the decoder and fail the same
-        // way, for the primary and for the alpha item.
+        // The item bytes reach the decoder (the junk is one NAL length past the data), for the
+        // primary and for the alpha item, which shares its configuration.
         let (o, l) = (Options::default(), Limits::default());
         let e = decode_heic(&file, &o, &l, &cancel).err();
-        assert!(
-            e.is_some() && !matches!(e, Some(Error::Unsupported(_))),
-            "{e:?}"
-        );
-        assert_eq!(e, decode_heic(&one_item_file(), &o, &l, &cancel).err());
+        assert_eq!(e, Some(Error::InvalidData("NAL length beyond the data")));
         assert_eq!(e, decode_heic_item(&heif, &file, 2, &o, &l, &cancel).err());
     }
 }
