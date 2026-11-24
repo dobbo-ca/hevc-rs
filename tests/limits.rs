@@ -308,12 +308,14 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
     }
 
     // Parameter sets replaced while pictures are in flight (`Decoder::stream`, the 32..=34 arm):
-    // twelve real 256x256 pictures, each after its own VPS, SPS and PPS. The SPS (64 short-term
-    // RPS, 32 long-term entries) and the PPS take about 25 KB of heap together, and a picture
-    // holds its pair until it is retired, so with several pictures in flight the replaced pairs
-    // are more than the 64 KiB small reserve. If a replaced pair were released when it is
-    // replaced, the real heap would pass `max_alloc` at a budget where the ledger is just full:
-    // the budgets step by 4 KiB (16 KiB with one thread) from half of what the call needs.
+    // twelve real 256x256 pictures, each after its own VPS, SPS and PPS (the SPS with 64
+    // short-term RPS and 32 long-term entries, about 25 KB with the PPS), decoded while the
+    // budget steps by 8 KiB (32 KiB with one thread) from half of what the call needs. The real
+    // heap of all threads stays within max_alloc. This cannot tell on its own whether the
+    // replaced sets stay booked: only the oldest picture in flight can hold a released pair
+    // (every later release waits in `Decoder::late`), and one pair fits in the 64 KiB small
+    // reserve. `decoder::tests::a_replaced_set_stays_booked_while_the_picture_being_built_holds_it`
+    // checks the booking itself.
     let repeated = common::stream(&common::Spec {
         width: 256,
         height: 256,
@@ -329,7 +331,7 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
     let decoded = hevc::decode(&repeated, &opts, &eight, &cancel).map(|p| p.len());
     assert_eq!(decoded, Ok(12), "the coded stream must decode");
     let (_, rep_need) = peaked(|| hevc::decode(&repeated, &opts, &eight, &cancel).map(drop));
-    for (max_threads, step) in [(8, 4 << 10), (1, 16 << 10)] {
+    for (max_threads, step) in [(8, 8 << 10), (1, 32 << 10)] {
         let mut max_alloc = rep_need / 2;
         while max_alloc <= rep_need + (64 << 10) {
             let limits = Limits {
