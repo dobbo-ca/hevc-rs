@@ -17,7 +17,6 @@
 
 use crate::error::{Error, Result};
 use crate::frame::{Frame, band_rows, par_bands, plane_cuts};
-use crate::pool::Budget;
 use crate::ps::Active;
 use crate::simd::{self, Tier};
 use std::ops::Range;
@@ -1020,9 +1019,8 @@ pub(crate) fn deblock(
     act: &Active,
     cancel: &AtomicBool,
     workers: usize,
-    budget: &Budget,
 ) -> Result<()> {
-    deblock_with(simd::tier(), frame, act, cancel, workers, budget)
+    deblock_with(simd::tier(), frame, act, cancel, workers)
 }
 
 /// [`deblock`] on an explicit tier (tests run every available one).
@@ -1032,12 +1030,11 @@ fn deblock_with(
     act: &Active,
     cancel: &AtomicBool,
     workers: usize,
-    budget: &Budget,
 ) -> Result<()> {
     // The planes go out of the frame so that the bands can borrow them mutably while every band
     // reads the metadata grids; they are put back on every path.
     let mut planes = std::mem::take(&mut frame.planes);
-    let r = deblock_planes(tier, frame, act, &mut planes, cancel, workers, budget);
+    let r = deblock_planes(tier, frame, act, &mut planes, cancel, workers);
     frame.planes = planes;
     r
 }
@@ -1055,7 +1052,6 @@ fn deblock_planes(
     planes: &mut [Vec<u16>],
     cancel: &AtomicBool,
     workers: usize,
-    budget: &Budget,
 ) -> Result<()> {
     let ctb = act.sps.ctb_size_y as usize;
     let ctb_rows = band_rows(act.sps.pic_height_in_ctbs_y as usize, workers);
@@ -1076,7 +1072,7 @@ fn deblock_planes(
             } else {
                 plane_cuts(&ctb_rows, unit, 4, h)
             };
-            par_bands(plane, stride, &cuts, budget, |k, row0, band_plane| {
+            par_bands(plane, stride, &cuts, |k, row0, band_plane| {
                 let (Some(&y0), Some(&y1)) = (own.get(k), own.get(k + 1)) else {
                     return Ok(());
                 };
@@ -1199,7 +1195,7 @@ mod tests {
             }
         }
         f.fill_edge_v(8, 0, 4, 4, 2).unwrap();
-        deblock(&mut f, &act, &AtomicBool::new(false), 1, &Budget::new(1)).unwrap();
+        deblock(&mut f, &act, &AtomicBool::new(false), 1).unwrap();
         // QpL 40: beta 42, tC 7 (Q 42); flat sides give dE 2, strong filter by hand.
         assert_eq!(
             row(&f, 0, 0, 4, 8),
@@ -1236,8 +1232,8 @@ mod tests {
         // pcm / bypass above the edge: p side stays.
         g.fill_no_filter(0, 0, 64, 8, 1).unwrap();
         let col = |f: &Frame| -> Vec<u16> { (4..12).map(|y| f.sample(0, 0, y).unwrap()).collect() };
-        deblock(&mut f, &act, &AtomicBool::new(false), 1, &Budget::new(1)).unwrap();
-        deblock(&mut g, &act, &AtomicBool::new(false), 1, &Budget::new(1)).unwrap();
+        deblock(&mut f, &act, &AtomicBool::new(false), 1).unwrap();
+        deblock(&mut g, &act, &AtomicBool::new(false), 1).unwrap();
         // QpL 30: beta 22, tC 3 (Q 32); |p0-q0| = 8 is not < 8, so weak.
         // delta = 3, p0 103, q0 105; p1 += 1, q1 -= 1.
         assert_eq!(col(&f), [100, 100, 101, 103, 105, 107, 108, 108]);
@@ -1259,7 +1255,7 @@ mod tests {
         }
         // Chroma x 8 is luma x 16; one 8-row luma segment.
         f.fill_edge_v(16, 0, 4, 8, 2).unwrap();
-        deblock(&mut f, &act, &AtomicBool::new(false), 1, &Budget::new(1)).unwrap();
+        deblock(&mut f, &act, &AtomicBool::new(false), 1).unwrap();
         // Cb: qPi 41 -> QpC 36 -> Q 38 -> tC 5; delta = 2 (not clipped). Cr (offset -1): tC 4.
         for c in 1..3 {
             assert_eq!(row(&f, c, 3, 6, 4), [100, 102, 102, 104]);
@@ -1272,7 +1268,7 @@ mod tests {
         let l = ledger();
         let (act, mut f) = setup(&l, 40);
         assert_eq!(
-            deblock(&mut f, &act, &AtomicBool::new(true), 1, &Budget::new(1)),
+            deblock(&mut f, &act, &AtomicBool::new(true), 1),
             Err(Error::Cancelled)
         );
         assert_eq!(
@@ -1393,14 +1389,14 @@ mod tests {
             for seed in 1..=4u64 {
                 let (act, mut want) = random_sized(&l, seed * 0x1234_5679, (w, h), ctb16, 8);
                 let orig = want.planes.clone();
-                deblock(&mut want, &act, &cancel, 1, &Budget::new(1)).unwrap();
+                deblock(&mut want, &act, &cancel, 1).unwrap();
                 assert!(
                     orig != want.planes,
                     "not filtered: {w}x{h} ctb16 {ctb16} seed {seed}"
                 );
                 for workers in [2, 3, 5, 64] {
                     let (act, mut got) = random_sized(&l, seed * 0x1234_5679, (w, h), ctb16, 8);
-                    deblock(&mut got, &act, &cancel, workers, &Budget::new(workers)).unwrap();
+                    deblock(&mut got, &act, &cancel, workers).unwrap();
                     assert!(
                         got.planes == want.planes,
                         "{w}x{h} ctb16 {ctb16} seed {seed} workers {workers}"
@@ -1413,7 +1409,7 @@ mod tests {
         let (act, mut f) = random_sized(&l, 7, (200, 136), false, 8);
         let orig = f.planes.clone();
         assert_eq!(
-            deblock(&mut f, &act, &AtomicBool::new(true), 3, &Budget::new(3)),
+            deblock(&mut f, &act, &AtomicBool::new(true), 3),
             Err(Error::Cancelled)
         );
         assert!(f.planes == orig);
@@ -1440,12 +1436,11 @@ mod tests {
                     let s = seed * 0x9e37_79b9 + u64::from(depth);
                     let (act, mut want) = random_sized(&l, s, (w, h), ctb16, depth);
                     let orig = want.planes.clone();
-                    deblock_with(Tier::Scalar, &mut want, &act, &cancel, 1, &Budget::new(1))
-                        .unwrap();
+                    deblock_with(Tier::Scalar, &mut want, &act, &cancel, 1).unwrap();
                     assert!(w < 64 || orig != want.planes, "not filtered");
                     for &tier in &tiers {
                         let (act, mut got) = random_sized(&l, s, (w, h), ctb16, depth);
-                        deblock_with(tier, &mut got, &act, &cancel, 1, &Budget::new(1)).unwrap();
+                        deblock_with(tier, &mut got, &act, &cancel, 1).unwrap();
                         assert!(
                             got.planes == want.planes,
                             "{tier:?} depth {depth} {w}x{h} ctb16 {ctb16} seed {seed}"

@@ -1,6 +1,6 @@
 # hevc-rs
 
-HEVC (H.265) decoding for intra pictures under strict resource limits, in Rust. It decodes Main, Main 10 and Main Still Picture streams (4:2:0 and 4:0:0, 8 to 12 bits per component) from an Annex B byte stream or from HEIF/MP4 samples plus an `hvcC` record, bit-exact with the spec; P and B slices are rejected with `Error::InterSlice`. It is a new crate written from the H.265 spec, not a port. Pure Rust, two dependencies (isobmff-rs for HEIC, rayon-core for the thread pool), `unsafe` only in the SIMD dispatch and load/store helpers (docs/safety.md). Apache-2.0; see `NOTICE`.
+HEVC (H.265) decoding for intra pictures under strict resource limits, in Rust. It decodes Main, Main 10 and Main Still Picture streams (4:2:0 and 4:0:0, 8 to 12 bits per component) from an Annex B byte stream or from HEIF/MP4 samples plus an `hvcC` record, bit-exact with the spec; P and B slices are rejected with `Error::InterSlice`. It is a new crate written from the H.265 spec, not a port. Pure Rust, one dependency (isobmff-rs, for HEIC), `unsafe` only in the SIMD dispatch and load/store helpers (docs/safety.md). Apache-2.0; see `NOTICE`.
 
 Dependency: `hevc = { git = "https://github.com/dobbo-ca/hevc-rs", rev = "5b860a0791fd5295aa2191b2c20b89d72d0cb9bb" }`
 
@@ -43,8 +43,8 @@ There is no unlimited entry point. Every call takes a `Limits`.
 
 - `max_alloc` is the enforced peak working memory of one call, all threads together, including the nested isobmff-rs parse (an eighth of `max_alloc` each for the parse and the item bytes): allocations are charged before they are made and released on drop. The stored parameter sets, the output pictures and the planes are charged one by one; 64 KiB is booked up front for the small fixed allocations, so a `max_alloc` below that is `Error::AllocLimit` at once.
 - Metadata (SEI messages, VUI) is kept by default and exposed raw; `Options { metadata: false, .. }` drops it. Kept SEI bytes are charged to `max_alloc` like the planes.
-- `max_threads = 1` spawns no thread and never touches the pool. With more, the tiles of a HEIC grid and the pictures of a call that holds several are decoded in parallel on threads started for the call (a call with one picture, or one picture and a P slice, starts no picture worker; a worker starts only when a job finds none free), and deblocking and SAO of a big picture run in parallel bands of CTB rows (one band per 64 Ki luma samples) as tasks on a lazy pool that all calls share (rayon-core; made on first use with `available_parallelism` threads, kept for the life of the process). `max_threads` counts the threads working for the call at the same moment: the calling thread, its picture or grid workers, and its band tasks running on the pool; idle pool threads do not count. There is no API to pass your own pool. The output and the errors do not depend on the value. See `docs/threading.md`.
-- Thread stacks are not charged to `max_alloc` (pool threads 512 KiB each, picture and grid workers the std default), nor is the pool's own memory, which is made once per process.
+- `max_threads = 1` spawns no thread. With more, the tiles of a HEIC grid and the pictures of a call that holds several are decoded in parallel, and deblocking and SAO of a big picture run in parallel bands of CTB rows (one band per 64 Ki luma samples), all on up to `max_threads - 1` extra threads (a call with one picture, or one picture and a P slice, spawns no picture worker; a worker starts only when a job finds none free); the output and the errors do not depend on the value. No thread pool: workers are scoped per call; a shared pool was tried and gave no clear gain (docs/threading.md, Known deviations). See `docs/threading.md`.
+- Thread stacks are not charged to `max_alloc` (band threads 512 KiB each, picture and grid workers the std default).
 - `Options::check_hash` (default false): the decoded picture hash SEI is checked (`Picture::hash_ok` is `Some`) only when it is true; otherwise `hash_ok` is `None` and no MD5, CRC or checksum is computed.
 - Cancellation: every decode takes `&AtomicBool`, read before each NAL unit and each CTU, and per row in deblocking, SAO, the picture hash and the crop. When set, the call returns `Error::Cancelled`.
 
@@ -65,7 +65,7 @@ println!("{}x{}, {} transforms", heic.image.info.width, heic.image.info.height, 
 - [docs/limits.md](docs/limits.md): limits, charging, errors
 - [docs/threading.md](docs/threading.md): grid tiles and pictures in parallel, the error and memory rules
 - [docs/safety.md](docs/safety.md): the `unsafe` inventory (SIMD dispatch and helpers), kernels removed, hostile input
-- [docs/dependencies.md](docs/dependencies.md): isobmff-rs, rayon-core
+- [docs/dependencies.md](docs/dependencies.md): isobmff-rs
 - [docs/parity.md](docs/parity.md): oracles, corpus, gates
 - [docs/fuzzing.md](docs/fuzzing.md): fuzz targets
 - [docs/benchmarks.md](docs/benchmarks.md): benchmarks

@@ -10,7 +10,6 @@ exclude = ["tests/fuzz", "tests/parity"]
 
 [dependencies]
 isobmff = { git = "https://github.com/dobbo-ca/isobmff-rs", rev = "06d94e66ed14cf9ad0444cffbde8df90cb1920f6" }
-rayon-core = "1"
 
 # The tests decode whole streams; keep them fast enough under `cargo test`.
 [profile.dev]

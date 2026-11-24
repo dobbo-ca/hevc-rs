@@ -7,7 +7,6 @@ use crate::frame::{Frame, NO_SLICE, SliceParams};
 use crate::ledger::{Held, Ledger, grow_one};
 use crate::limits::Limits;
 use crate::nal::{self, Nal};
-use crate::pool::Budget;
 use crate::ps::{self, Active, Pps, Sps, SubLayerOrdering};
 use crate::sei::{self, PictureHash};
 use crate::slice::{self, SliceHeader};
@@ -454,13 +453,13 @@ fn hash_matches(frame: &Frame, sps: &Sps, h: &PictureHash, cancel: &AtomicBool) 
 }
 
 /// Bands of CTB rows for the in-loop filters: at most one per thread (0 counts as 1), one per CTB
-/// row, one per 16 Ki luma samples, and 64 (so the per-band bookkeeping stays within the small
-/// reserve), so that a small picture is filtered on one thread
-/// (waking a pool thread costs more than it saves there).
+/// row, one per 64 Ki luma samples, and 64 (so the per-band bookkeeping stays within the small
+/// reserve), so that a small picture is filtered on the calling thread
+/// (a thread scope costs more than it saves there).
 fn filter_workers(threads: usize, act: &Active) -> usize {
     let sps = &act.sps;
     let by_size =
-        usize::try_from((u64::from(sps.width) * u64::from(sps.height)) >> 14).unwrap_or(usize::MAX);
+        usize::try_from((u64::from(sps.width) * u64::from(sps.height)) >> 16).unwrap_or(usize::MAX);
     threads
         .min(sps.pic_height_in_ctbs_y as usize)
         .min(by_size)
@@ -504,13 +503,7 @@ fn decode_slices(cur: &mut Cur<'_>, opts: &Options, cancel: &AtomicBool) -> Resu
 /// The second half of a picture, run on any thread: slice data, coverage check, filters, hash
 /// check and conversion to the output picture. `cur` keeps its bytes booked: the caller drops it
 /// in ticket order.
-fn decode_picture(
-    cur: &mut Cur<'_>,
-    opts: &Options,
-    cancel: &AtomicBool,
-    workers: usize,
-    budget: &Budget,
-) -> Done {
+fn decode_picture(cur: &mut Cur<'_>, opts: &Options, cancel: &AtomicBool, workers: usize) -> Done {
     decode_slices(cur, opts, cancel)?;
     if cur.frame.slice_idx.contains(&NO_SLICE) {
         return Err(Error::InvalidData(
@@ -519,17 +512,10 @@ fn decode_picture(
     }
     let sps = Arc::clone(&cur.act.sps);
     if opts.deblocking {
-        deblock::deblock(&mut cur.frame, &cur.act, cancel, workers, budget)?;
+        deblock::deblock(&mut cur.frame, &cur.act, cancel, workers)?;
     }
     if opts.sao && sps.sao_enabled {
-        sao::sao(
-            &mut cur.frame,
-            &cur.act,
-            cur.ledger,
-            cancel,
-            workers,
-            budget,
-        )?;
+        sao::sao(&mut cur.frame, &cur.act, cur.ledger, cancel, workers)?;
     }
     if !cur.output {
         return Ok(None);
@@ -566,17 +552,9 @@ struct Job<'a> {
 /// The jobs queue of the workers.
 type Jobs<'a> = Mutex<Receiver<Job<'a>>>;
 
-/// A worker thread: takes jobs until the sender is dropped. Its jobs filter in one band: bands
-/// there would hold the budget threads that the next picture needs for its worker (a trial gave
-/// them bands: multi-picture streams got slower, docs/threading.md). A panic inside a job becomes
-/// an error result, so the caller never waits for a result that cannot come.
-fn worker<'a>(
-    rx: &Jobs<'a>,
-    done: &Sender<Finished<'a>>,
-    opts: &Options,
-    cancel: &AtomicBool,
-    budget: &Budget,
-) {
+/// A worker thread: takes jobs until the sender is dropped. A panic inside a job becomes an
+/// error result, so the caller never waits for a result that cannot come.
+fn worker<'a>(rx: &Jobs<'a>, done: &Sender<Finished<'a>>, opts: &Options, cancel: &AtomicBool) {
     loop {
         let job = match rx.lock() {
             Ok(g) => g.recv(),
@@ -586,7 +564,7 @@ fn worker<'a>(
             return;
         };
         let r = catch_unwind(AssertUnwindSafe(|| {
-            decode_picture(&mut cur, opts, cancel, 1, budget)
+            decode_picture(&mut cur, opts, cancel, 1)
         }))
         .unwrap_or(Err(Error::InvalidData("picture decoding panicked")));
         if done.send((ticket, r, cur)).is_err() {
@@ -598,9 +576,6 @@ fn worker<'a>(
 /// Starts a closure on a new thread of the call's scope; false when the thread cannot be made.
 type Spawn<'a, 'p> = &'p dyn Fn(Box<dyn FnOnce() + Send + 'a>) -> bool;
 
-/// The budget of a call without a scope: no thread to add.
-static SERIAL: Budget = Budget::new(1);
-
 /// The threads of one call (docs/threading.md). The channels exist once the second picture of
 /// the call has a good header, so a one-picture call never spawns. Workers start one at a time,
 /// when a job finds none idle.
@@ -609,8 +584,6 @@ struct Pool<'a, 'p> {
     threads: usize,
     /// None when `threads` is 1: no scope exists.
     spawn: Option<Spawn<'a, 'p>>,
-    /// The threads the call may still add: picture workers and band tasks take them.
-    budget: &'a Budget,
     /// Some once the channels exist.
     tx: Option<SyncSender<Job<'a>>>,
     /// The receiving end of `tx`, shared by the workers.
@@ -676,7 +649,7 @@ impl<'a, 'p> Decoder<'a, 'p> {
         limits: &'a Limits,
         cancel: &'a AtomicBool,
         out: &'a mut Vec<Picture>,
-        spawn: Option<(Spawn<'a, 'p>, &'a Budget)>,
+        spawn: Option<Spawn<'a, 'p>>,
     ) -> Self {
         Self {
             ledger,
@@ -695,8 +668,7 @@ impl<'a, 'p> Decoder<'a, 'p> {
             pending: SeiSet::default(),
             pool: Pool {
                 threads: limits.max_threads.max(1),
-                spawn: spawn.map(|(s, _)| s),
-                budget: spawn.map_or(&SERIAL, |(_, b)| b),
+                spawn,
                 tx: None,
                 rx: None,
                 done_tx: None,
@@ -1154,9 +1126,7 @@ impl<'a, 'p> Decoder<'a, 'p> {
         self.pool.results = Some(done_rx);
     }
 
-    /// Starts one worker, which holds one thread of the budget until the call ends. With no
-    /// thread left in the budget (band tasks hold them) no worker starts now. When the thread
-    /// cannot be made, the cap drops to the workers there are.
+    /// Starts one worker. When the thread cannot be made, the cap drops to the workers there are.
     fn add_worker(&mut self) {
         let (Some(spawn), Some(rx), Some(done_tx)) = (
             self.pool.spawn,
@@ -1165,18 +1135,11 @@ impl<'a, 'p> Decoder<'a, 'p> {
         ) else {
             return;
         };
-        let budget = self.pool.budget;
-        if !budget.take() {
-            return;
-        }
         let (rx, done_tx) = (Arc::clone(rx), done_tx.clone());
         let (opts, cancel) = (self.opts, self.cancel);
-        if spawn(Box::new(move || {
-            worker(&rx, &done_tx, opts, cancel, budget);
-        })) {
+        if spawn(Box::new(move || worker(&rx, &done_tx, opts, cancel))) {
             self.pool.workers += 1;
         } else {
-            budget.give(1);
             self.pool.cap = self.pool.workers;
         }
     }
@@ -1185,8 +1148,10 @@ impl<'a, 'p> Decoder<'a, 'p> {
     /// ran, the front end was ahead of the job, so the call is replayed with one thread.
     fn run_inline(&mut self, job: Job<'a>) -> Result<()> {
         let Job { ticket, mut cur } = job;
-        let workers = filter_workers(self.pool.threads, &cur.act);
-        let r = decode_picture(&mut cur, self.opts, self.cancel, workers, self.pool.budget);
+        // The calling thread and its bands are the threads the picture workers leave free.
+        let free = self.pool.threads.saturating_sub(self.pool.workers).max(1);
+        let workers = filter_workers(free, &cur.act);
+        let r = decode_picture(&mut cur, self.opts, self.cancel, workers);
         self.retire(ticket, cur);
         match r {
             Ok(res) => {
@@ -1372,7 +1337,6 @@ fn drive<'n>(
 /// One run of the NAL loop with a new ledger. Threads are used when `max_threads` is above 1.
 fn attempt_with<'a, 'n, I: Iterator<Item = Result<Nal<'n>>>>(
     ledger: &'a Ledger,
-    budget: &'a Budget,
     make: &impl Fn() -> I,
     opts: &'a Options,
     limits: &'a Limits,
@@ -1396,7 +1360,7 @@ fn attempt_with<'a, 'n, I: Iterator<Item = Result<Nal<'n>>>>(
             Err(_) => false,
         };
         let r = {
-            let mut d = Decoder::new(ledger, opts, limits, cancel, out, Some((&spawn, budget)));
+            let mut d = Decoder::new(ledger, opts, limits, cancel, out, Some(&spawn));
             // `d` drops at the end of this block: its sender closes and the workers return.
             drive(&mut d, make())
         };
@@ -1421,8 +1385,7 @@ fn attempt<'n, I: Iterator<Item = Result<Nal<'n>>>>(
     if let Err(e) = ledger.reset(limits.max_alloc, 0) {
         return (Err(e), false);
     }
-    let budget = Budget::new(limits.max_threads);
-    attempt_with(&ledger, &budget, make, opts, limits, cancel, out)
+    attempt_with(&ledger, make, opts, limits, cancel, out)
 }
 
 /// The NAL loop shared by Annex B and length-prefixed input; `make` gives the NAL units again for
@@ -2011,10 +1974,9 @@ mod tests {
         };
         assert_eq!(workers(512, 256, 0), 1);
         assert_eq!(workers(512, 256, 1), 1);
-        assert_eq!(workers(256, 256, 8), 4);
-        assert_eq!(workers(512, 256, 8), 8);
-        assert_eq!(workers(512, 256, usize::MAX), 8);
-        assert_eq!(workers(128, 64, 8), 1);
+        assert_eq!(workers(256, 256, 8), 1);
+        assert_eq!(workers(512, 256, 8), 2);
+        assert_eq!(workers(512, 256, usize::MAX), 2);
         // Size would allow 4 bands, but there are only 2 CTB rows.
         assert_eq!(workers(4096, 64, 8), 2);
         assert_eq!(workers(1024, 1024, 3), 3);
