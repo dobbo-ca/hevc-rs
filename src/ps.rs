@@ -1126,11 +1126,16 @@ pub(crate) mod tests {
 
     /// A Main profile SPS: CTB 32, min CB 8, TB 4..32, 4:2:0 8 bit, crop of 2 columns and rows.
     pub(crate) fn sps_bits(w: u32, h: u32) -> Vec<u8> {
-        sps_bits_with(w, h, |b| b.flag(false)) // no vui
+        sps_bits_with(w, h, 2, |b| b.flag(false)) // no vui
     }
 
-    /// `sps_bits` with the vui_parameters_present_flag and the VUI written by `vui`.
-    fn sps_bits_with(w: u32, h: u32, vui: impl FnOnce(&mut W)) -> Vec<u8> {
+    /// `sps_bits` with CTB 16.
+    pub(crate) fn sps_bits_ctb16(w: u32, h: u32) -> Vec<u8> {
+        sps_bits_with(w, h, 1, |b| b.flag(false))
+    }
+
+    /// `sps_bits` with CTB `8 << ctb_diff`, the vui_parameters_present_flag and the VUI written by `vui`.
+    fn sps_bits_with(w: u32, h: u32, ctb_diff: u32, vui: impl FnOnce(&mut W)) -> Vec<u8> {
         let mut b = W::default();
         b.u(4, 0); // vps id
         b.u(3, 0); // max_sub_layers_minus1
@@ -1158,9 +1163,9 @@ pub(crate) mod tests {
         b.ue(0);
         b.ue(0);
         b.ue(0); // min cb 8
-        b.ue(2); // ctb 32
+        b.ue(ctb_diff); // ctb 32 (diff 2) or 16 (diff 1)
         b.ue(0); // min tb 4
-        b.ue(3); // max tb 32
+        b.ue(ctb_diff + 1); // max tb = ctb
         b.ue(1);
         b.ue(1);
         b.flag(false); // scaling lists
@@ -1254,7 +1259,7 @@ pub(crate) mod tests {
 
     #[test]
     fn vui_colour_description() {
-        let bits = sps_bits_with(64, 48, |b| {
+        let bits = sps_bits_with(64, 48, 2, |b| {
             b.flag(true); // vui_parameters_present_flag
             b.flag(true); // aspect_ratio_info_present_flag
             b.u(8, 255);
@@ -1296,7 +1301,7 @@ pub(crate) mod tests {
             }
         );
         // Only the flags: the spec defaults.
-        let bits = sps_bits_with(64, 48, |b| {
+        let bits = sps_bits_with(64, 48, 2, |b| {
             b.flag(true);
             for _ in 0..4 {
                 b.flag(false); // aspect, overscan, video signal, chroma loc
