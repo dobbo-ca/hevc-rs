@@ -668,7 +668,7 @@ mod tests {
     #[test]
     fn par_bands_threads_and_bad_cuts() {
         let me = thread::current().id();
-        let mut plane = vec![0u16; 16];
+        let mut plane = [0u16; 16];
         let ids = Mutex::new(Vec::new());
         let note = |k: usize, _: usize, _: &mut [u16]| {
             ids.lock().unwrap().push((k, thread::current().id()));
@@ -683,12 +683,27 @@ mod tests {
         let got = ids.lock().unwrap().clone();
         assert_eq!(got.len(), 3);
         assert!(got.iter().all(|&(k, id)| (id == me) == (k == 0)));
-        let bad = |cuts: &[usize]| par_bands(&mut vec![0u16; 16], 4, cuts, |_, _, _| Ok(()));
+        let bad = |cuts: &[usize]| par_bands(&mut [0u16; 16], 4, cuts, |_, _, _| Ok(()));
         let e = Err(Error::InvalidData("band cuts"));
         assert_eq!(bad(&[0, 5]), e);
         assert_eq!(bad(&[1, 2]), e);
         assert_eq!(bad(&[0, 3, 2]), e);
         assert_eq!(bad(&[0, 4]), Ok(()));
         assert_eq!(bad(&[]), Ok(()));
+    }
+
+    /// Threads used never exceed the bands (a process-wide /proc sampler would race with the other
+    /// unit tests, so the threads are counted by id).
+    #[test]
+    fn par_bands_uses_at_most_one_thread_per_band() {
+        let ids = Mutex::new(std::collections::HashSet::new());
+        let mut plane = [0u16; 64];
+        let cuts: Vec<usize> = (0..=8).collect();
+        par_bands(&mut plane, 8, &cuts, |_, _, _| {
+            ids.lock().unwrap().insert(thread::current().id());
+            Ok(())
+        })
+        .unwrap();
+        assert!(ids.lock().unwrap().len() <= 8);
     }
 }

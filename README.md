@@ -54,7 +54,7 @@ There is no unlimited entry point. Every call takes a `Limits`.
 
 - `max_alloc` is the enforced peak working memory of one call, all threads together: allocations are charged before they are made and released on drop. The stored parameter sets, the output pictures and the planes are charged one by one; 64 KiB is booked up front for the small fixed allocations, so a `max_alloc` below that is `Error::AllocLimit` at once.
 - Metadata (SEI messages, VUI) is kept by default and exposed raw; `Options { metadata: false, .. }` drops it. Kept SEI bytes are charged to `max_alloc` like the planes.
-- `max_threads = 1` spawns no thread. Larger values run deblocking and SAO of big pictures (over 65536 luma samples) in parallel bands of CTB rows; the output is the same for every value. See `docs/threading.md`.
+- `max_threads = 1` spawns no thread. Larger values run deblocking and SAO of big pictures (one band per 64 Ki luma samples, so at least 128 Ki) in parallel bands of CTB rows; the output is the same for every value. See `docs/threading.md`.
 - Cancellation: every decode takes `&AtomicBool`, read before each NAL unit and each CTU. When set, the call returns `Error::Cancelled`.
 
 ## Docs

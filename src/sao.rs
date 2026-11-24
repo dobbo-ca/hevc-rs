@@ -346,7 +346,7 @@ mod tests {
     use super::*;
     use crate::frame::{SaoParams, SliceParams};
     use crate::limits::Limits;
-    use crate::ps::tests::{ledger, pps_bits, sps_bits};
+    use crate::ps::tests::{ledger, pps_bits, sps_bits, sps_bits_ctb16};
     use crate::ps::{activate, parse_pps, parse_sps};
     use std::sync::Arc;
 
@@ -450,13 +450,18 @@ mod tests {
 
     /// Random samples, SAO parameters and no-filter cells, the same for the same `seed`.
     fn random_frame(across: bool, seed: u64) -> (Active, Frame) {
-        random_sized(across, seed, 64, 64)
+        random_sized(across, seed, 64, 64, false)
     }
 
-    /// [`random_frame`] of `w` x `h` (CTB 32): the first quarter of the CTBs are slice A.
-    fn random_sized(across: bool, seed: u64, w: u32, h: u32) -> (Active, Frame) {
+    /// [`random_frame`] of `w` x `h` (CTB 32, or 16 if `ctb16`): the first quarter of the CTBs are slice A.
+    fn random_sized(across: bool, seed: u64, w: u32, h: u32, ctb16: bool) -> (Active, Frame) {
         let l = ledger();
-        let sps = Arc::new(parse_sps(&sps_bits(w, h)).unwrap());
+        let bits = if ctb16 {
+            sps_bits_ctb16(w, h)
+        } else {
+            sps_bits(w, h)
+        };
+        let sps = Arc::new(parse_sps(&bits).unwrap());
         let pps = Arc::new(parse_pps(&pps_bits(1)).unwrap());
         let act = activate(sps, pps, &Limits::default(), &l).unwrap();
         let mut f = Frame::new(&act, &l).unwrap();
@@ -476,7 +481,7 @@ mod tests {
             s ^= s << 17;
             s
         };
-        let extreme = seed % 3 == 0;
+        let extreme = seed.is_multiple_of(3);
         for c in 0..f.num_planes() {
             for y in 0..f.height[c] {
                 for x in 0..f.width[c] {
@@ -520,7 +525,7 @@ mod tests {
     fn tiers_equal_scalar() {
         let l = ledger();
         for seed in 1..40u64 {
-            let (act, mut want) = random_frame(seed % 2 == 0, seed * 0x9e37_79b9);
+            let (act, mut want) = random_frame(seed.is_multiple_of(2), seed * 0x9e37_79b9);
             sao_with(
                 Tier::Scalar,
                 &mut want,
@@ -531,7 +536,7 @@ mod tests {
             )
             .unwrap();
             for t in simd::available() {
-                let (act, mut got) = random_frame(seed % 2 == 0, seed * 0x9e37_79b9);
+                let (act, mut got) = random_frame(seed.is_multiple_of(2), seed * 0x9e37_79b9);
                 sao_with(t, &mut got, &act, &l, &AtomicBool::new(false), 1).unwrap();
                 assert_eq!(got.planes, want.planes, "{} seed {seed}", t.name());
             }
@@ -544,27 +549,35 @@ mod tests {
     fn workers_match_serial() {
         let l = ledger();
         let cancel = AtomicBool::new(false);
-        for (w, h) in [(64, 72), (200, 136)] {
+        for (w, h, ctb16) in [
+            (64, 72, false),
+            (200, 136, false),
+            (64, 72, true),
+            (200, 136, true),
+        ] {
             for seed in 1..=6u64 {
-                let across = seed % 2 == 0;
+                let across = seed.is_multiple_of(2);
                 for t in simd::available() {
-                    let (act, mut want) = random_sized(across, seed * 0x9e37_79b9, w, h);
+                    let (act, mut want) = random_sized(across, seed * 0x9e37_79b9, w, h, ctb16);
                     let orig = want.planes.clone();
                     sao_with(t, &mut want, &act, &l, &cancel, 1).unwrap();
-                    assert!(orig != want.planes, "not filtered: {w}x{h} seed {seed}");
+                    assert!(
+                        orig != want.planes,
+                        "not filtered: {w}x{h} ctb16 {ctb16} seed {seed}"
+                    );
                     for workers in [2, 3, 5, 64] {
-                        let (act, mut got) = random_sized(across, seed * 0x9e37_79b9, w, h);
+                        let (act, mut got) = random_sized(across, seed * 0x9e37_79b9, w, h, ctb16);
                         sao_with(t, &mut got, &act, &l, &cancel, workers).unwrap();
                         assert!(
                             got.planes == want.planes,
-                            "{} {w}x{h} seed {seed} workers {workers}",
+                            "{} {w}x{h} ctb16 {ctb16} seed {seed} workers {workers}",
                             t.name()
                         );
                     }
                 }
             }
         }
-        let (act, mut f) = random_sized(true, 7, 200, 136);
+        let (act, mut f) = random_sized(true, 7, 200, 136, false);
         let orig = f.planes.clone();
         assert_eq!(
             sao_with(Tier::Scalar, &mut f, &act, &l, &AtomicBool::new(true), 3),

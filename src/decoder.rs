@@ -427,7 +427,8 @@ fn hash_matches(frame: &Frame, sps: &Sps, h: &PictureHash, cancel: &AtomicBool) 
 }
 
 /// Bands of CTB rows for the in-loop filters: at most one per thread (0 counts as 1), one per CTB
-/// row, and one per 64 Ki luma samples, so that a small picture is filtered on the calling thread
+/// row, one per 64 Ki luma samples, and 64 (so the per-band bookkeeping stays within the small
+/// reserve), so that a small picture is filtered on the calling thread
 /// (a thread scope costs more than it saves there).
 fn filter_workers(threads: usize, act: &Active) -> usize {
     let sps = &act.sps;
@@ -436,6 +437,7 @@ fn filter_workers(threads: usize, act: &Active) -> usize {
     threads
         .min(sps.pic_height_in_ctbs_y as usize)
         .min(by_size)
+        .min(64)
         .max(1)
 }
 
@@ -1215,5 +1217,26 @@ mod tests {
         };
         assert_eq!(probe(&[], &limits).unwrap_err(), Error::AllocLimit);
         assert_eq!(intra_prefix(&[], &limits).unwrap_err(), Error::AllocLimit);
+    }
+
+    #[test]
+    fn filter_workers_gates() {
+        use crate::ps::tests::{ledger, pps_bits, sps_bits};
+        use crate::ps::{activate, parse_pps, parse_sps};
+        let workers = |w: u32, h: u32, threads: usize| {
+            let sps = Arc::new(parse_sps(&sps_bits(w, h)).unwrap());
+            let pps = Arc::new(parse_pps(&pps_bits(1)).unwrap());
+            let act = activate(sps, pps, &Limits::default(), &ledger()).unwrap();
+            filter_workers(threads, &act)
+        };
+        assert_eq!(workers(512, 256, 0), 1);
+        assert_eq!(workers(512, 256, 1), 1);
+        assert_eq!(workers(256, 256, 8), 1);
+        assert_eq!(workers(512, 256, 8), 2);
+        assert_eq!(workers(512, 256, usize::MAX), 2);
+        // Size would allow 4 bands, but there are only 2 CTB rows.
+        assert_eq!(workers(4096, 64, 8), 2);
+        assert_eq!(workers(1024, 1024, 3), 3);
+        assert_eq!(workers(4096, 4096, usize::MAX), 64);
     }
 }

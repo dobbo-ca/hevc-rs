@@ -793,7 +793,7 @@ mod tests {
     use crate::frame::SliceParams;
     use crate::ledger::Ledger;
     use crate::limits::Limits;
-    use crate::ps::tests::{ledger, pps_bits, sps_bits};
+    use crate::ps::tests::{ledger, pps_bits, sps_bits, sps_bits_ctb16};
     use crate::ps::{activate, parse_pps, parse_sps};
     use std::sync::Arc;
 
@@ -1067,7 +1067,7 @@ mod tests {
                     .unwrap();
                 f.fill_edge_h(x, y, 4, 4, [0, 1, 2, 2][(r.next() % 4) as usize])
                     .unwrap();
-                if r.next() % 8 == 0 {
+                if r.next().is_multiple_of(8) {
                     f.fill_no_filter(x, y, 4, 4, 1).unwrap();
                 }
             }
@@ -1097,16 +1097,16 @@ mod tests {
         assert!(changed > 30, "the pictures are not filtered: {changed}");
     }
 
-    /// A random `w` x `h` picture (CTB 32, so the last CTB row is partial): two slices with
+    /// A random `w` x `h` picture (CTB 32, or 16 if `ctb16`; the last CTB row is partial): two slices with
     /// different offsets, random QpY, edges, no_filter cells and blocky samples.
-    fn random_sized(l: &Ledger, seed: u64, w: usize, h: usize) -> (Active, Frame) {
-        let sps = Arc::new(
-            parse_sps(&sps_bits(
-                u32::try_from(w).unwrap(),
-                u32::try_from(h).unwrap(),
-            ))
-            .unwrap(),
-        );
+    fn random_sized(l: &Ledger, seed: u64, w: usize, h: usize, ctb16: bool) -> (Active, Frame) {
+        let (w32, h32) = (u32::try_from(w).unwrap(), u32::try_from(h).unwrap());
+        let bits = if ctb16 {
+            sps_bits_ctb16(w32, h32)
+        } else {
+            sps_bits(w32, h32)
+        };
+        let sps = Arc::new(parse_sps(&bits).unwrap());
         let pps = Arc::new(parse_pps(&pps_bits(1)).unwrap());
         let act = activate(sps, pps, &Limits::default(), l).unwrap();
         let mut f = Frame::new(&act, l).unwrap();
@@ -1152,7 +1152,7 @@ mod tests {
                     .unwrap();
                 f.fill_edge_h(x, y, 4, 4, [0, 1, 2, 2][(r.next() % 4) as usize])
                     .unwrap();
-                if r.next() % 8 == 0 {
+                if r.next().is_multiple_of(8) {
                     f.fill_no_filter(x, y, 4, 4, 1).unwrap();
                 }
             }
@@ -1166,19 +1166,27 @@ mod tests {
     fn workers_match_serial() {
         let l = ledger();
         let cancel = AtomicBool::new(false);
-        for (w, h) in [(64, 72), (200, 136)] {
+        for (w, h, ctb16) in [
+            (64, 72, false),
+            (200, 136, false),
+            (64, 72, true),
+            (200, 136, true),
+        ] {
             for seed in 1..=4u64 {
                 for t in simd::available() {
-                    let (act, mut want) = random_sized(&l, seed * 0x1234_5679, w, h);
+                    let (act, mut want) = random_sized(&l, seed * 0x1234_5679, w, h, ctb16);
                     let orig = want.planes.clone();
                     deblock_with(t, &mut want, &act, &cancel, 1).unwrap();
-                    assert!(orig != want.planes, "not filtered: {w}x{h} seed {seed}");
+                    assert!(
+                        orig != want.planes,
+                        "not filtered: {w}x{h} ctb16 {ctb16} seed {seed}"
+                    );
                     for workers in [2, 3, 5, 64] {
-                        let (act, mut got) = random_sized(&l, seed * 0x1234_5679, w, h);
+                        let (act, mut got) = random_sized(&l, seed * 0x1234_5679, w, h, ctb16);
                         deblock_with(t, &mut got, &act, &cancel, workers).unwrap();
                         assert!(
                             got.planes == want.planes,
-                            "{} {w}x{h} seed {seed} workers {workers}",
+                            "{} {w}x{h} ctb16 {ctb16} seed {seed} workers {workers}",
                             t.name()
                         );
                         l.release(got.charged);
@@ -1187,7 +1195,7 @@ mod tests {
                 }
             }
         }
-        let (act, mut f) = random_sized(&l, 7, 200, 136);
+        let (act, mut f) = random_sized(&l, 7, 200, 136, false);
         let orig = f.planes.clone();
         assert_eq!(
             deblock_with(Tier::Scalar, &mut f, &act, &AtomicBool::new(true), 3),

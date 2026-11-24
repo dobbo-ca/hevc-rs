@@ -18,8 +18,10 @@ Only the in-loop filters, after the picture is reconstructed (`finish_picture`):
 - SAO: each plane is read from the deblocked copy (charged as before) and written in bands of whole
   CTB rows; the neighbour samples across a band edge come from the shared copy.
 
-The number of bands is `min(max_threads, CTB rows, luma samples >> 16)`, at least 1. Pictures under
-65536 luma samples (up to 256x256) and `max_threads = 1` filter on the calling thread. Band 0 runs on
+The number of bands is `min(max_threads, CTB rows, luma samples >> 16, 64)`, at least 1. One band per
+64 Ki luma samples: pictures under 128 Ki luma samples (so 256x256, 352x288, 416x240) and
+`max_threads = 1` filter on the calling thread. The band count is also capped at 64, so the per-band
+bookkeeping (a few KiB) stays inside the small-allocation reserve. Band 0 runs on
 the calling thread, so a call never has more than `max_threads` threads.
 
 Reconstruction (CABAC, prediction, transform) is serial, as is the hash check and the cropping.
