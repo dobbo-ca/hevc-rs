@@ -167,6 +167,11 @@ fn escape(p: &[u8]) -> Vec<u8> {
 /// is `data` pseudo-random bytes (deterministic xorshift, never zero). The data is not a valid
 /// CABAC stream, but the call reaches `activate`, `Frame::new` and the CTU loop before it fails.
 fn stream(size: u32, data: usize) -> Vec<u8> {
+    stream_n(size, data, 1)
+}
+
+/// Like [`stream`] with `n` copies of the IDR picture.
+fn stream_n(size: u32, data: usize, n: usize) -> Vec<u8> {
     let mut x = 0x9E37_79B9_7F4A_7C15u64;
     let mut slice = vec![0xAC, 0xC0]; // first_slice, pps 0, I, no SAO, qp delta 0, alignment
     for _ in 0..data {
@@ -176,12 +181,9 @@ fn stream(size: u32, data: usize) -> Vec<u8> {
         slice.push((x >> 24) as u8 | 1);
     }
     let mut s = Vec::new();
-    for (kind, p) in [
-        (32u8, vec![0x0C, 0xFF]),
-        (33, sps(size, size)),
-        (34, pps()),
-        (19, slice),
-    ] {
+    let mut nals = vec![(32u8, vec![0x0C, 0xFF]), (33, sps(size, size)), (34, pps())];
+    nals.extend((0..n).map(|_| (19, slice.clone())));
+    for (kind, p) in nals {
         s.extend_from_slice(&[0, 0, 0, 1, kind << 1, 1]);
         s.extend_from_slice(&escape(&p));
     }
@@ -263,28 +265,61 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
     };
     assert!(run(&none).iter().all(|r| r.0));
 
-    // Threads: the peak during decodes is the test's own (plus the sampler) at max_threads 1.
-    #[cfg(target_os = "linux")]
-    {
-        let base = threads_now();
-        let done = AtomicBool::new(false);
-        let seen = AtomicUsize::new(base);
-        std::thread::scope(|sc| {
-            sc.spawn(|| {
-                while !done.load(Ordering::Relaxed) {
-                    seen.fetch_max(threads_now(), Ordering::Relaxed);
-                }
-            });
+    // The same over a stream whose pictures reach the workers (six pictures; each fails in the
+    // CTU loop, so the call is replayed with one thread): the real heap of all threads together
+    // stays within the budget.
+    let many = stream_n(64, 2048, 6);
+    let (_, many_need) =
+        peaked(|| hevc::decode(&many, &opts, &Limits::default(), &cancel).map(drop));
+    for max_alloc in [
+        small,
+        many_need / 2,
+        many_need,
+        many_need + (64 << 10),
+        4 * many_need,
+    ] {
+        for max_threads in [2, 8] {
             let limits = Limits {
-                max_threads: 1,
+                max_alloc,
+                max_threads,
                 ..Limits::default()
             };
-            for _ in 0..50 {
-                let _ = hevc::decode(&stream, &opts, &limits, &cancel);
-            }
-            done.store(true, Ordering::Relaxed);
-        });
-        // base + the sampler thread: the decodes themselves spawned none.
-        assert!(seen.load(Ordering::Relaxed) <= base + 1);
+            let (limit, peak) = peaked(|| hevc::decode(&many, &opts, &limits, &cancel).map(drop));
+            assert!(
+                limit || peak <= max_alloc,
+                "heap peak {peak} over max_alloc {max_alloc} (threads {max_threads}, six pictures)"
+            );
+        }
+    }
+
+    // Threads: the peak during decodes is the test's own, plus the sampler, plus at most
+    // max_threads - 1 workers (none at max_threads 1). Six pictures, so the workers start.
+    #[cfg(target_os = "linux")]
+    {
+        for max_threads in [1usize, 2, 4] {
+            let many = stream_n(64, 2048, 6);
+            let base = threads_now();
+            let done = AtomicBool::new(false);
+            let seen = AtomicUsize::new(base);
+            std::thread::scope(|sc| {
+                sc.spawn(|| {
+                    while !done.load(Ordering::Relaxed) {
+                        seen.fetch_max(threads_now(), Ordering::Relaxed);
+                    }
+                });
+                let limits = Limits {
+                    max_threads,
+                    ..Limits::default()
+                };
+                for _ in 0..50 {
+                    let _ = hevc::decode(&many, &opts, &limits, &cancel);
+                }
+                done.store(true, Ordering::Relaxed);
+            });
+            assert!(
+                seen.load(Ordering::Relaxed) <= base + max_threads,
+                "threads over max_threads {max_threads}"
+            );
+        }
     }
 }

@@ -4,15 +4,18 @@
 use crate::ctu::{self, SliceState};
 use crate::error::{Error, Result};
 use crate::frame::{Frame, NO_SLICE, SliceParams};
-use crate::ledger::{Held, Ledger};
+use crate::ledger::{Held, Ledger, grow_one};
 use crate::limits::Limits;
 use crate::nal::{self, Nal};
 use crate::ps::{self, Active, Pps, Sps, SubLayerOrdering};
 use crate::sei::{self, PictureHash};
 use crate::slice::{self, SliceHeader};
 use crate::{ChromaFormat, Info, Options, Picture, Plane, SeiMessage, crop, deblock, sao};
-use std::sync::Arc;
+use std::collections::{BTreeMap, VecDeque};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError, channel, sync_channel};
+use std::sync::{Arc, Mutex};
 
 /// Largest parameter set NAL payload accepted (design.md, ps.rs).
 const MAX_PS_BYTES: usize = 1 << 20;
@@ -24,17 +27,17 @@ fn is_vcl(kind: u8) -> bool {
 }
 
 /// Unescapes a NAL payload into a fresh buffer that is charged to the ledger until `Held` drops.
-fn rbsp<'a>(payload: &[u8], ledger: &'a Ledger) -> Result<(Vec<u8>, Held<'a>)> {
+fn rbsp<'a>(payload: &[u8], ledger: &'a Ledger) -> Result<(Held<'a>, Vec<u8>)> {
     let held = ledger.charge(payload.len())?;
     let mut v = Vec::new();
     v.try_reserve_exact(payload.len())
         .map_err(|_| Error::OutOfMemory)?;
     nal::unescape(payload, &mut v);
-    Ok((v, held))
+    Ok((held, v))
 }
 
 /// Like [`rbsp`] for a parameter set: the payload size is bounded first.
-fn ps_rbsp<'a>(payload: &[u8], ledger: &'a Ledger) -> Result<(Vec<u8>, Held<'a>)> {
+fn ps_rbsp<'a>(payload: &[u8], ledger: &'a Ledger) -> Result<(Held<'a>, Vec<u8>)> {
     if payload.len() > MAX_PS_BYTES {
         return Err(Error::InvalidData("parameter set too large"));
     }
@@ -112,19 +115,21 @@ impl SeiSet {
     }
 
     /// Moves the messages of `other` to the end of this set, in order. A message that would pass
-    /// `max` (or cannot get memory) is dropped and its charge released.
-    fn append(&mut self, other: &mut SeiSet, max: usize, ledger: &Ledger) {
+    /// `max` (or cannot get memory) is dropped; the bytes booked for the dropped messages are
+    /// returned for the caller to release (`other` already held their charge).
+    fn append(&mut self, other: &mut SeiSet, max: usize) -> usize {
+        let mut freed = 0usize;
         for m in std::mem::take(&mut other.msgs) {
             let cost = m.payload.len().saturating_add(size_of::<SeiMessage>());
-            // `other` already holds the charge for `m`: it moves with the message or is released.
             if self.charged.saturating_add(cost) > max || self.msgs.try_reserve_exact(1).is_err() {
-                ledger.release(cost);
+                freed = freed.saturating_add(cost);
                 continue;
             }
             self.msgs.push(m);
             self.charged += cost;
         }
         other.charged = 0;
+        freed
     }
 }
 
@@ -154,23 +159,22 @@ fn sps_cost(s: &Sps) -> usize {
 }
 
 /// Bytes a PPS holds: the struct, the `Arc` header and the tile vectors.
-fn pps_cost(p: &Pps) -> usize {
+pub(crate) fn pps_cost(p: &Pps) -> usize {
     size_of::<Pps>() + 2 * size_of::<usize>() + (p.column_width.len() + p.row_height.len()) * 4
 }
 
-/// Stores `set` in `slot`, booking `cost` bytes before the old set is dropped and releasing the
-/// old set's `held` bytes after.
+/// Stores `set` in `slot`, booking `cost` bytes before the old set is dropped. Returns the old
+/// set's `held` bytes, for the caller to release.
 fn replace_set<T>(
     slot: &mut Option<Arc<T>>,
     held: &mut usize,
     set: T,
     cost: usize,
     ledger: &Ledger,
-) -> Result<()> {
+) -> Result<usize> {
     ledger.reserve(cost)?;
     *slot = Some(Arc::new(set));
-    ledger.release(std::mem::replace(held, cost));
-    Ok(())
+    Ok(std::mem::replace(held, cost))
 }
 
 impl Store {
@@ -192,11 +196,13 @@ impl Store {
     }
 
     /// VPS, SPS or PPS NAL unit (7.3.2.1 .. 7.3.2.3). A set replaces the one with its id.
-    fn param_set(&mut self, nal: &Nal<'_>, ledger: &Ledger) -> Result<()> {
-        let (r, _held) = ps_rbsp(nal.payload, ledger)?;
+    /// Returns the bytes of the replaced set, for the caller to release.
+    fn param_set(&mut self, nal: &Nal<'_>, ledger: &Ledger) -> Result<usize> {
+        let (_held, r) = ps_rbsp(nal.payload, ledger)?;
         match nal.kind {
             32 => {
                 ps::parse_vps(&r)?;
+                Ok(0)
             }
             33 => {
                 let sps = ps::parse_sps(&r)?;
@@ -207,7 +213,7 @@ impl Store {
                     .get_mut(id)
                     .ok_or(Error::InvalidData("sps id"))?;
                 let cost = sps_cost(&sps);
-                replace_set(slot, held, sps, cost, ledger)?;
+                replace_set(slot, held, sps, cost, ledger)
             }
             _ => {
                 let pps = ps::parse_pps(&r)?;
@@ -218,10 +224,9 @@ impl Store {
                     .get_mut(id)
                     .ok_or(Error::InvalidData("pps id"))?;
                 let cost = pps_cost(&pps);
-                replace_set(slot, held, pps, cost, ledger)?;
+                replace_set(slot, held, pps, cost, ledger)
             }
         }
-        Ok(())
     }
 
     /// Slice segment header (7.3.6.1) of a VCL NAL unit whose unescaped payload is `r`. A P or B
@@ -254,13 +259,23 @@ impl Store {
     }
 }
 
+/// A slice segment of the current picture that waits for the picture to finish: the front end
+/// parses the header, `decode_picture` decodes the data.
+struct Pending<'a> {
+    sh: SliceHeader,
+    /// Index of the segment in `Frame::slices`.
+    idx: u16,
+    rbsp: Vec<u8>,
+    /// Keeps the bytes of `rbsp` booked until the segment drops.
+    _held: Held<'a>,
+}
+
 /// The picture being decoded. Releases its ledger charges (frame buffers, slice records and
-/// scan tables) when it drops.
+/// scan tables) after its buffers are freed (`booked`).
 struct Cur<'a> {
     frame: Frame,
     act: Active,
     ledger: &'a Ledger,
-    st: SliceState,
     poc: i32,
     /// PicOutputFlag.
     output: bool,
@@ -271,21 +286,32 @@ struct Cur<'a> {
     hash: Option<PictureHash>,
     /// The SEI messages of the access unit so far (moved to the output picture).
     sei: SeiSet,
+    /// The slice segments received so far, not decoded yet.
+    slices: Vec<Pending<'a>>,
+    /// Every byte booked for this picture. Declared last: fields drop in order, so the bytes
+    /// go back to the ledger after the buffers are freed (a worker must not reserve them while
+    /// the memory is still there).
+    booked: Booked<'a>,
 }
 
-impl Drop for Cur<'_> {
+/// The bytes booked for a [`Cur`] (frame, tables, SEI messages, `Pending` records and the box),
+/// released when it drops. Not `Held`: the total changes while the picture is built.
+struct Booked<'a> {
+    ledger: &'a Ledger,
+    n: usize,
+}
+
+impl Drop for Booked<'_> {
     fn drop(&mut self) {
-        self.ledger.release(self.sei.charged);
-        self.ledger.release(self.frame.charged);
-        self.ledger.release(self.act.charged);
+        self.ledger.release(self.n);
     }
 }
 
-/// A decoded picture waiting for output in the DPB ("needed for output"); the conversion to the
-/// cropped output picture has already happened and `charged` bytes are booked for it.
+/// A decoded picture waiting for output in the DPB ("needed for output"). The picture itself is
+/// the result of job `ticket` and may not be ready yet.
 struct Waiting {
-    pic: Picture,
-    charged: usize,
+    ticket: usize,
+    poc: i32,
     /// PicLatencyCount.
     latency: u32,
 }
@@ -439,9 +465,142 @@ fn filter_workers(threads: usize, act: &Active) -> usize {
         .min(by_size)
         .clamp(1, 64)
 }
+/// Bytes booked with the box of each picture for its entry in `Decoder::spent` (a B-tree node
+/// holds 5 to 11 entries of 16 bytes plus its links, so an entry costs under 64 bytes; the rest
+/// is slack). Booked in a serial run too, and released with the picture.
+const SPENT_ENTRY: usize = 128;
+
+/// The outcome of one picture job: the output picture and the bytes booked for it (they stay
+/// booked), or `None` when the picture is not output.
+type Done = Result<Option<(Picture, usize)>>;
+
+/// A job that ended: its ticket, its outcome, and the spent picture. The picture goes back to the
+/// front end so that its bytes are released in ticket order (`Decoder::retire`).
+type Finished<'a> = (usize, Done, Box<Cur<'a>>);
+
+/// Decodes the slice segments received so far into the frame of `cur`. The segments stay in
+/// `cur` (and booked) until it drops.
+fn decode_slices(cur: &mut Cur<'_>, opts: &Options, cancel: &AtomicBool) -> Result<()> {
+    // Scratch of the CTU loop (about 14 KiB of block buffers): on the stack of the thread that
+    // decodes, so it never travels with the picture.
+    let mut st = SliceState::default();
+    for p in &cur.slices {
+        ctu::decode_slice_segment(
+            &mut cur.frame,
+            &cur.act,
+            &p.sh,
+            p.idx,
+            &p.rbsp,
+            &mut st,
+            opts,
+            cancel,
+        )?;
+    }
+    Ok(())
+}
+
+/// The second half of a picture, run on any thread: slice data, coverage check, filters, hash
+/// check and conversion to the output picture. `cur` keeps its bytes booked: the caller drops it
+/// in ticket order.
+fn decode_picture(cur: &mut Cur<'_>, opts: &Options, cancel: &AtomicBool, workers: usize) -> Done {
+    decode_slices(cur, opts, cancel)?;
+    if cur.frame.slice_idx.contains(&NO_SLICE) {
+        return Err(Error::InvalidData(
+            "picture is not fully covered by slice segments",
+        ));
+    }
+    let sps = Arc::clone(&cur.act.sps);
+    if opts.deblocking {
+        deblock::deblock(&mut cur.frame, &cur.act, cancel, workers)?;
+    }
+    if opts.sao && sps.sao_enabled {
+        sao::sao(&mut cur.frame, &cur.act, cur.ledger, cancel, workers)?;
+    }
+    if !cur.output {
+        return Ok(None);
+    }
+    // The hash and the crop read the cancel flag once per row.
+    let hash_ok = if opts.check_hash {
+        cur.hash
+            .as_ref()
+            .map(|h| hash_matches(&cur.frame, &sps, h, cancel))
+            .transpose()?
+    } else {
+        None
+    };
+    let ledger = cur.ledger;
+    let sei = std::mem::take(&mut cur.sei);
+    let sei_charged = sei.charged;
+    // The messages (and their bytes) now belong to the output picture.
+    cur.booked.n -= sei_charged;
+    let (mut pic, charged) =
+        to_picture(&cur.frame, &sps, cur.poc, hash_ok, sei.msgs, ledger, cancel)
+            .inspect_err(|_| ledger.release(sei_charged))?;
+    if !opts.metadata {
+        pic.info.vui = None;
+    }
+    Ok(Some((pic, charged + sei_charged)))
+}
+
+/// One finished picture (all its slice segments received) and its place in decode order.
+struct Job<'a> {
+    ticket: usize,
+    cur: Box<Cur<'a>>,
+}
+
+/// The jobs queue of the workers.
+type Jobs<'a> = Mutex<Receiver<Job<'a>>>;
+
+/// A worker thread: takes jobs until the sender is dropped. A panic inside a job becomes an
+/// error result, so the caller never waits for a result that cannot come.
+fn worker<'a>(rx: &Jobs<'a>, done: &Sender<Finished<'a>>, opts: &Options, cancel: &AtomicBool) {
+    loop {
+        let job = match rx.lock() {
+            Ok(g) => g.recv(),
+            Err(_) => return,
+        };
+        let Ok(Job { ticket, mut cur }) = job else {
+            return;
+        };
+        let r = catch_unwind(AssertUnwindSafe(|| {
+            decode_picture(&mut cur, opts, cancel, 1)
+        }))
+        .unwrap_or(Err(Error::InvalidData("picture decoding panicked")));
+        if done.send((ticket, r, cur)).is_err() {
+            return;
+        }
+    }
+}
+
+/// Starts a closure on a new thread of the call's scope; false when the thread cannot be made.
+type Spawn<'a, 'p> = &'p dyn Fn(Box<dyn FnOnce() + Send + 'a>) -> bool;
+
+/// The threads of one call (docs/threading.md). The channels exist once the second picture of
+/// the call has a good header, so a one-picture call never spawns. Workers start one at a time,
+/// when a job finds none idle.
+struct Pool<'a, 'p> {
+    /// `Limits::max_threads` (at least 1), the calling thread included.
+    threads: usize,
+    /// None when `threads` is 1: no scope exists.
+    spawn: Option<Spawn<'a, 'p>>,
+    /// Some once the channels exist.
+    tx: Option<SyncSender<Job<'a>>>,
+    /// The receiving end of `tx`, shared by the workers.
+    rx: Option<Arc<Jobs<'a>>>,
+    /// Kept to give each new worker its sender. The workers never end before the call does, so
+    /// `results` does not disconnect while a job is in flight.
+    done_tx: Option<Sender<Finished<'a>>>,
+    results: Option<Receiver<Finished<'a>>>,
+    /// The most workers this call starts.
+    cap: usize,
+    /// Workers started.
+    workers: usize,
+    /// Jobs sent to a worker whose result has not been received yet.
+    inflight: usize,
+}
 
 /// Decoder state of one call.
-struct Decoder<'a> {
+struct Decoder<'a, 'p> {
     ledger: &'a Ledger,
     opts: &'a Options,
     limits: &'a Limits,
@@ -462,15 +621,34 @@ struct Decoder<'a> {
     prev_tid0: (i64, i64),
     /// Prefix SEI messages seen since the last picture started: they belong to the next one.
     pending: SeiSet,
+    pool: Pool<'a, 'p>,
+    /// The ticket of the next picture (decode order).
+    next_ticket: usize,
+    /// Tickets of the bumped pictures, in output order, until they move to `out`.
+    order: VecDeque<usize>,
+    /// Finished output pictures by ticket, with the bytes booked for them.
+    done: BTreeMap<usize, (Picture, usize)>,
+    /// Spent pictures (their jobs are done) that wait for the earlier ones, by ticket.
+    spent: BTreeMap<usize, Box<Cur<'a>>>,
+    /// The ticket of the next picture to drop: every earlier one is dropped.
+    retired: usize,
+    /// Releases of the front end that wait for the jobs submitted before them, as (the ticket
+    /// that must be retired first, bytes). At most one entry per ticket.
+    late: VecDeque<(usize, usize)>,
+    /// A worker job failed (or the workers are gone): the call must run again with one thread.
+    replay: bool,
+    /// A worker job returned `Cancelled`.
+    cancelled: bool,
 }
 
-impl<'a> Decoder<'a> {
+impl<'a, 'p> Decoder<'a, 'p> {
     fn new(
         ledger: &'a Ledger,
         opts: &'a Options,
         limits: &'a Limits,
         cancel: &'a AtomicBool,
         out: &'a mut Vec<Picture>,
+        spawn: Option<Spawn<'a, 'p>>,
     ) -> Self {
         Self {
             ledger,
@@ -487,6 +665,25 @@ impl<'a> Decoder<'a> {
             skip_rasl: false,
             prev_tid0: (0, 0),
             pending: SeiSet::default(),
+            pool: Pool {
+                threads: limits.max_threads.max(1),
+                spawn,
+                tx: None,
+                rx: None,
+                done_tx: None,
+                results: None,
+                cap: 0,
+                workers: 0,
+                inflight: 0,
+            },
+            next_ticket: 0,
+            order: VecDeque::new(),
+            done: BTreeMap::new(),
+            spent: BTreeMap::new(),
+            retired: 0,
+            late: VecDeque::new(),
+            replay: false,
+            cancelled: false,
         }
     }
 
@@ -495,21 +692,26 @@ impl<'a> Decoder<'a> {
             if self.cancel.load(Ordering::Relaxed) {
                 return Err(Error::Cancelled);
             }
+            self.collect(false);
+            self.check()?;
             let nal = nal?;
             if nal.layer_id > 0 {
                 continue;
             }
             match nal.kind {
-                32..=34 => self.store.param_set(&nal, self.ledger)?,
+                32..=34 => {
+                    let old = self.store.param_set(&nal, self.ledger)?;
+                    self.release(old);
+                }
                 // End of sequence: the picture is complete; the DPB is left alone, so the next
                 // IRAP's C.5.2.2 handling decides between discard and flush.
                 36 => {
-                    self.finish_picture()?;
+                    self.finish_picture(false)?;
                     self.after_eos = true;
                 }
                 // End of bitstream: the picture is complete and the DPB is flushed.
                 37 => {
-                    self.finish_picture()?;
+                    self.finish_picture(false)?;
                     self.flush()?;
                     self.after_eos = true;
                 }
@@ -519,8 +721,9 @@ impl<'a> Decoder<'a> {
                 _ => {}
             }
         }
-        self.finish_picture()?;
+        self.finish_picture(false)?;
         self.flush()?;
+        self.finish_jobs()?;
         if self.pictures == 0 {
             return Err(Error::NoPicture);
         }
@@ -535,27 +738,37 @@ impl<'a> Decoder<'a> {
         if suffix && self.cur.is_none() || !suffix && !self.opts.metadata {
             return Ok(());
         }
-        let (r, _held) = rbsp(nal.payload, self.ledger)?;
-        let set = match self.cur.as_mut() {
+        let (_held, r) = rbsp(nal.payload, self.ledger)?;
+        let (set, booked) = match self.cur.as_mut() {
             Some(cur) if suffix => {
                 if let Some(h) = sei::parse(&r) {
                     cur.hash = Some(h);
                 }
-                &mut cur.sei
+                (&mut cur.sei, Some(&mut cur.booked))
             }
-            _ => &mut self.pending,
+            _ => (&mut self.pending, None),
         };
+        let before = set.charged;
+        let mut res = Ok(());
         if self.opts.metadata {
             for (ty, payload) in sei::walk(&r) {
-                set.add(suffix, ty, payload, self.limits.max_metadata, self.ledger)?;
+                res = set.add(suffix, ty, payload, self.limits.max_metadata, self.ledger);
+                if res.is_err() {
+                    break;
+                }
             }
         }
-        Ok(())
+        // The messages kept so far stay booked with the picture, an error or not.
+        if let Some(b) = booked {
+            b.n += set.charged - before;
+        }
+        res
     }
 
     /// Drops the pending prefix SEI messages (their picture is not decoded).
     fn clear_pending(&mut self) {
-        self.ledger.release(self.pending.charged);
+        let n = self.pending.charged;
+        self.release(n);
         self.pending = SeiSet::default();
     }
 
@@ -565,23 +778,92 @@ impl<'a> Decoder<'a> {
         // picture is complete, so a suffix SEI of the skipped picture cannot reach it).
         if matches!(nal.kind, 8 | 9) && self.skip_rasl {
             self.clear_pending();
-            return self.finish_picture();
+            return self.finish_picture(false);
         }
-        let (r, _held) = rbsp(nal.payload, self.ledger)?;
-        // first_slice_segment_in_pic_flag is the first bit: the previous picture ends before
-        // the header (which may be a P or B slice) is parsed.
-        if r.first().is_some_and(|b| b & 0x80 != 0) {
-            self.finish_picture()?;
+        let (held, r) = rbsp(nal.payload, self.ledger)?;
+        // first_slice_segment_in_pic_flag is the first bit: the previous picture ends when the
+        // next one starts. The header is parsed first (it does not depend on the picture): only
+        // a good header with room for one more picture lets the workers start, so a P slice
+        // after the intra prefix, or a one-picture call, spawns nothing. The errors come in the
+        // same order as before: the job of the previous picture, then the header.
+        let first = r.first().is_some_and(|b| b & 0x80 != 0);
+        let sh = self.store.slice_header(&r, nal.kind);
+        if first {
+            let more = sh.is_ok() && self.pictures < self.limits.max_pictures;
+            self.finish_picture(more).or_else(|e| self.fail(e))?;
         }
-        let sh = self.store.slice_header(&r, nal.kind)?;
+        let sh = sh.or_else(|e| self.fail(e))?;
         if sh.first_slice_segment_in_pic {
-            self.start_picture(nal, &sh)?;
+            self.start_picture(nal, &sh).or_else(|e| self.fail(e))?;
         } else if let Some(cur) = self.cur.as_mut() {
             // A prefix SEI between two slice segments belongs to this picture (7.4.2.4.4).
-            cur.sei
-                .append(&mut self.pending, self.limits.max_metadata, self.ledger);
+            let before = cur.sei.charged;
+            let freed = cur.sei.append(&mut self.pending, self.limits.max_metadata);
+            cur.booked.n += cur.sei.charged - before;
+            self.release(freed);
         }
-        self.slice(&sh, &r)
+        self.slice(sh, r, held)
+    }
+
+    /// A front-end error: the jobs in flight finish first, so that the buffers the caller still
+    /// holds (`rbsp`, `held`) go back to the ledger after them, as in a serial run.
+    fn fail<T>(&mut self, e: Error) -> Result<T> {
+        while self.pool.inflight > 0 {
+            self.collect(true);
+        }
+        Err(e)
+    }
+
+    /// Gives `n` bytes of the front end back to the ledger. In a serial run the pictures before
+    /// this point are done by now, so while their jobs are in flight (`retired < next_ticket`)
+    /// the bytes wait for them: the memory the jobs see never drops below the serial one.
+    fn release(&mut self, n: usize) {
+        if self.retired >= self.next_ticket {
+            self.ledger.release(n);
+            return;
+        }
+        let barrier = self.next_ticket;
+        if let Some(l) = self.late.back_mut()
+            && l.0 == barrier
+        {
+            l.1 = l.1.saturating_add(n);
+            return;
+        }
+        self.late.push_back((barrier, n));
+    }
+
+    /// Releases the waiting bytes whose jobs are all retired.
+    fn apply_late(&mut self) {
+        while let Some(&(barrier, n)) = self.late.front() {
+            if barrier > self.retired {
+                break;
+            }
+            self.late.pop_front();
+            self.ledger.release(n);
+        }
+    }
+
+    /// Drops the spent picture of job `ticket` once every earlier picture is dropped, so the
+    /// bytes of a picture never go back to the ledger before those of an earlier one (a serial
+    /// run drops them in this order, and the call must not succeed where it would hit
+    /// `max_alloc`).
+    fn retire(&mut self, ticket: usize, cur: Box<Cur<'a>>) {
+        // `unbox` frees the box before the `Cur` (and its booking) drops, so the ledger never
+        // gets bytes back that are still allocated.
+        fn unbox<'b>(b: Box<Cur<'b>>) -> Cur<'b> {
+            *b
+        }
+        if ticket == self.retired {
+            drop(unbox(cur));
+            self.retired += 1;
+            while let Some(next) = self.spent.remove(&self.retired) {
+                drop(unbox(next));
+                self.retired += 1;
+            }
+        } else {
+            self.spent.insert(ticket, cur);
+        }
+        self.apply_late();
     }
 
     /// Activation, POC, C.5.2.2 and the frame allocation of a new picture.
@@ -617,7 +899,7 @@ impl<'a> Decoder<'a> {
         let poc = match i32::try_from(msb + lsb) {
             Ok(p) => p,
             Err(_) => {
-                ledger.release(act.charged);
+                self.release(act.charged);
                 return Err(Error::InvalidData("PicOrderCntVal out of range"));
             }
         };
@@ -628,7 +910,7 @@ impl<'a> Decoder<'a> {
         }
         // C.5.2.2.
         let Some(ordering) = sps.ordering.last().copied() else {
-            ledger.release(act.charged);
+            self.release(act.charged);
             return Err(Error::InvalidData("sub-layer ordering info"));
         };
         let freed = if irap && no_rasl && !self.first_pic {
@@ -647,35 +929,42 @@ impl<'a> Decoder<'a> {
             r
         };
         if let Err(e) = freed {
-            ledger.release(act.charged);
+            self.release(act.charged);
             return Err(e);
         }
         let frame = match Frame::new(&act, ledger) {
             Ok(f) => f,
             Err(e) => {
-                ledger.release(act.charged);
+                self.release(act.charged);
                 return Err(e);
             }
         };
         self.first_pic = false;
         self.after_eos = false;
+        let sei = std::mem::take(&mut self.pending);
+        let booked = Booked {
+            ledger,
+            n: frame.charged + act.charged + sei.charged,
+        };
         self.cur = Some(Cur {
             frame,
             act,
             ledger,
-            st: SliceState::default(),
             poc,
             output: sh.pic_output,
             pps_id: sh.pps_id,
             slice_addr_rs: sh.segment_address,
             hash: None,
-            sei: std::mem::take(&mut self.pending),
+            sei,
+            slices: Vec::new(),
+            booked,
         });
         Ok(())
     }
 
-    /// Decodes one slice segment into the current picture.
-    fn slice(&mut self, sh: &SliceHeader, rbsp: &[u8]) -> Result<()> {
+    /// Books one slice segment of the current picture in its frame and in `cur.slices`; the
+    /// data is decoded when the picture finishes (`decode_picture`). Returns the segment index.
+    fn book(&mut self, sh: &SliceHeader) -> Result<u16> {
         let ledger = self.ledger;
         let Some(cur) = self.cur.as_mut() else {
             return Err(Error::InvalidData("slice segment outside a picture"));
@@ -699,83 +988,254 @@ impl<'a> Decoder<'a> {
             sao_luma: sh.sao_luma,
             sao_chroma: sh.sao_chroma,
         };
+        let before = cur.frame.charged;
         let idx = cur.frame.push_slice(params, ledger)?;
+        cur.booked.n += cur.frame.charged - before;
         let idx = u16::try_from(idx).map_err(|_| Error::InvalidData("too many slice segments"))?;
-        ctu::decode_slice_segment(
-            &mut cur.frame,
-            &cur.act,
-            sh,
-            idx,
-            rbsp,
-            &mut cur.st,
-            self.opts,
-            self.cancel,
-        )
+        cur.booked.n += grow_one(&mut cur.slices, ledger)?;
+        Ok(idx)
     }
 
-    /// Completes the current picture: coverage check, filters, hash check, then C.5.2.3.
-    fn finish_picture(&mut self) -> Result<()> {
+    /// Queues one slice segment of the current picture (`book` made room for it).
+    fn slice(&mut self, sh: SliceHeader, rbsp: Vec<u8>, held: Held<'a>) -> Result<()> {
+        let idx = match self.book(&sh) {
+            Ok(idx) => idx,
+            Err(e) => return self.fail(e),
+        };
+        if let Some(cur) = self.cur.as_mut() {
+            cur.slices.push(Pending {
+                sh,
+                idx,
+                rbsp,
+                _held: held,
+            });
+        }
+        Ok(())
+    }
+
+    /// Completes the current picture: queues its job (`more`: another picture follows, so the
+    /// workers may start), then C.5.2.3.
+    fn finish_picture(&mut self, more: bool) -> Result<()> {
         let Some(mut cur) = self.cur.take() else {
             return Ok(());
         };
-        if cur.frame.slice_idx.contains(&NO_SLICE) {
-            return Err(Error::InvalidData(
-                "picture is not fully covered by slice segments",
-            ));
-        }
-        let sps = Arc::clone(&cur.act.sps);
-        let workers = filter_workers(self.limits.max_threads, &cur.act);
-        if self.opts.deblocking {
-            deblock::deblock(&mut cur.frame, &cur.act, self.cancel, workers)?;
-        }
-        if self.opts.sao && sps.sao_enabled {
-            sao::sao(&mut cur.frame, &cur.act, self.ledger, self.cancel, workers)?;
-        }
-        let ordering = sps
+        let ordering = cur
+            .act
+            .sps
             .ordering
             .last()
             .copied()
             .ok_or(Error::InvalidData("sub-layer ordering info"))?;
-        if cur.output {
-            // The hash and the crop read the cancel flag once per row.
-            let hash_ok = cur
-                .hash
-                .as_ref()
-                .map(|h| hash_matches(&cur.frame, &sps, h, self.cancel))
-                .transpose()?;
+        let (poc, output) = (cur.poc, cur.output);
+        if output {
             self.dpb.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
-            let sei = std::mem::take(&mut cur.sei);
-            let sei_charged = sei.charged;
-            let (mut pic, charged) = to_picture(
-                &cur.frame,
-                &sps,
-                cur.poc,
-                hash_ok,
-                sei.msgs,
-                self.ledger,
-                self.cancel,
-            )
-            .inspect_err(|_| self.ledger.release(sei_charged))?;
-            let charged = charged + sei.charged;
-            if !self.opts.metadata {
-                pic.info.vui = None;
-            }
+        }
+        // The picture travels boxed (to a worker, back on the results channel, in `spent`): the
+        // channel blocks and map nodes hold a pointer, not the picture. The box is booked here,
+        // in a serial run too, and released when the picture drops.
+        let n = size_of::<Cur<'_>>() + SPENT_ENTRY;
+        self.ledger.reserve(n)?;
+        cur.booked.n += n;
+        let ticket = self.next_ticket;
+        self.next_ticket += 1;
+        self.submit(
+            Job {
+                ticket,
+                cur: Box::new(cur),
+            },
+            more,
+        )?;
+        if output {
             // C.5.2.3: latency counts of the pictures that follow the current one in output order.
             for w in &mut self.dpb {
-                if w.pic.poc > cur.poc {
+                if w.poc > poc {
                     w.latency = w.latency.saturating_add(1);
                 }
             }
             self.dpb.push(Waiting {
-                pic,
-                charged,
+                ticket,
+                poc,
                 latency: 0,
             });
         }
         while must_bump(&self.dpb, &ordering, false) {
             self.bump()?;
         }
-        Ok(())
+        self.check()
+    }
+
+    /// Runs a job on a worker, or on the calling thread when no worker is free (or none runs).
+    /// A job that finds every worker busy starts one more, up to the cap.
+    fn submit(&mut self, job: Job<'a>, more: bool) -> Result<()> {
+        if self.pool.tx.is_none() && more {
+            self.init_pool(&job);
+        }
+        self.collect(false);
+        if self.pool.workers < self.pool.cap && self.pool.inflight >= self.pool.workers {
+            self.add_worker();
+        }
+        let idle = self.pool.inflight < self.pool.workers;
+        let sent = match self.pool.tx.as_ref() {
+            None => Err(job),
+            // A worker is free or about to be: wait for it rather than run the job here.
+            Some(tx) if idle => tx.send(job).map_err(|e| e.0),
+            Some(tx) => tx.try_send(job).map_err(|e| match e {
+                TrySendError::Full(j) | TrySendError::Disconnected(j) => j,
+            }),
+        };
+        match sent {
+            Ok(()) => {
+                self.pool.inflight += 1;
+                Ok(())
+            }
+            Err(job) => self.run_inline(job),
+        }
+    }
+
+    /// Makes the channels and the worker cap: `max_threads - 1`, and no more than the memory
+    /// left holds frames for (two per thread). No thread starts here. Does nothing when the
+    /// cap is zero.
+    fn init_pool(&mut self, job: &Job<'a>) {
+        if self.pool.spawn.is_none() {
+            return;
+        }
+        let per = job
+            .cur
+            .frame
+            .charged
+            .saturating_add(job.cur.act.charged)
+            .saturating_mul(2)
+            .max(1);
+        let threads = self.pool.threads.min(1 + self.ledger.left() / per);
+        if threads < 2 {
+            return;
+        }
+        let (tx, rx) = sync_channel::<Job<'a>>(0);
+        let (done_tx, done_rx) = channel::<Finished<'a>>();
+        self.pool.cap = threads - 1;
+        self.pool.tx = Some(tx);
+        self.pool.rx = Some(Arc::new(Mutex::new(rx)));
+        self.pool.done_tx = Some(done_tx);
+        self.pool.results = Some(done_rx);
+    }
+
+    /// Starts one worker. When the thread cannot be made, the cap drops to the workers there are.
+    fn add_worker(&mut self) {
+        let (Some(spawn), Some(rx), Some(done_tx)) = (
+            self.pool.spawn,
+            self.pool.rx.as_ref(),
+            self.pool.done_tx.as_ref(),
+        ) else {
+            return;
+        };
+        let (rx, done_tx) = (Arc::clone(rx), done_tx.clone());
+        let (opts, cancel) = (self.opts, self.cancel);
+        if spawn(Box::new(move || worker(&rx, &done_tx, opts, cancel))) {
+            self.pool.workers += 1;
+        } else {
+            self.pool.cap = self.pool.workers;
+        }
+    }
+
+    /// Decodes a picture on the calling thread. An error is returned as it is; when workers
+    /// ran, the front end was ahead of the job, so the call is replayed with one thread.
+    fn run_inline(&mut self, job: Job<'a>) -> Result<()> {
+        let Job { ticket, mut cur } = job;
+        // The calling thread and its bands are the threads the picture workers leave free.
+        let free = self.pool.threads.saturating_sub(self.pool.workers).max(1);
+        let workers = filter_workers(free, &cur.act);
+        let r = decode_picture(&mut cur, self.opts, self.cancel, workers);
+        self.retire(ticket, cur);
+        match r {
+            Ok(res) => {
+                self.keep(ticket, res);
+                Ok(())
+            }
+            Err(e) => {
+                if self.pool.workers > 0 && e != Error::Cancelled {
+                    self.replay = true;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Stores the result of a job that did not fail.
+    fn keep(&mut self, ticket: usize, res: Option<(Picture, usize)>) {
+        if let Some(r) = res {
+            self.done.insert(ticket, r);
+        }
+    }
+
+    /// Takes the results that workers have sent; with `block`, waits for at least one when a job
+    /// is in flight.
+    fn collect(&mut self, mut block: bool) {
+        while self.pool.inflight > 0 {
+            let got = match self.pool.results.as_ref() {
+                None => None,
+                Some(rx) if block => rx.recv().ok(),
+                Some(rx) => rx.try_recv().ok(),
+            };
+            let Some((ticket, r, cur)) = got else {
+                if block {
+                    // Every worker is gone: nothing more will come.
+                    self.pool.inflight = 0;
+                    self.replay = true;
+                }
+                return;
+            };
+            block = false;
+            self.pool.inflight -= 1;
+            self.retire(ticket, cur);
+            match r {
+                Ok(res) => self.keep(ticket, res),
+                Err(Error::Cancelled) => self.cancelled = true,
+                Err(_) => self.replay = true,
+            }
+        }
+    }
+
+    /// An error of a worker job: `Cancelled`, or a placeholder when the call is to be replayed.
+    fn check(&self) -> Result<()> {
+        if self.replay {
+            Err(Error::InvalidData("worker failed"))
+        } else if self.cancelled {
+            Err(Error::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Moves the results of the bumped pictures to `out`, in output order, while the next one is
+    /// there; with `wait`, until the jobs in flight are done.
+    fn commit(&mut self, wait: bool) -> Result<()> {
+        loop {
+            self.collect(false);
+            if self.replay {
+                return Ok(());
+            }
+            let Some(&t) = self.order.front() else {
+                return Ok(());
+            };
+            if !self.done.contains_key(&t) {
+                if wait && self.pool.inflight > 0 {
+                    self.collect(true);
+                    continue;
+                }
+                return Ok(());
+            }
+            self.out.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
+            self.order.pop_front();
+            if let Some((pic, _)) = self.done.remove(&t) {
+                self.out.push(pic);
+            }
+        }
+    }
+
+    /// Waits for every job and outputs every bumped picture.
+    fn finish_jobs(&mut self) -> Result<()> {
+        self.commit(true)?;
+        self.check()
     }
 
     /// C.5.2.4: outputs the waiting picture with the smallest PicOrderCntVal.
@@ -784,15 +1244,15 @@ impl<'a> Decoder<'a> {
             .dpb
             .iter()
             .enumerate()
-            .min_by_key(|(_, w)| w.pic.poc)
+            .min_by_key(|(_, w)| w.poc)
             .map(|(i, _)| i)
         else {
             return Ok(());
         };
-        self.out.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
+        self.order.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
         let w = self.dpb.remove(i);
-        self.out.push(w.pic);
-        Ok(())
+        self.order.push_back(w.ticket);
+        self.commit(false)
     }
 
     /// Outputs every waiting picture in POC order.
@@ -803,33 +1263,143 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
-    /// Empties the DPB without output (NoOutputOfPriorPicsFlag = 1).
+    /// Empties the DPB without output (NoOutputOfPriorPicsFlag = 1). The jobs in flight finish
+    /// first: in a serial run the earlier pictures are done (and the results still booked) when
+    /// the discard frees them.
     fn discard_all(&mut self) {
-        for w in self.dpb.drain(..) {
-            self.ledger.release(w.charged);
+        while self.pool.inflight > 0 {
+            self.collect(true);
         }
+        for w in std::mem::take(&mut self.dpb) {
+            if let Some((_, charged)) = self.done.remove(&w.ticket) {
+                self.ledger.release(charged);
+            }
+        }
+    }
+
+    /// After the error `e` of the stream: the pictures decoded so far are output. The jobs come
+    /// first (they precede the partial picture in decode order); then the slice segments of the
+    /// partial picture are decoded, and an error there replaces `e`, as eager decoding would
+    /// have raised it before `e`. Returns that error.
+    fn recover(&mut self, e: &Error) -> Option<Error> {
+        while self.pool.inflight > 0 {
+            self.collect(true);
+        }
+        if self.replay {
+            return None;
+        }
+        let mut over = None;
+        if let Some(mut cur) = self.cur.take()
+            && *e != Error::Cancelled
+        {
+            over = decode_slices(&mut cur, self.opts, self.cancel).err();
+        }
+        // Out of memory while flushing leaves the rest of the DPB behind.
+        let _ = self.flush();
+        let _ = self.commit(true);
+        over
     }
 }
 
-/// The NAL loop shared by Annex B and length-prefixed input. On an error the pictures already
-/// complete in the DPB are output into `out` (the picture being decoded is dropped).
-fn run<'n>(
+/// Reads the stream and, on an error, outputs the pictures that completed. Returns the result
+/// and whether the call must run again with one thread: a worker job failed or the memory ran
+/// out while workers existed, so the serial run decides the result.
+fn drive<'n>(
+    d: &mut Decoder<'_, '_>,
     nals: impl Iterator<Item = Result<Nal<'n>>>,
+) -> (Result<()>, bool) {
+    let mut r = d.stream(nals);
+    if let Err(e) = r.clone()
+        && !d.replay
+        && let Some(e2) = d.recover(&e)
+    {
+        r = Err(e2);
+    }
+    let replay = match &r {
+        Ok(()) | Err(Error::Cancelled) => false,
+        Err(Error::AllocLimit | Error::OutOfMemory) => d.pool.workers > 0,
+        Err(_) => d.replay,
+    };
+    (r, replay)
+}
+
+/// One run of the NAL loop with a new ledger. Threads are used when `max_threads` is above 1.
+fn attempt_with<'a, 'n, I: Iterator<Item = Result<Nal<'n>>>>(
+    ledger: &'a Ledger,
+    make: &impl Fn() -> I,
+    opts: &'a Options,
+    limits: &'a Limits,
+    cancel: &'a AtomicBool,
+    out: &'a mut Vec<Picture>,
+) -> (Result<()>, bool) {
+    if limits.max_threads <= 1 {
+        let mut d = Decoder::new(ledger, opts, limits, cancel, out, None);
+        return drive(&mut d, make());
+    }
+    // `move`: the references keep their full lifetime `'a`, which the boxed worker closures need.
+    std::thread::scope(move |s| {
+        let handles = std::cell::RefCell::new(Vec::new());
+        let spawn = |f: Box<dyn FnOnce() + Send + 'a>| match std::thread::Builder::new()
+            .spawn_scoped(s, f)
+        {
+            Ok(h) => {
+                handles.borrow_mut().push(h);
+                true
+            }
+            Err(_) => false,
+        };
+        let r = {
+            let mut d = Decoder::new(ledger, opts, limits, cancel, out, Some(&spawn));
+            // `d` drops at the end of this block: its sender closes and the workers return.
+            drive(&mut d, make())
+        };
+        // Join every worker by its handle: the scope alone waits for the closures, not for the
+        // OS threads to exit, and a following call must not see them (`max_threads` counts
+        // live threads). A worker's panic is already an error result.
+        for h in handles.take() {
+            let _ = h.join();
+        }
+        r
+    })
+}
+
+fn attempt<'n, I: Iterator<Item = Result<Nal<'n>>>>(
+    make: &impl Fn() -> I,
+    opts: &Options,
+    limits: &Limits,
+    cancel: &AtomicBool,
+    out: &mut Vec<Picture>,
+) -> (Result<()>, bool) {
+    let ledger = Ledger::default();
+    if let Err(e) = ledger.reset(limits.max_alloc, 0) {
+        return (Err(e), false);
+    }
+    attempt_with(&ledger, make, opts, limits, cancel, out)
+}
+
+/// The NAL loop shared by Annex B and length-prefixed input; `make` gives the NAL units again for
+/// a replay. On an error the pictures already complete in the DPB are output into `out` (the
+/// picture being decoded is dropped). The result and `out` do not depend on `max_threads`: when
+/// a worker fails, or memory runs out while workers exist, the call runs again with one thread
+/// (`out` is cut back to its length at entry first).
+fn run<'n, I: Iterator<Item = Result<Nal<'n>>>>(
+    make: impl Fn() -> I,
     opts: &Options,
     limits: &Limits,
     cancel: &AtomicBool,
     out: &mut Vec<Picture>,
 ) -> Result<()> {
-    let ledger = Ledger::default();
-    ledger.reset(limits.max_alloc, 0)?;
-    let mut d = Decoder::new(&ledger, opts, limits, cancel, out);
-    let r = d.stream(nals);
-    if r.is_err() {
-        d.cur = None;
-        // Out of memory while flushing leaves the rest of the DPB behind.
-        let _ = d.flush();
+    let start = out.len();
+    let (r, replay) = attempt(&make, opts, limits, cancel, out);
+    if !replay {
+        return r;
     }
-    r
+    out.truncate(start);
+    let serial = Limits {
+        max_threads: 1,
+        ..*limits
+    };
+    attempt(&make, opts, &serial, cancel, out).0
 }
 
 /// Decodes an Annex B byte stream like [`decode`]; the pictures output before an error stay in
@@ -852,7 +1422,7 @@ pub fn decode_into(
     cancel: &AtomicBool,
     out: &mut Vec<Picture>,
 ) -> Result<()> {
-    run(nal::annexb(stream), opts, limits, cancel, out)
+    run(|| nal::annexb(stream), opts, limits, cancel, out)
 }
 
 /// Decodes an Annex B byte stream: every intra picture, in output order, cropped to the
@@ -900,12 +1470,13 @@ pub fn decode_hvcc_into(
     out: &mut Vec<Picture>,
 ) -> Result<()> {
     let hv = nal::parse_hvcc(config)?;
-    let nals = hv
-        .nals
-        .iter()
-        .copied()
-        .map(nal::header)
-        .chain(nal::length_prefixed(samples, hv.length_size));
+    let nals = || {
+        hv.nals
+            .iter()
+            .copied()
+            .map(nal::header)
+            .chain(nal::length_prefixed(samples, hv.length_size))
+    };
     run(nals, opts, limits, cancel, out)
 }
 
@@ -950,7 +1521,7 @@ fn probe_nals<'a>(nals: impl Iterator<Item = Result<Nal<'a>>>, limits: &Limits) 
         }
         match nal.kind {
             33 => {
-                let (r, _held) = ps_rbsp(nal.payload, &ledger)?;
+                let (_held, r) = ps_rbsp(nal.payload, &ledger)?;
                 let sps = ps::parse_sps(&r)?;
                 first.get_or_insert(sps.sps_id);
                 let id = sps.sps_id as usize;
@@ -963,7 +1534,7 @@ fn probe_nals<'a>(nals: impl Iterator<Item = Result<Nal<'a>>>, limits: &Limits) 
                 }
             }
             34 => {
-                let (r, _held) = ps_rbsp(nal.payload, &ledger)?;
+                let (_held, r) = ps_rbsp(nal.payload, &ledger)?;
                 let pps = ps::parse_pps(&r)?;
                 if let Some(slot) = pps_sps.get_mut(pps.pps_id as usize) {
                     *slot = Some(pps.sps_id);
@@ -1060,14 +1631,14 @@ pub fn intra_prefix(stream: &[u8], limits: &Limits) -> Result<Vec<u8>> {
             continue;
         }
         match nal.kind {
-            32..=34 => store.param_set(&nal, &ledger)?,
+            32..=34 => ledger.release(store.param_set(&nal, &ledger)?),
             k if is_vcl(k) => {
                 // first_slice_segment_in_pic_flag is the first bit of the slice header.
                 if nal.payload.first().is_some_and(|b| b & 0x80 != 0) {
                     pic_start = out.len();
                     pictures += 1;
                 }
-                let (r, _held) = rbsp(nal.payload, &ledger)?;
+                let (_held, r) = rbsp(nal.payload, &ledger)?;
                 match store.slice_header(&r, nal.kind) {
                     Ok(_) => {}
                     Err(Error::InterSlice) => {
@@ -1160,7 +1731,7 @@ mod tests {
         let mut pending = SeiSet::default();
         pending.add(false, 130, &[2; 2], max, &ledger).unwrap();
         pending.add(false, 144, &[3; 4], max, &ledger).unwrap();
-        cur.append(&mut pending, max, &ledger);
+        ledger.release(cur.append(&mut pending, max));
         let kept: Vec<_> = cur.msgs.iter().map(|m| m.payload_type).collect();
         assert_eq!(kept, [137, 130]);
         assert_eq!(cur.charged, max);
@@ -1194,8 +1765,10 @@ mod tests {
         let both = start - ledger.left();
         assert!(both > one);
         // The same ids again: the old charge is released, the total does not grow.
-        store.param_set(&nal(33, &sps_payload), &ledger).unwrap();
-        store.param_set(&nal(34, &pps_payload), &ledger).unwrap();
+        let old = store.param_set(&nal(33, &sps_payload), &ledger).unwrap();
+        ledger.release(old);
+        let old = store.param_set(&nal(34, &pps_payload), &ledger).unwrap();
+        ledger.release(old);
         assert_eq!(start - ledger.left(), both);
         // A budget that cannot hold the set: AllocLimit, nothing stored.
         let tiny = Ledger::default();
@@ -1206,6 +1779,118 @@ mod tests {
             Error::AllocLimit
         );
         assert!(store.sps[0].is_none());
+    }
+
+    fn picture(poc: i32) -> Picture {
+        Picture {
+            info: Info {
+                width: 1,
+                height: 1,
+                coded_width: 1,
+                coded_height: 1,
+                chroma_format: ChromaFormat::Mono,
+                bit_depth_luma: 8,
+                bit_depth_chroma: 8,
+                profile_idc: 1,
+                level_idc: 0,
+                vui: None,
+            },
+            planes: Vec::new(),
+            poc,
+            hash_ok: None,
+            sei: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn results_commit_in_output_order_whatever_the_arrival_order() {
+        let ledger = Ledger::default();
+        ledger.reset(1 << 20, 0).unwrap();
+        let (opts, limits, cancel) = (
+            Options::default(),
+            Limits::default(),
+            AtomicBool::new(false),
+        );
+        let mut out = Vec::new();
+        let mut d = Decoder::new(&ledger, &opts, &limits, &cancel, &mut out, None);
+        // Decode order 0, 1, 2 with POC 2, 0, 1: the output order is tickets 1, 2, 0.
+        for (ticket, poc) in [(0usize, 2), (1, 0), (2, 1)] {
+            d.dpb.push(Waiting {
+                ticket,
+                poc,
+                latency: 0,
+            });
+        }
+        d.keep(2, Some((picture(1), 0)));
+        d.flush().unwrap();
+        // The head (ticket 1) has not arrived: nothing is output, nothing is skipped.
+        assert!(d.out.is_empty());
+        d.keep(1, Some((picture(0), 0)));
+        d.commit(false).unwrap();
+        assert_eq!(d.out.iter().map(|p| p.poc).collect::<Vec<_>>(), [0, 1]);
+        d.keep(0, Some((picture(2), 0)));
+        d.finish_jobs().unwrap();
+        assert_eq!(d.out.iter().map(|p| p.poc).collect::<Vec<_>>(), [0, 1, 2]);
+        assert!(d.done.is_empty() && d.order.is_empty() && d.dpb.is_empty());
+    }
+
+    #[test]
+    fn discarded_pictures_release_their_bytes() {
+        let ledger = Ledger::default();
+        ledger.reset(1 << 20, 0).unwrap();
+        let before = ledger.left();
+        let (opts, limits, cancel) = (
+            Options::default(),
+            Limits::default(),
+            AtomicBool::new(false),
+        );
+        let mut out = Vec::new();
+        let mut d = Decoder::new(&ledger, &opts, &limits, &cancel, &mut out, None);
+        for ticket in [0usize, 1] {
+            d.dpb.push(Waiting {
+                ticket,
+                poc: 0,
+                latency: 0,
+            });
+        }
+        ledger.reserve(150).unwrap();
+        d.keep(0, Some((picture(0), 100)));
+        d.keep(1, Some((picture(0), 50)));
+        d.discard_all();
+        assert_eq!(ledger.left(), before);
+        assert!(d.done.is_empty() && d.dpb.is_empty() && d.out.is_empty());
+    }
+
+    #[test]
+    fn front_end_releases_wait_for_the_jobs_submitted_before_them() {
+        let ledger = Ledger::default();
+        ledger.reset(1 << 20, 0).unwrap();
+        ledger.reserve(30).unwrap();
+        let before = ledger.left();
+        let (opts, limits, cancel) = (
+            Options::default(),
+            Limits::default(),
+            AtomicBool::new(false),
+        );
+        let mut out = Vec::new();
+        let mut d = Decoder::new(&ledger, &opts, &limits, &cancel, &mut out, None);
+        // Pictures 0 and 1 are submitted and not dropped yet.
+        d.next_ticket = 2;
+        d.release(10);
+        d.release(20);
+        assert_eq!(d.late.len(), 1);
+        assert_eq!(ledger.left(), before);
+        d.retired = 1;
+        d.apply_late();
+        assert_eq!(ledger.left(), before);
+        d.retired = 2;
+        d.apply_late();
+        assert_eq!(ledger.left(), before + 30);
+        assert!(d.late.is_empty());
+        // Nothing outstanding: released at once.
+        ledger.reserve(5).unwrap();
+        d.release(5);
+        assert_eq!(ledger.left(), before + 30);
     }
 
     #[test]

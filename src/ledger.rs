@@ -10,6 +10,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// `ps::activate` makes per picture (at most about 17 KiB with its tile vectors and scaling
 /// list). 64 KiB covers them. The parameter set store, the output list and the pictures are
 /// charged one by one. A `max_alloc` below this is `Error::AllocLimit` at once.
+///
+/// With threads, the bookkeeping of the front end is also not charged and also covered here:
+/// the maps and queues of the tickets (`done`, `spent`, `late`, `order`; at most the pictures in
+/// flight and in the DPB, and every output picture in `done` is charged for far more than its
+/// map node), the channels (the results channel keeps blocks of 31 slots of a few hundred bytes:
+/// a picture travels boxed, and its box is charged with it) and the `Arc`s and `Box`es of a
+/// worker (a few hundred bytes each, against a thread stack of megabytes that is not charged
+/// either). `BTreeMap` cannot report a failed allocation, so these stay small on purpose.
 pub(crate) const SMALL: usize = 64 << 10;
 
 /// Bytes booked against `Limits::max_alloc`.
@@ -31,7 +39,6 @@ impl Ledger {
     }
 
     /// What may still be charged.
-    #[cfg(test)]
     pub(crate) fn left(&self) -> usize {
         let free = self
             .max
@@ -89,6 +96,31 @@ impl Drop for Held<'_> {
     }
 }
 
+impl Held<'_> {
+    /// Keeps the bytes booked (the caller now owns their release) and returns their number.
+    pub(crate) fn keep(self) -> usize {
+        let n = self.n;
+        std::mem::forget(self);
+        n
+    }
+}
+
+/// Makes room for one more element in `v`, booking the real capacity growth (the `Vec` grows to
+/// `max(4, 2 * capacity)`, not by one element). Returns the bytes booked, `0` when `v` has room.
+pub(crate) fn grow_one<T>(v: &mut Vec<T>, ledger: &Ledger) -> Result<usize, Error> {
+    if v.len() < v.capacity() {
+        return Ok(0);
+    }
+    let add = v.capacity().checked_mul(2).ok_or(Error::AllocLimit)?.max(4) - v.len();
+    let n = add.checked_mul(size_of::<T>()).ok_or(Error::AllocLimit)?;
+    ledger.reserve(n)?;
+    if v.try_reserve_exact(add).is_err() {
+        ledger.release(n);
+        return Err(Error::OutOfMemory);
+    }
+    Ok(n)
+}
+
 /// Sets `v` to `n` zero bytes and books `n` bytes for the rest of the call. A buffer that is
 /// already big enough (a `Decoder` kept it) allocates nothing.
 #[cfg(test)]
@@ -136,6 +168,30 @@ mod tests {
         assert_eq!(l.left(), 100);
         let _b = l.charge(100).unwrap();
         assert_eq!(l.peak(), SMALL as u64 + 100);
+    }
+
+    #[test]
+    fn grow_one_books_the_capacity_growth() {
+        let l = Ledger::default();
+        l.reset(SMALL + 200, 0).unwrap();
+        let mut v: Vec<u64> = Vec::new();
+        let mut booked = 0;
+        for i in 0..9 {
+            booked += grow_one(&mut v, &l).unwrap();
+            v.push(i);
+            assert_eq!(booked, v.capacity() * 8);
+            assert_eq!(l.left(), 200 - booked);
+        }
+        // A refusal books nothing and leaves the Vec as it was.
+        let cap = v.capacity();
+        while v.len() < cap {
+            v.push(0);
+        }
+        assert_eq!(grow_one(&mut v, &l).unwrap_err(), Error::AllocLimit);
+        assert_eq!((v.capacity(), l.left()), (cap, 200 - booked));
+        // A `Held` that is kept stays booked.
+        let n = l.charge(10).unwrap().keep();
+        assert_eq!((n, l.left()), (10, 200 - booked - 10));
     }
 
     #[test]

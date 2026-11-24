@@ -20,7 +20,10 @@ fixed amount for allocations that are not charged one by one, so `max_alloc` bel
 once. Allocation uses `try_reserve_exact`; a refusal inside the limit is `Error::OutOfMemory`.
 
 Charged: the unescaped RBSP of each NAL unit, the sample planes and metadata grids of a picture,
-the output pictures (planes and their SEI messages), and the buffer of `intra_prefix`. Parameter set NAL units over 1 MiB are
+the output pictures (planes and their SEI messages), the buffer of `intra_prefix`, the slice
+records of a picture (by `Vec` capacity, which grows to 4 and then doubles), the box and
+bookkeeping entry of each picture, and the PPS copy that `activate` makes for a Main profile.
+Parameter set NAL units over 1 MiB are
 `Error::InvalidData`.
 
 ## Metadata

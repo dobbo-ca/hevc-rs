@@ -6,7 +6,7 @@ Dependency: `hevc = { git = "https://github.com/dobbo-ca/hevc-rs", rev = "6dbe2a
 
 **PATENT CAUTION (owner):** HEVC is covered by patent pools. Low risk for a private app; the owner must review before Drive goes public.
 
-Status: intra decoding works. Every I picture is decoded (CABAC, intra prediction, residual, deblocking, SAO), checked against its decoded picture hash SEI when present, and bit-exact with libde265 and ffmpeg on the JCT-VC HEVC_v1 intra prefixes in CI. P and B slices are rejected with `Error::InterSlice`.
+Status: intra decoding works. Every I picture is decoded (CABAC, intra prediction, residual, deblocking, SAO), checked against its decoded picture hash SEI when present (with `Options { check_hash: true, .. }`; off by default), and bit-exact with libde265 and ffmpeg on the JCT-VC HEVC_v1 intra prefixes in CI. P and B slices are rejected with `Error::InterSlice`.
 
 ## Quick start
 
@@ -54,14 +54,15 @@ There is no unlimited entry point. Every call takes a `Limits`.
 
 - `max_alloc` is the enforced peak working memory of one call, all threads together: allocations are charged before they are made and released on drop. The stored parameter sets, the output pictures and the planes are charged one by one; 64 KiB is booked up front for the small fixed allocations, so a `max_alloc` below that is `Error::AllocLimit` at once.
 - Metadata (SEI messages, VUI) is kept by default and exposed raw; `Options { metadata: false, .. }` drops it. Kept SEI bytes are charged to `max_alloc` like the planes.
-- `max_threads = 1` spawns no thread. Larger values decode the tiles of a HEIC grid in parallel and run deblocking and SAO of big pictures (one band per 64 Ki luma samples, so at least 128 Ki) in parallel bands of CTB rows; the output is the same for every value. See `docs/threading.md`.
+- `max_threads = 1` spawns no thread. With more, the tiles of a HEIC grid and the pictures of a call that holds several are decoded in parallel, and deblocking and SAO of a big picture run in parallel bands of CTB rows (one band per 64 Ki luma samples), all on up to `max_threads - 1` extra threads (a call with one picture, or one picture and a P slice, spawns no picture worker; a worker starts only when a job finds none free); the output and the errors do not depend on the value. See `docs/threading.md`.
+- `Options::check_hash` (default false): the decoded picture hash SEI is checked (`Picture::hash_ok` is `Some`) only when it is true; otherwise `hash_ok` is `None` and no MD5, CRC or checksum is computed.
 - Cancellation: every decode takes `&AtomicBool`, read before each NAL unit and each CTU. When set, the call returns `Error::Cancelled`.
 
 ## Docs
 
 - [docs/design.md](docs/design.md): the build spec
 - [docs/limits.md](docs/limits.md): limits, charging, errors
-- [docs/threading.md](docs/threading.md): grid tiles in parallel, the rest serial
+- [docs/threading.md](docs/threading.md): grid tiles and pictures in parallel, the error and memory rules
 - [docs/safety.md](docs/safety.md): no `unsafe`, hostile input
 - [docs/dependencies.md](docs/dependencies.md): isobmff-rs
 - [docs/parity.md](docs/parity.md): oracles, corpus, gates

@@ -6,7 +6,7 @@
 //! HEIC file. The build spec is `docs/design.md`.
 //!
 //! Status: intra decoding works. Every I picture is decoded (CABAC, intra prediction, residual,
-//! deblocking, SAO), checked against the decoded picture hash SEI when present, and output in
+//! deblocking, SAO), checked against the decoded picture hash SEI when `Options::check_hash` is set, and output in
 //! order with the conformance window applied.
 //!
 //! # Resource limits
@@ -24,7 +24,10 @@
 //! | `max_metadata` | 1 MiB | bytes of SEI messages kept per picture | no error; the message is dropped |
 //!
 //! `max_alloc` is charged before each allocation and released on drop. `max_threads = 1` spawns
-//! no thread; larger values decode HEIC grid tiles in parallel and filter big pictures in parallel bands. The decode entry points read a cancel flag before every NAL
+//! no thread; a larger value lets the tiles of a HEIC grid, the pictures of a call that holds
+//! several, and the deblocking and SAO of a big picture (in bands of CTB rows) run in parallel on
+//! up to `max_threads - 1` extra threads (docs/threading.md); the output and the errors do not
+//! depend on it. The decode entry points read a cancel flag before every NAL
 //! unit and every CTU, and in deblocking, SAO, the picture hash and the output crop per row; when it is set the call returns
 //! [`Error::Cancelled`].
 //!
@@ -104,7 +107,8 @@ pub use error::Error;
 pub use heic::{Axis, Clap, HeicImage, Transform, decode_heic, decode_heic_item};
 pub use limits::Limits;
 
-/// Decode switches. Default: both in-loop filters on (conforming output), metadata kept.
+/// Decode switches. Default: both in-loop filters on (conforming output), metadata kept, decoded
+/// picture hash not checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Options {
     /// Run the deblocking filter (default true). false is for diagnosis only: the output then
@@ -116,6 +120,10 @@ pub struct Options {
     /// the VUI ([`Info::vui`]). false: `Picture::sei` is empty and `Info::vui` is `None` in the
     /// pictures (`probe` takes no options and always returns the VUI).
     pub metadata: bool,
+    /// Check the decoded picture hash SEI (default false). true: [`Picture::hash_ok`] is `Some`
+    /// for a picture that has the SEI. false: it is `None` and no MD5, CRC or checksum is
+    /// computed (about 4% of the decode time; libde265 and ffmpeg do not check by default).
+    pub check_hash: bool,
 }
 
 impl Default for Options {
@@ -124,6 +132,7 @@ impl Default for Options {
             deblocking: true,
             sao: true,
             metadata: true,
+            check_hash: false,
         }
     }
 }
@@ -232,8 +241,9 @@ pub struct Picture {
     pub planes: Vec<Plane>,
     /// `PicOrderCntVal`.
     pub poc: i32,
-    /// Some(true/false) when a decoded picture hash SEI was present and checked (over the
-    /// uncropped decoded picture); None when absent.
+    /// Some(true/false) when [`Options::check_hash`] is true and a decoded picture hash SEI was
+    /// present (the check is over the
+    /// uncropped decoded picture); None when it is absent or `check_hash` is false.
     pub hash_ok: Option<bool>,
     /// Every SEI message of the picture's access unit (prefix ones before its first VCL NAL
     /// unit, suffix ones after), in bitstream order, raw. Empty when [`Options::metadata`] is
