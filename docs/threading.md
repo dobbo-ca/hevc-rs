@@ -48,7 +48,7 @@ Reconstruction (CABAC, prediction, transform) is serial, as is the hash check an
 
 ## HEIC grids
 
-Done: `decode_heic` and `decode_heic_item` decode the tiles of a grid in parallel. Tile 0 is
+`decode_heic` and `decode_heic_item` decode the tiles of a grid in parallel. Tile 0 is
 decoded alone (it gives the format and the canvas size). The other tiles are taken from an atomic
 counter by up to `max_threads` workers (the caller is one of them); each worker decodes its tile
 with `decode_hvcc_into` on one thread (`max_threads = 1` in the inner call) and copies it onto the
