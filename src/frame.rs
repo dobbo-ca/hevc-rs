@@ -407,6 +407,76 @@ impl Frame {
     }
 }
 
+/// [`Frame::available`] for many neighbours of one current block: the z-scan address, slice and
+/// tile of the current block are looked up once, and the CTB part of the answer (started, same
+/// slice, same tile) is kept for the last CTB asked. Same answers as `Frame::available`.
+pub(crate) struct Avail<'a> {
+    frame: &'a Frame,
+    act: &'a Active,
+    zs: u32,
+    slice_addr_rs: u32,
+    tile: u32,
+    last: Option<(usize, bool)>,
+}
+
+impl<'a> Avail<'a> {
+    /// The current block at luma (x, y). None when it is outside the picture or its CTB was not
+    /// started: then no neighbour is available.
+    pub(crate) fn new(frame: &'a Frame, act: &'a Active, x: usize, y: usize) -> Option<Self> {
+        let rs = Self::ctb(act, x, y)?;
+        let shift = act.sps.log2_min_trafo_size;
+        Some(Self {
+            frame,
+            act,
+            zs: act.min_tb_addr_zs(x >> shift, y >> shift)?,
+            slice_addr_rs: frame.ctb_slice(rs)?.slice_addr_rs,
+            tile: Self::tile(act, rs)?,
+            last: None,
+        })
+    }
+
+    /// 6.4.1 for the neighbour at luma (x, y).
+    pub(crate) fn at(&mut self, x: usize, y: usize) -> bool {
+        let Some(rs) = Self::ctb(self.act, x, y) else {
+            return false;
+        };
+        let shift = self.act.sps.log2_min_trafo_size;
+        if self
+            .act
+            .min_tb_addr_zs(x >> shift, y >> shift)
+            .is_none_or(|z| z > self.zs)
+        {
+            return false;
+        }
+        match self.last {
+            Some((r, a)) if r == rs => a,
+            _ => {
+                let a = self
+                    .frame
+                    .ctb_slice(rs)
+                    .is_some_and(|s| s.slice_addr_rs == self.slice_addr_rs)
+                    && Self::tile(self.act, rs) == Some(self.tile);
+                self.last = Some((rs, a));
+                a
+            }
+        }
+    }
+
+    /// CtbAddrInRs of luma (x, y), None outside the picture.
+    fn ctb(act: &Active, x: usize, y: usize) -> Option<usize> {
+        let sps = &act.sps;
+        if x >= sps.width as usize || y >= sps.height as usize {
+            return None;
+        }
+        let l = sps.ctb_log2_size_y;
+        Some((y >> l) * sps.pic_width_in_ctbs_y as usize + (x >> l))
+    }
+
+    fn tile(act: &Active, rs: usize) -> Option<u32> {
+        act.tile_id.get(*act.rs_to_ts.get(rs)? as usize).copied()
+    }
+}
+
 /// CTB-row cuts of `workers` balanced bands over `ctb_rows` CTB rows: `[0, .., ctb_rows]`, one
 /// more entry than bands. At most one band per CTB row, at least one band.
 pub(crate) fn band_rows(ctb_rows: usize, workers: usize) -> Vec<usize> {

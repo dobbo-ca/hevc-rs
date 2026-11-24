@@ -97,8 +97,15 @@ line has 7 slots of zero padding after the 129 samples and `ref[]` has room for 
 loads, so the loads past the last sample stay inside the arrays. `arr` returns None instead of
 reading out of range. Samples are u16 so the i32 arithmetic cannot overflow (at most 64 * 65535).
 
-The reference gather asks 6.4.1 once per run of samples in the same min-TB cell instead of once
-per sample; `tests::gather_matches_per_sample` checks it against the per-sample version.
+The reference gather walks the left column, the corner and the top row in runs of the samples of
+one min-TB cell (6.4.1 gives one answer per cell) and asks availability once per run through
+`frame::Avail`, which looks up the current block's z-scan address, slice and tile once and keeps
+the CTB part of the answer for the last CTB asked. An available run is copied from the plane, an
+unavailable run is filled with its predecessor (substitution). `tests::gather_matches_per_sample`
+and `tests::gather_matches_per_sample_random` (random CTB and min-TB sizes, tiles, independent and
+dependent slice segments, CTBs never started, aligned and unaligned blocks, luma and chroma) check
+it against one `Frame::available` call per sample. constrained_intra_pred_flag cannot remove a
+sample in an intra-only decoder (every neighbour is intra), so the gather does not read it.
 
 Tests: `tiers_match_scalar` (all sizes, modes, bit depths 8/10/12/16, extreme and over-range
 samples), `frames_match_scalar` (whole frames, luma and chroma, every aligned position),
