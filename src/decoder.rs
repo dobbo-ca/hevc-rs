@@ -465,6 +465,7 @@ fn filter_workers(threads: usize, act: &Active) -> usize {
         .min(by_size)
         .clamp(1, 64)
 }
+
 /// Bytes booked with the box of each picture for its entry in `Decoder::spent` (a B-tree node
 /// holds 5 to 11 entries of 16 bytes plus its links, so an entry costs under 64 bytes; the rest
 /// is slack). Booked in a serial run too, and released with the picture.
