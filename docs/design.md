@@ -517,7 +517,7 @@ comparison and the slice_loop_filter_across_slices_enabled_flag of the right sli
 loop_filter_across_tiles_enabled_flag). bitDepth-based band shift = bitDepth - 5.
 
 Both filters run in bands of whole CTB rows (`workers` bands, `decoder::filter_workers`; 1 = the
-calling thread, no spawn). Vertical edges never leave their row. A horizontal edge reaches 4 rows
+calling thread, no spawn; a job on a picture worker uses 1 band, a job on the calling thread uses `filter_workers(max(1, max_threads - spawned))`, see threading.md). Vertical edges never leave their row. A horizontal edge reaches 4 rows
 above and 3 below it, so the band that owns the edges of CTB rows `[B, B')` is the plane slice
 `[B - 4, B' - 4)`; a pass ends when its bands have joined. SAO bands write their own rows and read
 the shared deblocked copy. Details and the deviation from the pool convention: threading.md.

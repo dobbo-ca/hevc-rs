@@ -55,7 +55,7 @@ first slice of a second picture has a good header and the picture limit allows i
 one picture, or with one picture and then a P slice (the first frame of a video), spawns nothing.
 The cap is `min(max_threads, 1 + free_budget / (2 * frame_bytes)) - 1` workers, and they start
 one at a time: a job that finds no worker free starts one more until the cap, so a two-picture call
-starts one. Jobs go over a `sync_channel(0)` to workers that share a `Mutex<Receiver>`; results
+starts one, or two if the first job is still running when the second picture is complete. Jobs go over a `sync_channel(0)` to workers that share a `Mutex<Receiver>`; results
 (with the spent picture) return on an `mpsc` channel. When no worker is free and the cap is
 reached, the calling thread decodes the job itself, so there are never more than `max_threads`
 threads and at most that many pictures being decoded.
@@ -128,7 +128,9 @@ tier; deblocking is scalar only).
   The calling thread, its `bands - 1` band threads and the `spawned` workers (one band each) are at
   most `max_threads` threads. While the calling thread runs a job its front end waits,
   so the count holds at every moment.
-- A HEIC grid tile decodes with `max_threads = 1` in its own call: one thread, one band.
+- A tile decoded by a grid worker (two or more running) gets `max_threads = 1`: one thread, one band.
+  Tile 0, a tile decoded again alone, and the tiles of a grid decoded serially get the full
+  `max_threads`, because they run alone.
 
 The split never changes a result: the picture and band paths are byte-identical for every thread
 count (`tests/threads.rs`, unit tests).
@@ -150,12 +152,12 @@ count (`tests/threads.rs`, unit tests).
   add no buffer to `max_alloc`. A band can only fail with `Cancelled` (every other error is raised
   before the split); all bands run to the end and the error of the lowest band is returned. A
   refused spawn runs that band on the calling thread.
-- Thread stacks are not charged.
+- Thread stacks are not charged (band threads 512 KiB, `frame::BAND_STACK`; picture workers the std default).
 - Cancel: the flag stops every thread. Every band reads it once per CTB row (SAO) or per row of
   4 samples (deblocking); the planes are put back into the frame on every path. A panic inside a
   picture job is caught in the worker and becomes an error result (then the replay), so the
   calling thread never waits for a result that cannot come.
-- A call joins its workers by handle before it returns, so no thread of the call outlives it.
+- A call joins its picture workers, band threads and grid workers by handle before it returns, so no thread of the call outlives it.
 
 ## Known deviations from the repository threading rule
 
@@ -171,6 +173,8 @@ count (`tests/threads.rs`, unit tests).
 - Small inputs use fewer workers (no picture worker for one picture, one more per job that finds
   none free, one band per 64 Ki luma samples) instead of a pool.
 - Thread stacks are not charged to `max_alloc`.
+- A job on a picture worker always filters with 1 band, even when threads are idle (two large
+  pictures with `max_threads` 16 start 2 workers, 14 threads idle); main used up to 16 bands each.
 - A replay waits for the jobs in flight to end. They watch the caller's `cancel` flag only: a
   second, call-local stop flag would need every stage (CTU loop, deblocking, SAO, crop, hash) to
   read two flags, and a stop flag bridged by the front end would delay the caller's own cancel by
