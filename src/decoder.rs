@@ -566,14 +566,15 @@ struct Job<'a> {
 /// The jobs queue of the workers.
 type Jobs<'a> = Mutex<Receiver<Job<'a>>>;
 
-/// A worker thread: takes jobs until the sender is dropped. A panic inside a job becomes an
-/// error result, so the caller never waits for a result that cannot come.
+/// A worker thread: takes jobs until the sender is dropped. Its jobs filter in one band: bands
+/// there would hold the budget threads that the next picture needs for its worker (a trial gave
+/// them bands: multi-picture streams got slower, docs/threading.md). A panic inside a job becomes
+/// an error result, so the caller never waits for a result that cannot come.
 fn worker<'a>(
     rx: &Jobs<'a>,
     done: &Sender<Finished<'a>>,
     opts: &Options,
     cancel: &AtomicBool,
-    threads: usize,
     budget: &Budget,
 ) {
     loop {
@@ -584,10 +585,8 @@ fn worker<'a>(
         let Ok(Job { ticket, mut cur }) = job else {
             return;
         };
-        // Bands as for a job on the calling thread: the budget decides how many threads they get.
-        let bands = filter_workers(threads, &cur.act);
         let r = catch_unwind(AssertUnwindSafe(|| {
-            decode_picture(&mut cur, opts, cancel, bands, budget)
+            decode_picture(&mut cur, opts, cancel, 1, budget)
         }))
         .unwrap_or(Err(Error::InvalidData("picture decoding panicked")));
         if done.send((ticket, r, cur)).is_err() {
@@ -1171,9 +1170,9 @@ impl<'a, 'p> Decoder<'a, 'p> {
             return;
         }
         let (rx, done_tx) = (Arc::clone(rx), done_tx.clone());
-        let (opts, cancel, threads) = (self.opts, self.cancel, self.pool.threads);
+        let (opts, cancel) = (self.opts, self.cancel);
         if spawn(Box::new(move || {
-            worker(&rx, &done_tx, opts, cancel, threads, budget);
+            worker(&rx, &done_tx, opts, cancel, budget);
         })) {
             self.pool.workers += 1;
         } else {

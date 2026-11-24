@@ -149,9 +149,12 @@ threads are not counted; they are alive whether or not a call runs (at most
   pass starts and gives it back when the pass ends. When the budget is empty, no worker starts
   (the job runs on the calling thread, as when every worker is busy) and the bands run on the
   filtering thread.
-- Every job, on a picture worker or on the calling thread, splits the filters into up to
-  `max_threads` bands by the size gate above; the budget decides how many threads they get. Two
-  large pictures with `max_threads` 16 start 2 workers, and their bands use the 13 threads left.
+- A job on a picture worker filters with 1 band. A job on the calling thread splits the filters
+  into up to `max_threads` bands by the size gate above, and the budget decides how many threads
+  they get: all `max_threads - 1` while no picture worker exists (a call with one picture, such as
+  a HEIC item or a single still), `max_threads - 1 - workers` once workers exist. While the
+  calling thread runs a job its front end waits, so its bands never keep a new worker from
+  starting. Giving the jobs on picture workers bands too was tried and lost (Known deviations).
 - A tile decoded by a grid worker (two or more running) gets `max_threads = 1`: one thread, one
   band, no pool. Tile 0, a tile decoded again alone, and the tiles of a grid decoded serially get
   the full `max_threads`, because they run alone.
@@ -205,6 +208,14 @@ by pictures in flight.
 - Small inputs use fewer workers (no picture worker for one picture, one more per job that finds
   none free, one band per 64 Ki luma samples).
 - Thread stacks and the pool's own memory are not charged to `max_alloc`.
+- A job on a picture worker always filters with 1 band, even when threads are idle (two large
+  pictures with `max_threads` 16 start 2 workers, 13 threads idle). Commit 7c3f61e gave those jobs
+  bands on the pool too (bench run 45503067302 against main dcdc55d, run 45496374688): the
+  default-thread total of the 149 Annex B inputs rose from 1474.3 to 1571.0 ms (default build) and
+  1346.7 to 1446.3 ms (v4) while the 1-thread total moved only from 2606.8 to 2691.6 ms (the host
+  was slower in that run), and multi-picture streams lost most: OPFLAG_B 88.4 to 114.2 ms,
+  IPRED_A 18.4 to 24.5 ms. Bands on a worker hold the budget threads that the next picture needs
+  for its own worker, so that picture runs on the calling thread and the front end stalls.
 - A replay waits for the jobs in flight to end. They watch the caller's `cancel` flag only: a
   second, call-local stop flag would need every stage (CTU loop, deblocking, SAO, crop, hash) to
   read two flags, and a stop flag bridged by the front end would delay the caller's own cancel by
