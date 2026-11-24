@@ -36,7 +36,7 @@ impl Budget {
     /// Takes one thread; false when none is left.
     pub(crate) fn take(&self) -> bool {
         self.0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
             .is_ok()
     }
 
