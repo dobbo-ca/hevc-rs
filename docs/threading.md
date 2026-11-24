@@ -155,7 +155,7 @@ and the heap peak against `max_alloc` while replaced parameter sets are held by 
   add no buffer to `max_alloc`. A band can only fail with `Cancelled` (every other error is raised
   before the split); all bands run to the end and the error of the lowest band is returned. A
   refused spawn runs that band on the calling thread.
-- Thread stacks are not charged (band threads 512 KiB, `frame::BAND_STACK`; picture workers the std default).
+- Thread stacks are not charged to `max_alloc` (band threads 512 KiB, `frame::BAND_STACK`; picture and grid workers the std default). The README says so in "Resource limits".
 - Cancel: the flag stops every thread. Every band reads it once per CTB row (SAO) or per 16 rows
   of vertical edges and per row of horizontal edges (deblocking); the planes are put back into
   the frame on every path. A panic inside a
@@ -166,8 +166,8 @@ and the heap peak against `max_alloc` while replaced parameter sets are held by 
 ## Known deviations from the repository threading rule
 
 - There is no lazy shared pool (`OnceLock`) and no single scope per call for the filters. A
-  reused thread cannot borrow a per-picture `Frame` in safe Rust, and a pool crate would be a new
-  dependency. Picture jobs own their data (`Cur`), so they run on workers started inside one scope
+  reused thread cannot borrow a per-picture `Frame` in safe Rust, and a pool crate (tried below)
+  gave no clear gain. Picture jobs own their data (`Cur`), so they run on workers started inside one scope
   per call. The filters borrow the planes, so each filter pass opens its own scope (up to 6 per
   picture for deblocking and 3 for SAO), each spawning `bands - 1` threads. The `>> 16` gate keeps
   small pictures serial; its value is a guess to tune from the bench. A HEIC grid opens one scope
@@ -177,6 +177,46 @@ and the heap peak against `max_alloc` while replaced parameter sets are held by 
 - Small inputs use fewer workers (no picture worker for one picture, one more per job that finds
   none free, one band per 64 Ki luma samples) instead of a pool.
 - Thread stacks are not charged to `max_alloc`.
+- A shared pool was tried and dropped (PR #27, branch `sp-pool-w9t5`, 2026-11-24; owner decision
+  of that day: a pool crate only with a measured gain over `std::thread::scope`). The deblocking
+  and SAO bands ran as tasks on one lazy `rayon-core` pool (a `OnceLock`, `available_parallelism`
+  threads, 512 KiB stacks, made only when a pass had a thread for it, never with
+  `max_threads = 1`), with a thread budget per call: an atomic counter of `max_threads - 1`, from
+  which a picture worker took one thread for the call and a band task one for its pass, so the
+  threads working for a call at once stayed within `max_threads` (idle pool threads not counted).
+  The bands borrowed the planes through `in_place_scope`, so no thread was started per pass.
+  Picture and grid workers stayed threads started per call: a picture worker blocks on the job
+  channel, and a blocked pool thread would be lost to every other call. Output stayed
+  byte-identical (test job green). Bench, default threads, best of 3, 16 CPUs, ms; ratio is
+  hevc-rs / reference (dec265 for Annex B, libheif for HEIC), against two runs of main dcdc55d
+  (45496374688, 45507433964) and two of the pool (45505669129, 45506541385, commit 48708ec):
+
+  | input set | build | main ms | main ratio | pool ms | pool ratio |
+  |---|---|---|---|---|---|
+  | all 149, nt | default | 1474.3 / 1537.6 | 0.701 / 0.692 | 1445.7 / 1554.2 | 0.685 / 0.687 |
+  | all 149, nt | v4 | 1346.7 / 1397.8 | 0.641 / 0.629 | 1303.8 / 1390.3 | 0.617 / 0.615 |
+  | main 135, nt | default | 1438.1 / 1500.7 | 0.702 / 0.693 | 1409.4 / 1516.2 | 0.685 / 0.688 |
+  | heic 60, nt | default | 2376.1 / 2154.7 | 0.372 / 0.332 | 2051.2 / 2003.2 | 0.316 / 0.316 |
+  | heic 60, nt | v4 | 2649.6 / 1937.6 | 0.415 / 0.299 | 1948.7 / 1875.7 | 0.300 / 0.296 |
+  | all 149, 1t (pool unused) | default | 2606.8 / 2671.5 | 0.767 / 0.766 | 2594.7 / 2692.4 | 0.763 / 0.769 |
+  | heic 60, 1t (pool unused) | default | 2390.8 / 2336.5 | 0.362 / 0.354 | 2254.6 / 2213.0 | 0.343 / 0.340 |
+
+  The pool runs beat both main runs by 1 to 2.5 points at default threads, about the spread
+  between the two main runs themselves (0.9 to 1.2 points on Annex B, 4 to 12 on HEIC), and the
+  HEIC 1-thread ratio, which the pool cannot touch, moved by 1.5 to 2 points too. Not clearly
+  outside noise, so the crate stays on `std::thread::scope` with no new dependency. Each bench
+  input is its own process, so every file paid the pool's start (16 threads); a long-lived caller
+  would pay it once, which this bench does not measure. Two variants lost outright:
+  - Bands for jobs on picture workers too (commit 7c3f61e, run 45503067302): the default-thread
+    total of the 149 Annex B inputs rose from 1474.3 to 1571.0 ms (v4 1346.7 to 1446.3) while
+    the 1-thread total moved from 2606.8 to 2691.6 ms (a slower host), and multi-picture streams
+    lost most (OPFLAG_B 88.4 to 114.2 ms, IPRED_A 18.4 to 24.5 ms): bands on a worker held the
+    budget threads that the next picture needed for its own worker, so that picture ran on the
+    calling thread and the front end stalled.
+  - One band per 16 Ki luma samples instead of 64 Ki (commit 93db140, run 45509186196): Annex B
+    ratio at default threads 0.690 (v4 0.625), no better than the 64 Ki gate on the pool, and
+    main10 at default threads took 24.7 ms (23.0 to 23.7 ms in the other runs): small pictures pay for
+    waking pool threads.
 - A job on a picture worker always filters with 1 band, even when threads are idle (two large
   pictures with `max_threads` 16 start 2 workers, 14 threads idle); main used up to 16 bands each.
 - A replay waits for the jobs in flight to end. They watch the caller's `cancel` flag only: a
