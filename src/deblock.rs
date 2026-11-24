@@ -368,7 +368,12 @@ fn deblock_planes(
             let (Some(&h), Some(&stride)) = (meta.height.get(c), meta.stride.get(c)) else {
                 return Err(Error::InvalidData("plane"));
             };
-            let unit = if c == 0 { ctb } else { ctb / 2 };
+            let unit = ctb
+                / if c == 0 {
+                    1
+                } else {
+                    (act.sps.sub_height_c as usize).max(1)
+                };
             let own = plane_cuts(&ctb_rows, unit, 0, h);
             let cuts = if vertical {
                 own.clone()
@@ -577,7 +582,7 @@ mod tests {
             f.push_slice(s, l).unwrap();
         }
         for rs in 0..f.slice_idx.len() {
-            f.start_ctb(rs, next() % 2).unwrap();
+            f.start_ctb(rs, u32::try_from(next() % 2).unwrap()).unwrap();
         }
         for c in 0..3 {
             let (pw, ph) = (f.width[c], f.height[c]);

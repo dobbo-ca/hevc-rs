@@ -33,5 +33,5 @@ scalar code (no SIMD yet):
 | total, ms | 3372.93 | 5929.69 | 1.76 |
 | per stream | | | 0.83 (DBLK_A_MAIN10) .. 2.23 (AMP_D) |
 
-Next for speed: SIMD for the inverse transforms, intra prediction and deblocking (scalar code as
-the oracle), then parallel decode by tile / WPP row and parallel filters.
+Next for speed: SIMD for the inverse transforms, and intra prediction (scalar code as
+the oracle), then parallel decode by tile / WPP row.

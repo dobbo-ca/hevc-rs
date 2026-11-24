@@ -438,6 +438,9 @@ pub(crate) fn plane_cuts(ctb_cuts: &[usize], unit: usize, shift: usize, rows: us
         .collect()
 }
 
+/// Stack of a band worker: the filters do not recurse, so far less than the 2 MiB default.
+const BAND_STACK: usize = 512 * 1024;
+
 /// A band waiting for a worker: its first plane row and its samples.
 type Band<'a> = Mutex<Option<(usize, &'a mut [u16])>>;
 
@@ -494,6 +497,7 @@ where
             .map_err(|_| Error::OutOfMemory)?;
         for (i, band) in others.iter().enumerate() {
             let h = thread::Builder::new()
+                .stack_size(BAND_STACK)
                 .spawn_scoped(s, move || run_band(f, i + 1, band))
                 .ok();
             handles.push(h);

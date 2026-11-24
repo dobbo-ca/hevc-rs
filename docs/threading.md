@@ -28,11 +28,11 @@ Reconstruction (CABAC, prediction, transform) is serial, as is the hash check an
 ## Determinism, memory, cancel
 
 - Output: the planes are byte-identical for every thread count (unit tests compare 1, 2, 3, 5 and 64
-  workers on every SIMD tier).
+  workers; SAO on every SIMD tier, deblocking is scalar only).
 - Errors: a band can only fail with `Cancelled` (every other error is raised before the split). All
   bands run to the end and the error of the lowest band is returned.
 - Memory: the bands share the planes and the one deblocked copy that SAO already charged, so
-  threads add no buffer to `max_alloc`. Thread stacks are not charged. A refused spawn runs that
+  threads add no buffer to `max_alloc`. Thread stacks (512 KiB each, not the 2 MiB default) are not charged. A refused spawn runs that
   band on the calling thread.
 - Cancel: every band reads the flag once per CTB row (SAO) or per row of 4 samples (deblocking).
   The planes are put back into the frame on every path.
