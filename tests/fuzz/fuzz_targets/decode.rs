@@ -16,6 +16,7 @@ fuzz_target!(|data: &[u8]| {
         sao: bits & 2 == 0,
         metadata: bits & 4 == 0,
         check_hash: bits & 8 == 0,
+        apply_transforms: false,
     };
     let mut pictures = Vec::new();
     let one = hevc::decode_into(data, &opts, &limits(), &NO, &mut pictures);

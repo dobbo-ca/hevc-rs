@@ -610,3 +610,137 @@ pub fn stream(s: &Spec) -> Vec<u8> {
     }
     out
 }
+
+/// A box: size, type, body.
+pub fn bx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    let mut v = (body.len() as u32 + 8).to_be_bytes().to_vec();
+    v.extend_from_slice(kind);
+    v.extend_from_slice(body);
+    v
+}
+
+/// A full box of version 0 and no flags.
+pub fn fbx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    bx(kind, &[&[0u8; 4][..], body].concat())
+}
+
+/// The `ispe` property of a `w` x `h` image.
+pub fn ispe(w: u32, h: u32) -> Vec<u8> {
+    fbx(b"ispe", &[w.to_be_bytes(), h.to_be_bytes()].concat())
+}
+
+/// The `hvcC` box and the item data of an Annex B stream from [`stream`] (one picture): the VPS,
+/// SPS and PPS go into the record, the slice NAL units into the data with 4-byte lengths.
+pub fn hvc1(annexb: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let mut starts = Vec::new();
+    let mut i = 0;
+    while i + 4 <= annexb.len() {
+        if annexb[i..i + 4] == [0, 0, 0, 1] {
+            starts.push(i + 4);
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+    let nals: Vec<&[u8]> = starts
+        .iter()
+        .enumerate()
+        .map(|(k, &b)| &annexb[b..starts.get(k + 1).map_or(annexb.len(), |&n| n - 4)])
+        .collect();
+    // Main profile, level 3.1, 4:2:0, 8 bit, lengthSizeMinusOne 3.
+    let mut rec = vec![
+        1u8, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 93, 0xF0, 0, 0xFC, 0xFD, 0xF8, 0xF8, 0, 0, 3,
+    ];
+    let (sets, slices): (Vec<&[u8]>, Vec<&[u8]>) = nals
+        .into_iter()
+        .partition(|n| (32..=34).contains(&(n[0] >> 1)));
+    rec.push(sets.len() as u8);
+    for n in &sets {
+        rec.push(0x80 | (n[0] >> 1));
+        rec.extend_from_slice(&1u16.to_be_bytes());
+        rec.extend_from_slice(&(n.len() as u16).to_be_bytes());
+        rec.extend_from_slice(n);
+    }
+    let mut data = Vec::new();
+    for n in slices {
+        data.extend_from_slice(&(n.len() as u32).to_be_bytes());
+        data.extend_from_slice(n);
+    }
+    (bx(b"hvcC", &rec), data)
+}
+
+/// One item of [`heif`]: its id, type, data and property boxes.
+pub struct Item {
+    pub id: u16,
+    pub kind: [u8; 4],
+    pub data: Vec<u8>,
+    pub props: Vec<Vec<u8>>,
+}
+
+/// A HEIF file of `items` (the first is the primary) and the item references `refs` (type,
+/// from, to), all item data in one `mdat`. Every property is associated with its own item only.
+pub fn heif(items: &[Item], refs: &[(&[u8; 4], u16, &[u16])]) -> Vec<u8> {
+    let ftyp = bx(b"ftyp", b"heic\0\0\0\0mif1heic");
+    let (mut ipco, mut ipma, mut index) =
+        (Vec::new(), (items.len() as u32).to_be_bytes().to_vec(), 0u8);
+    for it in items {
+        ipma.extend_from_slice(&it.id.to_be_bytes());
+        ipma.push(it.props.len() as u8);
+        for p in &it.props {
+            ipco.extend_from_slice(p);
+            index += 1;
+            // Essential, except `ispe`.
+            ipma.push(if &p[4..8] == b"ispe" {
+                index
+            } else {
+                0x80 | index
+            });
+        }
+    }
+    let iprp = bx(b"iprp", &[bx(b"ipco", &ipco), fbx(b"ipma", &ipma)].concat());
+    let mut iinf = (items.len() as u16).to_be_bytes().to_vec();
+    for it in items {
+        let body = [
+            &[2u8, 0, 0, 0][..],
+            &it.id.to_be_bytes(),
+            &[0, 0],
+            &it.kind,
+            &[0],
+        ]
+        .concat();
+        iinf.extend_from_slice(&bx(b"infe", &body));
+    }
+    let iref: Vec<u8> = refs
+        .iter()
+        .flat_map(|&(kind, from, to)| {
+            let mut b = from.to_be_bytes().to_vec();
+            b.extend_from_slice(&(to.len() as u16).to_be_bytes());
+            to.iter()
+                .for_each(|t| b.extend_from_slice(&t.to_be_bytes()));
+            bx(kind, &b)
+        })
+        .collect();
+    let meta = |base: u32| {
+        let mut iloc = vec![0x44u8, 0];
+        iloc.extend_from_slice(&(items.len() as u16).to_be_bytes());
+        let mut off = base;
+        for it in items {
+            iloc.extend_from_slice(&it.id.to_be_bytes());
+            iloc.extend_from_slice(&[0, 0, 0, 1]);
+            iloc.extend_from_slice(&off.to_be_bytes());
+            iloc.extend_from_slice(&(it.data.len() as u32).to_be_bytes());
+            off += it.data.len() as u32;
+        }
+        let hdlr = fbx(b"hdlr", &[&[0u8; 4][..], b"pict", &[0; 12], &[0]].concat());
+        let pitm = fbx(b"pitm", &items[0].id.to_be_bytes());
+        let mut body = [hdlr, pitm, fbx(b"iinf", &iinf), fbx(b"iloc", &iloc)].concat();
+        if !iref.is_empty() {
+            body.extend_from_slice(&fbx(b"iref", &iref));
+        }
+        body.extend_from_slice(&iprp);
+        fbx(b"meta", &body)
+    };
+    let base = (ftyp.len() + meta(0).len() + 8) as u32;
+    let mdat: Vec<u8> = items.iter().flat_map(|it| it.data.clone()).collect();
+    [ftyp, meta(base), bx(b"mdat", &mdat)].concat()
+}

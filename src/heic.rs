@@ -40,7 +40,8 @@ pub struct Clap {
     pub vert_off_d: u32,
 }
 
-/// A transformative property of the primary image, raw. Not applied to [`HeicImage::image`].
+/// A transformative property of the primary image, raw. Applied to [`HeicImage::image`] only with
+/// [`Options::apply_transforms`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transform {
     /// `clap`: crop.
@@ -56,14 +57,20 @@ pub enum Transform {
 pub struct HeicImage {
     /// The primary image: one coded `hvc1` item, a grid of `hvc1` tiles assembled (tiles
     /// row-major, each at `(col * tile_w, row * tile_h)`, cropped to the grid output size), or an
-    /// `iden`/`iovl` of those (see [`decode_heic`]). Not rotated, mirrored or `clap`-cropped: see
-    /// [`HeicImage::transforms`]. `sei` and `info.vui`
-    /// are those of the first tile (empty / `None` with [`Options::metadata`] false).
+    /// `iden`/`iovl` of those (see [`decode_heic`]). Not rotated, mirrored or `clap`-cropped
+    /// unless [`HeicImage::transforms_applied`]: see [`HeicImage::transforms`]. `sei` and
+    /// `info.vui` are those of the first tile (empty / `None` with [`Options::metadata`] false).
     pub image: Picture,
-    /// The luma plane of the auxiliary alpha image (itself coded or a grid).
+    /// The luma plane of the auxiliary alpha image (itself coded or a grid). With
+    /// [`HeicImage::transforms_applied`], the alpha item's own transforms are applied to it.
     pub alpha: Option<Plane>,
-    /// `clap`, `irot` and `imir` of the primary image, in file order.
+    /// `clap`, `irot` and `imir` of the primary image, in file order. Always listed, also when
+    /// they were applied.
     pub transforms: Vec<Transform>,
+    /// True when [`Options::apply_transforms`] was set: `image` and `alpha` are already cropped,
+    /// rotated and mirrored by their transforms, and `image.info.width`/`height` are the size
+    /// after them. False: the pixels are as coded.
+    pub transforms_applied: bool,
 }
 
 fn iso_err(e: isobmff::Error) -> Error {
@@ -589,15 +596,30 @@ where
     Ok(out)
 }
 
-/// The transforms of `img` as returned: for an identity item, those of its input, then its own.
-fn transforms_of(heif: &Heif, img: &isobmff::Image) -> Result<Vec<Transform>> {
+/// The transforms of `img` in the order they apply: for an identity item, those of its input,
+/// then its own.
+fn iso_transforms(heif: &Heif, img: &isobmff::Image) -> Result<Vec<isobmff::Transform>> {
     let mut v = Vec::new();
     if let ImageKind::Identity { input } = &img.kind {
         let inner = heif.image(*input).map_err(iso_err)?;
-        v.extend(inner.transforms.iter().map(transform));
+        v.extend_from_slice(&inner.transforms);
     }
-    v.extend(img.transforms.iter().map(transform));
+    v.extend_from_slice(&img.transforms);
     Ok(v)
+}
+
+/// The transforms of `img` as returned: [`iso_transforms`], mapped.
+fn transforms_of(heif: &Heif, img: &isobmff::Image) -> Result<Vec<Transform>> {
+    Ok(iso_transforms(heif, img)?.iter().map(transform).collect())
+}
+
+/// Bytes of the planes and SEI messages of `p`.
+fn pic_bytes(p: &Picture) -> usize {
+    p.planes
+        .iter()
+        .map(plane_bytes)
+        .sum::<usize>()
+        .saturating_add(sei_bytes(&p.sei))
 }
 
 struct Ctx<'a> {
@@ -619,6 +641,85 @@ impl Ctx<'_> {
         } else {
             Ok(())
         }
+    }
+
+    /// Applies `t` to `planes` (luma first, then the chroma planes of `cf`) with
+    /// `isobmff::apply_transforms`, which may book what is left of `rest` after `held` bytes (the
+    /// planes themselves included) for the buffers it makes.
+    fn apply(
+        &self,
+        planes: Vec<Plane>,
+        cf: ChromaFormat,
+        t: &[isobmff::Transform],
+        held: usize,
+    ) -> Result<Vec<Plane>> {
+        if t.is_empty() {
+            return Ok(planes);
+        }
+        let (width, height) = planes
+            .first()
+            .map(|p| (p.width, p.height))
+            .ok_or(Error::InvalidData("no plane"))?;
+        let chroma = match cf {
+            ChromaFormat::Mono => isobmff::Chroma::Mono,
+            ChromaFormat::Yuv420 => isobmff::Chroma::Yuv420,
+        };
+        let planes = isobmff::Planes {
+            width,
+            height,
+            chroma,
+            planes: planes
+                .into_iter()
+                .map(|p| isobmff::Plane {
+                    width: p.width,
+                    height: p.height,
+                    samples: match p.samples {
+                        Samples::U8(v) => isobmff::PlaneSamples::U8(v),
+                        Samples::U16(v) => isobmff::PlaneSamples::U16(v),
+                    },
+                })
+                .collect(),
+        };
+        let iso = isobmff::Limits {
+            max_alloc: self.rest.checked_sub(held).ok_or(Error::AllocLimit)?,
+            max_threads: 1,
+            max_pixels: self.limits.max_pixels,
+            ..isobmff::Limits::default()
+        };
+        let out = isobmff::apply_transforms(planes, t, &iso, self.cancel).map_err(iso_err)?;
+        // Only 4:2:2 turned by 90 or 270 degrees changes the format, and there is no 4:2:2 here.
+        if out.chroma != chroma {
+            return Err(Error::InvalidData("transform changed the chroma format"));
+        }
+        Ok(out
+            .planes
+            .into_iter()
+            .map(|p| Plane {
+                width: p.width,
+                height: p.height,
+                samples: match p.samples {
+                    isobmff::PlaneSamples::U8(v) => Samples::U8(v),
+                    isobmff::PlaneSamples::U16(v) => Samples::U16(v),
+                },
+            })
+            .collect())
+    }
+
+    /// `pic` with `t` applied and its size set to the result; `other` bytes besides `pic` are
+    /// held meanwhile.
+    fn transformed(
+        &self,
+        mut pic: Picture,
+        t: &[isobmff::Transform],
+        other: usize,
+    ) -> Result<Picture> {
+        let held = pic_bytes(&pic).saturating_add(other);
+        let cf = pic.info.chroma_format;
+        pic.planes = self.apply(std::mem::take(&mut pic.planes), cf, t, held)?;
+        if let Some(p) = pic.planes.first() {
+            (pic.info.width, pic.info.height) = (p.width, p.height);
+        }
+        Ok(pic)
     }
 
     /// One coded item: exactly one picture. `held` bytes of `rest` are already taken.
@@ -691,6 +792,12 @@ impl Ctx<'_> {
         else {
             return Err(Error::Unsupported("grid tile is not HEVC"));
         };
+        // libheif turns each tile by its own transforms before it is pasted; not done here.
+        if self.opts.apply_transforms && !t.transforms.is_empty() {
+            return Err(Error::Unsupported(
+                "grid tile with transformative properties",
+            ));
+        }
         let tile = self.coded(tid, hv, held)?;
         let (pw, ph) = tile
             .planes
@@ -806,9 +913,12 @@ impl Ctx<'_> {
 /// whose input is one of those, or an `iovl` (overlay) of those; each coded item is decoded
 /// with [`decode_hvcc_into`] and must hold exactly one picture. The metadata (SEI messages, VUI)
 /// is that of the first tile (first input of an overlay), kept unless [`Options::metadata`] is
-/// false. The result is not rotated, mirrored or cropped by the `irot`, `imir` and `clap`
-/// properties; they are returned raw in [`HeicImage::transforms`] (for an `iden` item: those of
-/// its input, then its own). An overlay is composed in the YCbCr layout of its inputs: the canvas
+/// false. By default the result is not rotated, mirrored or cropped by the `irot`, `imir` and
+/// `clap` properties; they are returned raw in [`HeicImage::transforms`] (for an `iden` item:
+/// those of its input, then its own). With [`Options::apply_transforms`] they are applied in that
+/// order by `isobmff::apply_transforms` (the list is still returned, and
+/// [`HeicImage::transforms_applied`] is true), and the alpha plane gets the alpha item's own
+/// transforms; a grid whose tiles have transforms is then `Unsupported`. An overlay is composed in the YCbCr layout of its inputs: the canvas
 /// is filled with the `iovl` fill colour converted to YCbCr, the inputs are painted in order at
 /// their offsets (later on top, clipped, no blending); see `docs/design.md`. The alpha image
 /// (`urn:mpeg:hevc:2015:auxid:1` or `urn:mpeg:mpegB:cicp:systems:auxiliary:alpha`, or
@@ -818,6 +928,8 @@ impl Ctx<'_> {
 /// for the parse, which stays alive, and an eighth for the item bytes of the items being decoded
 /// at that moment, shared by the tile workers); the decoded pictures, the assembled planes and the
 /// decoder's working memory share the rest, the tile workers of a grid splitting what is left.
+/// With [`Options::apply_transforms`], the buffers the transforms make get what is left of that
+/// share after the decoded image and alpha plane.
 /// `max_threads` is the number of threads that decode the tiles of a grid (the calling thread
 /// included; 1 spawns none) and is 1 for isobmff. The output and the error are the same for every
 /// thread count. `max_width`, `max_height` and `max_pixels` apply to every coded picture and to
@@ -828,12 +940,14 @@ impl Ctx<'_> {
 ///
 /// [`Error::Unsupported`] when the primary (or alpha) image is not HEVC, a grid of HEVC tiles or
 /// an identity or overlay of those, or when a coded item is protected (`protection_index` not 0),
+/// for a grid tile with transformative properties when [`Options::apply_transforms`] is set,
 /// or for an overlay with no input, with an input that has transformative properties, whose
 /// inputs differ in chroma format or bit depth, or with an odd offset in a 4:2:0 image;
 /// [`Error::InvalidData`] for a
 /// container error (the text is the isobmff error class, for example `"truncated"`), an item that
 /// is not exactly one picture, or tiles that differ in size or format, do not cover the grid or
-/// decode to another size than their `ispe`; the errors of [`decode_hvcc_into`] (including
+/// decode to another size than their `ispe`, and (with [`Options::apply_transforms`]) a `clap` or
+/// `irot` that `isobmff::apply_transforms` rejects (`"malformed"`); the errors of [`decode_hvcc_into`] (including
 /// [`Error::InterSlice`] and [`Error::NoPicture`]); [`Error::WidthLimit`],
 /// [`Error::HeightLimit`], [`Error::PixelLimit`], [`Error::AllocLimit`],
 /// [`Error::OutOfMemory`] and [`Error::Cancelled`].
@@ -860,24 +974,29 @@ pub fn decode_heic(
         iso: &iso,
         rest: limits.max_alloc - limits.max_alloc / 4,
     };
-    let image = cx.image(primary.id, 0, false, "primary image is not HEVC")?;
-    let alpha = match primary.alpha {
+    let mut image = cx.image(primary.id, 0, false, "primary image is not HEVC")?;
+    let mut alpha = match primary.alpha {
         Some(id) => {
-            let held = image
-                .planes
-                .iter()
-                .map(plane_bytes)
-                .sum::<usize>()
-                .saturating_add(sei_bytes(&image.sei));
-            let a = cx.image(id, held, true, "alpha image is not HEVC")?;
+            let a = cx.image(id, pic_bytes(&image), true, "alpha image is not HEVC")?;
             a.planes.into_iter().next()
         }
         None => None,
     };
+    if opts.apply_transforms {
+        let other = alpha.as_ref().map_or(0, plane_bytes);
+        image = cx.transformed(image, &iso_transforms(&heif, &primary)?, other)?;
+        // The alpha item takes its own transforms, as in libheif (docs/design.md).
+        if let (Some(a), Some(id)) = (alpha.take(), primary.alpha) {
+            let t = iso_transforms(&heif, &heif.image(id).map_err(iso_err)?)?;
+            let held = pic_bytes(&image).saturating_add(plane_bytes(&a));
+            alpha = cx.apply(vec![a], ChromaFormat::Mono, &t, held)?.pop();
+        }
+    }
     Ok(HeicImage {
         image,
         alpha,
         transforms: transforms_of(&heif, &primary)?,
+        transforms_applied: opts.apply_transforms,
     })
 }
 
@@ -886,12 +1005,15 @@ pub fn decode_heic(
 /// The item is one `hvc1` image, a `grid`, an `iden` or an `iovl`, decoded as [`decode_heic`] decodes the
 /// primary image: each coded item must hold exactly one picture, and the metadata (SEI messages,
 /// VUI) is that of the first tile, kept unless [`Options::metadata`] is false. No alpha plane is
-/// decoded, and the `irot`, `imir` and `clap` properties are not applied; read them from
-/// `heif.image(id)`.
+/// decoded. The `irot`, `imir` and `clap` properties are not applied (read them from
+/// `heif.image(id)`) unless [`Options::apply_transforms`] is set: then the item's transforms (for
+/// an `iden` item, those of its input first) are applied as in [`decode_heic`], and `info.width`
+/// and `info.height` are the size after them.
 ///
 /// Limits: `max_alloc` is the peak of the call. An eighth of it goes to the isobmff item bytes
 /// (shared by the tile workers); the decoded pictures, the assembled planes and the decoder's working
-/// memory share the rest. `heif` itself is not charged: the caller holds it. `max_width`,
+/// memory share the rest (the buffers of the transforms get what is left of it after the decoded
+/// picture). `heif` itself is not charged: the caller holds it. `max_width`,
 /// `max_height` and `max_pixels` apply to every coded picture and to the output size of a grid or
 /// overlay. The cancel flag is read before each coded item and inside the decoder.
 ///
@@ -923,7 +1045,12 @@ pub fn decode_heic_item(
         iso: &iso,
         rest: limits.max_alloc - limits.max_alloc / 8,
     };
-    cx.image(id, 0, false, "image item is not HEVC")
+    let pic = cx.image(id, 0, false, "image item is not HEVC")?;
+    if !opts.apply_transforms {
+        return Ok(pic);
+    }
+    let img = heif.image(id).map_err(iso_err)?;
+    cx.transformed(pic, &iso_transforms(heif, &img)?, 0)
 }
 
 #[cfg(test)]
@@ -1120,6 +1247,53 @@ mod tests {
         );
         assert!(decode_heic_item(&heif, &file, 1, &o, &l, &cancel).is_err());
     }
+    #[test]
+    fn transforms_are_charged_and_cancelled() {
+        let file = one_item_file();
+        let cancel = AtomicBool::new(false);
+        let iso = isobmff::Limits::default();
+        let heif = isobmff::parse(&file, &iso, &cancel).expect("hand-built file parses");
+        let (opts, limits) = (Options::default(), Limits::default());
+        let p = pic(4, 2, ChromaFormat::Yuv420, [1, 2, 3]);
+        let bytes = pic_bytes(&p);
+        let rot = [isobmff::Transform::Rotate(90)];
+        let big = Ctx {
+            heif: &heif,
+            file: &file,
+            opts: &opts,
+            limits: &limits,
+            cancel: &cancel,
+            iso: &iso,
+            rest: 1 << 20,
+        };
+        let ok = big.transformed(p.clone(), &rot, 0).unwrap();
+        assert_eq!((ok.info.width, ok.info.height), (2, 4));
+        assert_eq!((ok.planes[1].width, ok.planes[1].height), (1, 2));
+        // The new planes (12 bytes) and their list do not fit in what is left after the input.
+        let tight = Ctx {
+            rest: 2 * bytes,
+            ..big
+        };
+        assert_eq!(
+            tight.transformed(p.clone(), &rot, 0),
+            Err(Error::AllocLimit)
+        );
+        // The bytes held besides the picture count.
+        assert_eq!(
+            big.transformed(p.clone(), &rot, 1 << 20),
+            Err(Error::AllocLimit)
+        );
+        // An empty list needs nothing.
+        let none = Ctx { rest: bytes, ..big };
+        assert_eq!(none.transformed(p.clone(), &[], 0), Ok(p.clone()));
+        let yes = AtomicBool::new(true);
+        let stop = Ctx {
+            cancel: &yes,
+            ..big
+        };
+        assert_eq!(stop.transformed(p, &rot, 0), Err(Error::Cancelled));
+    }
+
     #[test]
     fn garbage_is_invalid_not_a_panic() {
         let cancel = AtomicBool::new(false);

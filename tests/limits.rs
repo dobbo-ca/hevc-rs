@@ -351,6 +351,47 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
         }
     }
 
+    // decode_heic with `Options::apply_transforms`: a real 256x256 picture turned by 90 degrees
+    // (new planes next to the decoded ones). The real heap of the call (the parse, the decode and
+    // the buffers of the transform) stays within max_alloc while the budget steps by 16 KiB.
+    let (hvcc, data) = common::hvc1(&common::stream(&common::Spec {
+        width: 256,
+        height: 256,
+        pictures: 1,
+        ..Default::default()
+    }));
+    let item = common::Item {
+        id: 1,
+        kind: *b"hvc1",
+        data,
+        props: vec![common::ispe(256, 256), hvcc, common::bx(b"irot", &[1])],
+    };
+    let heic = common::heif(&[item], &[]);
+    let apply = Options {
+        apply_transforms: true,
+        ..opts
+    };
+    let ok = hevc::decode_heic(&heic, &apply, &Limits::default(), &cancel);
+    assert!(
+        ok.is_ok_and(|h| h.transforms_applied),
+        "the HEIC file must decode"
+    );
+    let (_, heic_need) =
+        peaked(|| hevc::decode_heic(&heic, &apply, &Limits::default(), &cancel).map(drop));
+    let mut max_alloc = heic_need / 2;
+    while max_alloc <= 2 * heic_need {
+        let limits = Limits {
+            max_alloc,
+            ..Limits::default()
+        };
+        let (_, peak) = peaked(|| hevc::decode_heic(&heic, &apply, &limits, &cancel).map(drop));
+        assert!(
+            peak <= max_alloc,
+            "heap peak {peak} over max_alloc {max_alloc} (HEIC with transforms)"
+        );
+        max_alloc += 16 << 10;
+    }
+
     // Band-parallel filters on a real picture: one 512x512 picture (four bands of 64 Ki luma
     // samples; one picture, so no picture worker) gives the same output for every max_threads,
     // and with two or more a band thread runs next to the calling thread. The checks come after
