@@ -60,3 +60,38 @@ What each PR gave (all classes, 1 thread unless noted; each run against the main
 
 Kernels that gave no gain were removed (docs/safety.md, "Kernels removed"). Open for speed:
 parallel decode by tile / WPP row inside one picture.
+
+### Tried and dropped: residual_coding / CABAC fast paths (PR #26)
+
+The 4a8ef2a profile (run 45317036877, callgrind) put residual_coding and the CABAC engine at
+about 8% of the instructions on the large main-class streams and up to about 30% on the small,
+high-rate ones (SDH_A, TUSIZE_A). Commit d2d4ff7 on branch `sp-cabc-v5n1` tried, all bit-exact
+(test, arm64, parity and parity-arm64 green in run 45491008129):
+
+- DecodeDecision without a branch on the MPS/LPS outcome, with one 256-entry rangeTabLps table
+  and one 256-entry transition table indexed by the packed context byte, inlined into the
+  per-coefficient loops of residual_coding.
+- sig_coeff_flag context patterns precomputed in scan order per (scanIdx, prevCsbf or 4x4).
+- coeff_abs_level_remaining read with one look at the next 16 bypass bins (one division)
+  when the codeword fits, instead of a prefix run and a separate suffix read.
+- Fixed-size clearing of the coefficient block per block size.
+
+Two bench runs (45491992963, 45493071189) against main 4a8ef2a (45466964176), 1 thread, ms:
+
+| class | build | main | run 1 | run 2 |
+|---|---|---|---|---|
+| all (149) | default | 3041.1 | 3017.2 | 3027.0 |
+| all (149) | v4 | 2748.8 | 2705.9 | 2723.6 |
+| all (149) | dec265 (reference) | 3364.4 | 3346.2 | 3366.4 |
+| heic (58) | default | 2395.2 | 2431.0 | 2523.6 |
+| heic (58) | v4 | 2232.9 | 2238.8 | 3507.1 |
+| SDH_A_Orange_4 | default | 61.41 | 61.03 | 61.09 |
+| SDH_A_Orange_4 | v4 | 56.47 | 54.71 | 55.54 |
+
+The second run's HEIC column was disturbed (the v4 time rose 57%, a host effect). Per input,
+the Annex B geometric mean moved by -1.1% to -1.7% (default) and -1.8% to -2.4% (v4) after
+correcting for the reference's drift; the class totals moved by under 1% in the default build,
+which is inside run-to-run noise, and HEIC got no faster. Not merged. The engine's remaining
+cost is the serial dependency of one bin on the previous one; the next speed step for these
+streams is more likely a partial inverse transform for blocks whose coefficients sit in the
+top-left corner (transform.rs always transforms the whole block).

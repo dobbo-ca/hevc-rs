@@ -91,43 +91,30 @@ const TRANS_IDX_LPS: [u8; 64] = [
     33, 33, 34, 34, 35, 35, 35, 36, 36, 36, 37, 37, 37, 38, 38, 63,
 ];
 
-/// State transitions of 9.3.4.3.2.2 for the packed context byte `pStateIdx << 1 | valMps`,
-/// indexed by `lps << 7 | byte` (`lps` is 1 when the bin was the LPS). transIdxMps is
-/// pStateIdx + 1 except 62 -> 62 and 63 -> 63; an LPS in state 0 flips valMps.
+/// State transitions of 9.3.4.3.2.2 for the packed context byte `pStateIdx << 1 | valMps`:
+/// (after an MPS, after an LPS). transIdxMps is pStateIdx + 1 except 62 -> 62 and 63 -> 63;
+/// an LPS in state 0 flips valMps.
 #[allow(clippy::indexing_slicing)] // evaluated at compile time
-const fn build_next() -> [u8; 256] {
-    let mut t = [0u8; 256];
+const fn build_next() -> ([u8; 128], [u8; 128]) {
+    let mut mps = [0u8; 128];
+    let mut lps = [0u8; 128];
     let mut s = 0usize;
     while s < 64 {
         let mut m = 0usize;
         while m < 2 {
             let up = if s < 62 { s + 1 } else { s };
-            t[(s << 1) | m] = ((up << 1) | m) as u8;
+            mps[(s << 1) | m] = ((up << 1) | m) as u8;
             let nm = if s == 0 { m ^ 1 } else { m };
-            t[128 | (s << 1) | m] = (((TRANS_IDX_LPS[s] as usize) << 1) | nm) as u8;
+            lps[(s << 1) | m] = (((TRANS_IDX_LPS[s] as usize) << 1) | nm) as u8;
             m += 1;
         }
         s += 1;
     }
-    t
+    (mps, lps)
 }
 
-static NEXT: [u8; 256] = build_next();
-
-/// Table 9-52 flattened: rangeTabLps[pStateIdx][qRangeIdx] at `pStateIdx << 2 | qRangeIdx`,
-/// which is `(byte & 0x7e) << 1 | qRangeIdx` for the packed context byte.
-#[allow(clippy::indexing_slicing)] // evaluated at compile time
-const fn build_lps() -> [u8; 256] {
-    let mut t = [0u8; 256];
-    let mut i = 0usize;
-    while i < 256 {
-        t[i] = RANGE_TAB_LPS[i >> 2][i & 3];
-        i += 1;
-    }
-    t
-}
-
-static LPS: [u8; 256] = build_lps();
+static NEXT_MPS: [u8; 128] = build_next().0;
+static NEXT_LPS: [u8; 128] = build_next().1;
 
 /// One context variable: `pStateIdx` (0..=62 after initialisation) and `valMps` (0 or 1),
 /// packed as `pStateIdx << 1 | valMps`.
@@ -152,7 +139,6 @@ impl Ctx {
     }
 
     /// valMps.
-    #[cfg(test)]
     fn mps(self) -> bool {
         self.s & 1 == 1
     }
@@ -161,15 +147,15 @@ impl Ctx {
     /// tests' encoder and reference decoder use it).
     #[cfg(test)]
     fn update(&mut self, bin: bool) {
-        let lps = usize::from(bin != self.mps());
-        self.s = NEXT
-            .get((lps << 7) | usize::from(self.s & 127))
-            .copied()
-            .unwrap_or(self.s);
+        let t = if bin == self.mps() {
+            &NEXT_MPS
+        } else {
+            &NEXT_LPS
+        };
+        self.s = t.get(usize::from(self.s & 127)).copied().unwrap_or(self.s);
     }
 
-    /// rangeTabLps[pStateIdx][qRangeIdx] (9-65), for the tests' encoder and reference decoder.
-    #[cfg(test)]
+    /// rangeTabLps[pStateIdx][qRangeIdx] (9-65).
     fn lps_range(self, q_range_idx: u32) -> u32 {
         RANGE_TAB_LPS
             .get(usize::from((self.s >> 1) & 63))
@@ -281,29 +267,21 @@ impl<'a> Cabac<'a> {
 
     /// 9.3.4.3.2 DecodeDecision with the context `ctx`, which is updated.
     pub(crate) fn decode(&mut self, ctx: &mut Ctx) -> Result<bool> {
-        self.decode_inline(ctx)
-    }
-
-    /// [`Cabac::decode`] inlined into the caller, for the per-coefficient loops of
-    /// residual_coding. The MPS/LPS outcome selects values instead of branching: that branch
-    /// is close to random for sig_coeff_flag and would mispredict often.
-    #[inline(always)]
-    pub(crate) fn decode_inline(&mut self, ctx: &mut Ctx) -> Result<bool> {
-        let s = ctx.s;
-        let q = ((self.range >> 6) & 3) as usize;
-        let lps = LPS
-            .get((usize::from(s & 0x7e) << 1) | q)
-            .map_or(2, |&v| u32::from(v));
+        let s = *ctx;
+        let lps = s.lps_range((self.range >> 6) & 3);
         // range >= 256 > lps.
         let mps_range = self.range - lps;
         let scaled = u64::from(mps_range) << self.k;
-        let is_lps = self.value >= scaled;
-        self.value -= scaled & 0u64.wrapping_sub(u64::from(is_lps));
-        self.range = if is_lps { lps } else { mps_range };
-        ctx.s = NEXT
-            .get((usize::from(is_lps) << 7) | usize::from(s & 127))
-            .copied()
-            .unwrap_or(s);
+        let bin = if self.value < scaled {
+            self.range = mps_range;
+            ctx.s = NEXT_MPS.get(usize::from(s.s & 127)).copied().unwrap_or(s.s);
+            s.mps()
+        } else {
+            self.value -= scaled;
+            self.range = lps;
+            ctx.s = NEXT_LPS.get(usize::from(s.s & 127)).copied().unwrap_or(s.s);
+            !s.mps()
+        };
         // Renormalisation: shift until the range is >= 256 (at most 7 bits).
         let sh = self.range.leading_zeros().saturating_sub(23);
         self.range <<= sh;
@@ -311,7 +289,7 @@ impl<'a> Cabac<'a> {
         if self.k < self.lim {
             self.settle()?;
         }
-        Ok((s & 1 == 1) != is_lps)
+        Ok(bin)
     }
 
     /// 9.3.4.3.4 DecodeBypass.
@@ -405,28 +383,6 @@ impl<'a> Cabac<'a> {
                 return Ok(None);
             }
         }
-    }
-
-    /// The next 16 bypass bins, the first one as the most significant bit, without consuming
-    /// them; [`Cabac::bypass_take`] then consumes a prefix of them.
-    #[inline(always)]
-    pub(crate) fn bypass_peek16(&mut self) -> u32 {
-        if self.k < 16 {
-            self.refill();
-        }
-        let scaled = u64::from(self.range) << (self.k - 16);
-        ((self.value / scaled) & 0xffff) as u32
-    }
-
-    /// Consumes the first `used` (1..=16) of the bins `q` returned by [`Cabac::bypass_peek16`].
-    #[inline(always)]
-    pub(crate) fn bypass_take(&mut self, q: u32, used: u32) -> Result<()> {
-        self.k -= used;
-        self.value -= u64::from(q >> (16 - used)) * (u64::from(self.range) << self.k);
-        if self.k < self.lim {
-            self.settle()?;
-        }
-        Ok(())
     }
 
     /// 9.3.4.3.5 DecodeTerminate (end_of_slice_segment_flag, end_of_subset_one_bit, pcm_flag).

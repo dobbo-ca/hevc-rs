@@ -20,13 +20,6 @@ fn ctx_mut(a: &mut [Ctx], i: usize) -> Result<&mut Ctx> {
     a.get_mut(i).ok_or(BAD)
 }
 
-/// Zeroes the first `N` coefficients.
-fn clear<const N: usize>(c: &mut [i32]) -> Result<()> {
-    *c.first_chunk_mut::<N>()
-        .ok_or(Error::InvalidData("residual buffer too small"))? = [0; N];
-    Ok(())
-}
-
 /// Scan order arrays 6.5.3 (kind 0, up-right diagonal), 6.5.4 (1, horizontal), 6.5.5 (2,
 /// vertical) for blkSize = 1 << `log2`; entries are (x, y), the rest of the array is unused.
 // Evaluated at compile time: an out-of-range index would be a build error, not a runtime panic.
@@ -187,32 +180,17 @@ const fn build_sig_pat() -> [[u8; 16]; 4] {
     t
 }
 
-/// The sigCtx pattern values of a sub-block in scan order: `SIG_SCAN[scanIdx][k][n]` for scan
-/// position n, with k = prevCsbf for blocks over 4x4 and k = 4 for a 4x4 block (Table 9-50).
-#[allow(clippy::indexing_slicing)] // evaluated at compile time
-const fn build_sig_scan() -> [[[u8; 16]; 5]; 3] {
-    let pat = build_sig_pat();
-    let mut t = [[[0u8; 16]; 5]; 3];
-    let mut s = 0;
-    while s < 3 {
-        let order = scan_array(s, 2);
-        let mut k = 0;
-        while k < 5 {
-            let mut n = 0;
-            while n < 16 {
-                let (x, y) = order[n];
-                let i = (y as usize) * 4 + x as usize;
-                t[s][k][n] = if k == 4 { CTX_IDX_MAP[i] } else { pat[k][i] };
-                n += 1;
-            }
-            k += 1;
-        }
-        s += 1;
-    }
-    t
-}
+static SIG_PAT: [[u8; 16]; 4] = build_sig_pat();
 
-static SIG_SCAN: [[[u8; 16]; 5]; 3] = build_sig_scan();
+/// The `yP * 4 + xP` table of sigCtx for a sub-block: Table 9-50 for a 4x4 block, else by
+/// prevCsbf.
+fn sig_pattern(log2: u32, prev_csbf: usize) -> Result<&'static [u8; 16]> {
+    if log2 == 2 {
+        Ok(&CTX_IDX_MAP)
+    } else {
+        SIG_PAT.get(prev_csbf).ok_or(BAD)
+    }
+}
 
 /// What 9.3.4.2.5 adds to the pattern value for the sub-block (xS, yS), chroma offset 27
 /// included. The DC of the whole block (sub-block 0, position 0) is `27 * (cIdx > 0)` instead.
@@ -232,36 +210,8 @@ fn sig_offset(log2: u32, c_idx: usize, scan_idx: u32, xs: usize, ys: usize) -> u
 }
 
 /// coeff_abs_level_remaining, 9.3.3.11 (extended_precision off): TR prefix of up to four ones,
-/// then an EG(rice + 1) suffix, whose unary part continues the run of ones. A codeword of up
-/// to 16 bins (all but very large levels) is read with one look at the next 16 bins.
-#[inline(always)]
+/// then an EG(rice + 1) suffix, whose unary part continues the run of ones.
 fn abs_level_remaining(cabac: &mut Cabac, rice: u32) -> Result<i32> {
-    let q = cabac.bypass_peek16();
-    let lead = (q << 16).leading_ones(); // the run of ones, at most 16
-    if lead <= 3 {
-        // Prefix `lead`, its 0, then `rice` suffix bits: at most 3 + 1 + 4 bins.
-        let used = lead + 1 + rice;
-        let suffix = (q >> (16 - used)) & ((1 << rice) - 1);
-        cabac.bypass_take(q, used)?;
-        return Ok(((lead << rice) + suffix) as i32);
-    }
-    if lead < 16 {
-        let m = lead - 4;
-        let n = m + 1 + rice;
-        let used = lead + 1 + n;
-        if used <= 16 {
-            // lead <= 9 here, so the value fits easily.
-            let low = (q >> (16 - used)) & ((1 << n) - 1);
-            cabac.bypass_take(q, used)?;
-            return Ok(((((1u32 << (m + 1)) + 2) << rice) + low) as i32);
-        }
-    }
-    abs_level_remaining_long(cabac, rice)
-}
-
-/// [`abs_level_remaining`] for a codeword longer than 16 bins.
-#[inline(never)]
-fn abs_level_remaining_long(cabac: &mut Cabac, rice: u32) -> Result<i32> {
     let prefix = cabac.bypass_ones(32)?.ok_or(Error::InvalidData(
         "coeff_abs_level_remaining prefix too long",
     ))?;
@@ -289,13 +239,10 @@ pub(crate) fn residual_coding(
         return Err(Error::InvalidData("residual_coding block size or scanIdx"));
     }
     let n_tb = 1usize << log2;
-    // Fixed sizes, so the small blocks are cleared inline instead of by a memset call.
-    match log2 {
-        2 => clear::<16>(coeffs)?,
-        3 => clear::<64>(coeffs)?,
-        4 => clear::<256>(coeffs)?,
-        _ => clear::<1024>(coeffs)?,
-    }
+    coeffs
+        .get_mut(..n_tb * n_tb)
+        .ok_or(Error::InvalidData("residual buffer too small"))?
+        .fill(0);
     let chroma = p.c_idx > 0;
 
     let transform_skip = p.transform_skip_allowed
@@ -310,8 +257,7 @@ pub(crate) fn residual_coding(
     }
 
     let sb_scan = scan(log2 - 2, p.scan_idx)?;
-    let pos_scan: &[(u8, u8); 16] = scan(2, p.scan_idx)?.first_chunk().ok_or(BAD)?;
-    let sig_scan = SIG_SCAN.get(p.scan_idx as usize).ok_or(BAD)?;
+    let pos_scan = scan(2, p.scan_idx)?;
     let sb_dim = 1usize << (log2 - 2);
     let last_sb = sb_scan
         .iter()
@@ -349,7 +295,7 @@ pub(crate) fn residual_coding(
             // 9.3.4.2.4
             let inc = usize::from(right + below > 0) + if chroma { 2 } else { 0 };
             infer_dc = true;
-            cabac.decode_inline(ctx_mut(&mut ctx.coded_sub_block_flag, inc)?)?
+            cabac.decode(ctx_mut(&mut ctx.coded_sub_block_flag, inc)?)?
         } else {
             true
         };
@@ -359,9 +305,7 @@ pub(crate) fn residual_coding(
         }
 
         // 9.3.4.2.5: sig_coeff_flag ctxInc = offset of the sub-block + pattern of the position.
-        let pat = sig_scan
-            .get(if log2 == 2 { 4 } else { prev_csbf })
-            .ok_or(BAD)?;
+        let pat = sig_pattern(log2, prev_csbf)?;
         let sig_off = sig_offset(log2, p.c_idx, p.scan_idx, xs, ys);
         let dc_inc = if chroma { 27 } else { 0 };
 
@@ -372,14 +316,15 @@ pub(crate) fn residual_coding(
             n = last_scan_pos as i32 - 1;
         }
         while n >= 0 {
-            let nu = n as usize & 15;
+            let nu = n as usize;
             if nu > 0 || !infer_dc {
                 let inc = if i == 0 && nu == 0 {
                     dc_inc
                 } else {
-                    sig_off + usize::from(get(pat, nu)?)
+                    let (xp, yp) = get(pos_scan, nu)?;
+                    sig_off + usize::from(get(pat, (usize::from(yp) << 2) + usize::from(xp))?)
                 };
-                if cabac.decode_inline(ctx_mut(&mut ctx.sig_coeff_flag, inc)?)? {
+                if cabac.decode(ctx_mut(&mut ctx.sig_coeff_flag, inc)?)? {
                     sig |= 1 << nu;
                     infer_dc = false;
                 }
@@ -411,7 +356,7 @@ pub(crate) fn residual_coding(
             let nu = 15 - m.leading_zeros() as usize;
             m &= !(1u16 << nu);
             let inc = ctx_set * 4 + g1_ctx.min(3) as usize + if chroma { 16 } else { 0 };
-            let flag = cabac.decode_inline(ctx_mut(&mut ctx.greater1, inc)?)?;
+            let flag = cabac.decode(ctx_mut(&mut ctx.greater1, inc)?)?;
             num_g1 += 1;
             if flag {
                 put(&mut base, nu, 2)?;
@@ -430,7 +375,7 @@ pub(crate) fn residual_coding(
         // 9.3.4.2.7
         if let Some(n2) = last_g1 {
             let inc = ctx_set + if chroma { 4 } else { 0 };
-            if cabac.decode_inline(ctx_mut(&mut ctx.greater2, inc)?)? {
+            if cabac.decode(ctx_mut(&mut ctx.greater2, inc)?)? {
                 put(&mut base, n2, 3)?;
             }
         }
@@ -757,71 +702,36 @@ mod tests {
             let sb = 1usize << (log2 - 2);
             for c_idx in 0..2usize {
                 for scan_idx in 0..3u32 {
-                    let order = scan(2, scan_idx).unwrap();
                     for ys in 0..sb {
                         for xs in 0..sb {
                             for prev in 0..4usize {
-                                let pat =
-                                    &SIG_SCAN[scan_idx as usize][if log2 == 2 { 4 } else { prev }];
+                                let pat = sig_pattern(log2, prev).unwrap();
                                 let off = sig_offset(log2, c_idx, scan_idx, xs, ys);
-                                for (n, &(xp, yp)) in order.iter().enumerate() {
-                                    let (xp, yp) = (usize::from(xp), usize::from(yp));
-                                    let want = sig_ctx_inc(
-                                        log2,
-                                        c_idx,
-                                        scan_idx,
-                                        (xs, ys),
-                                        (xp, yp),
-                                        prev,
-                                    );
-                                    let got = if xs + ys + xp + yp == 0 {
-                                        if c_idx == 0 { 0 } else { 27 }
-                                    } else {
-                                        off + usize::from(pat[n])
-                                    };
-                                    assert_eq!(
-                                        got, want,
-                                        "log2 {log2} c {c_idx} scan {scan_idx} sb ({xs},{ys}) prev {prev} p ({xp},{yp})"
-                                    );
+                                for yp in 0..4usize {
+                                    for xp in 0..4usize {
+                                        let want = sig_ctx_inc(
+                                            log2,
+                                            c_idx,
+                                            scan_idx,
+                                            (xs, ys),
+                                            (xp, yp),
+                                            prev,
+                                        );
+                                        let got = if xs + ys + xp + yp == 0 {
+                                            if c_idx == 0 { 0 } else { 27 }
+                                        } else {
+                                            off + usize::from(pat[(yp << 2) + xp])
+                                        };
+                                        assert_eq!(
+                                            got, want,
+                                            "log2 {log2} c {c_idx} scan {scan_idx} sb ({xs},{ys}) prev {prev} p ({xp},{yp})"
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-        }
-    }
-
-    /// The single-look-ahead fast path of abs_level_remaining against the bin-by-bin reference,
-    /// on random data (short and long codewords, every rice parameter, truncated streams).
-    #[test]
-    fn abs_level_remaining_matches_reference() {
-        let mut seed = 7u32;
-        for round in 0..3000u32 {
-            let len = 2 + (round % 24) as usize;
-            let data: Vec<u8> = (0..len)
-                .map(|_| {
-                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-                    // Bias towards ones in some rounds for long prefixes.
-                    let b = (seed >> 24) as u8;
-                    if round.is_multiple_of(4) { b | 0xEE } else { b }
-                })
-                .collect();
-            let (Ok(mut c1), Ok(mut c2)) = (
-                Cabac::new(BitReader::new(&data)),
-                Cabac::new(BitReader::new(&data)),
-            ) else {
-                continue;
-            };
-            for step in 0..40u32 {
-                let rice = (round + step) % 5;
-                let r1 = ref_abs_level_remaining(&mut c1, rice);
-                let r2 = abs_level_remaining(&mut c2, rice);
-                assert_eq!(r1, r2, "round {round} step {step} rice {rice}");
-                if r1.is_err() {
-                    break;
-                }
-                assert_eq!(c1.spec_pos(), c2.spec_pos(), "round {round} step {step}");
             }
         }
     }
