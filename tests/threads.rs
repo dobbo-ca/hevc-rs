@@ -2,8 +2,11 @@
 //! `max_threads`. The slice data of the test streams is pseudo-random, not valid CABAC, so every
 //! picture fails inside the CTU loop (a job error: the call is replayed with one thread); a P
 //! slice at the end is a front-end error. The streams reach the workers, the replay and the
-//! ticket order; the success path of the workers is covered by the parity gate G5 and the fuzz
-//! target.
+//! ticket order. The success path (pictures decoded on workers, deblocking and SAO in bands) and
+//! the errors of real pictures use real streams from the test encoder in `common`; the parity
+//! gate G5 and the fuzz target cover it too.
+
+mod common;
 
 use hevc::{Error, Limits, Options, Picture};
 use std::sync::atomic::AtomicBool;
@@ -298,6 +301,97 @@ fn errors_of_pictures_that_are_not_output_count_for_every_thread_count() {
                 run(&s, &opts, &with_threads(t), &cancel),
                 want,
                 "threads {t}, pictures {n}"
+            );
+        }
+    }
+}
+
+/// Real streams from the test encoder (`common`): 512x512 pictures are filtered in bands, and a
+/// call with several pictures runs them on picture workers.
+#[test]
+fn real_pictures_same_result_for_every_thread_count() {
+    let cancel = AtomicBool::new(false);
+    let all = Options::default();
+    let checked = Options {
+        check_hash: true,
+        ..all
+    };
+    let bare = Options {
+        deblocking: false,
+        sao: false,
+        metadata: false,
+        ..all
+    };
+    let specs = [(512, 1, false), (512, 3, false), (256, 8, true)];
+    for (size, pictures, repeat) in specs {
+        let s = common::stream(&common::Spec {
+            width: size,
+            height: size,
+            pictures,
+            big_sps: repeat,
+            repeat,
+            ..Default::default()
+        });
+        for opts in [all, checked, bare] {
+            let want = run(&s, &opts, &with_threads(1), &cancel);
+            assert!(
+                want.0.is_ok() && want.1.len() == pictures,
+                "stream {size}/{pictures}: {:?}, {} pictures",
+                want.0,
+                want.1.len()
+            );
+            for t in [0, 2, 3, 8] {
+                let got = run(&s, &opts, &with_threads(t), &cancel);
+                assert!(got == want, "threads {t}, stream {size}/{pictures}");
+            }
+        }
+    }
+}
+
+/// `Decoder::finish_jobs` waits for every job before the last commit: a failing picture that is
+/// not output (in no output queue) is still in flight on a worker when the stream ends, after
+/// good pictures, and its error must be the call's error for every thread count. With every
+/// picture hidden the output queue is empty, so the commit alone would not wait for it.
+#[test]
+fn errors_of_real_pictures_that_are_not_output_count_for_every_thread_count() {
+    let cancel = AtomicBool::new(false);
+    let opts = Options::default();
+    for hidden in [6, 3, 1] {
+        let spec = common::Spec {
+            width: 256,
+            height: 256,
+            pictures: 6,
+            hidden,
+            bad_last: true,
+            ..Default::default()
+        };
+        let good = run(
+            &common::stream(&common::Spec {
+                bad_last: false,
+                ..spec
+            }),
+            &opts,
+            &with_threads(1),
+            &cancel,
+        );
+        assert!(
+            good.0.is_ok() && good.1.len() == 6 - hidden,
+            "hidden {hidden}: {:?}",
+            good.0
+        );
+        let s = common::stream(&spec);
+        let want = run(&s, &opts, &with_threads(1), &cancel);
+        assert!(
+            want.0.is_err(),
+            "hidden {hidden}: the last picture must fail"
+        );
+        for t in [2, 3, 8] {
+            let got = run(&s, &opts, &with_threads(t), &cancel);
+            assert!(
+                got == want,
+                "threads {t}, hidden {hidden}: {:?} vs {:?}",
+                got.0,
+                want.0
             );
         }
     }

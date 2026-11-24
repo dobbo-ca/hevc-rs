@@ -2,6 +2,8 @@
 //! allocator) and threads against `max_threads` (Linux: `/proc/self/task`). One test in this file
 //! on purpose, so no other test thread allocates or counts while it runs.
 
+mod common;
+
 use hevc::{Limits, Options};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -172,11 +174,6 @@ fn stream(size: u32, data: usize) -> Vec<u8> {
 
 /// Like [`stream`] with `n` copies of the IDR picture.
 fn stream_n(size: u32, data: usize, n: usize) -> Vec<u8> {
-    stream_with(size, data, n, false)
-}
-
-/// Like [`stream_n`]; with `repeat`, the VPS, SPS and PPS come again before every picture.
-fn stream_with(size: u32, data: usize, n: usize, repeat: bool) -> Vec<u8> {
     let mut x = 0x9E37_79B9_7F4A_7C15u64;
     let mut slice = vec![0xAC, 0xC0]; // first_slice, pps 0, I, no SAO, qp delta 0, alignment
     for _ in 0..data {
@@ -187,12 +184,7 @@ fn stream_with(size: u32, data: usize, n: usize, repeat: bool) -> Vec<u8> {
     }
     let mut s = Vec::new();
     let mut nals = vec![(32u8, vec![0x0C, 0xFF]), (33, sps(size, size)), (34, pps())];
-    for i in 0..n {
-        if repeat && i > 0 {
-            nals.extend([(32u8, vec![0x0C, 0xFF]), (33, sps(size, size)), (34, pps())]);
-        }
-        nals.push((19, slice.clone()));
-    }
+    nals.extend((0..n).map(|_| (19, slice.clone())));
     for (kind, p) in nals {
         s.extend_from_slice(&[0, 0, 0, 1, kind << 1, 1]);
         s.extend_from_slice(&escape(&p));
@@ -315,24 +307,99 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
         }
     }
 
-    // Parameter sets repeated before every picture (the replaced sets are still shared by the
-    // pictures in flight): the heap peak of eight threads stays within the budget. A smoke test:
-    // the bytes of one replaced SPS/PPS pair fit in the small reserve, so it cannot tell whether
-    // the replaced sets stay booked (`Decoder::stream`, the 32..=34 arm, does that).
-    let repeated = stream_with(64, 2048, 6, true);
-    let (_, rep_need) =
-        peaked(|| hevc::decode(&repeated, &opts, &Limits::default(), &cancel).map(drop));
-    for max_alloc in [small, rep_need / 2, rep_need, rep_need + (64 << 10)] {
-        let limits = Limits {
-            max_alloc,
-            max_threads: 8,
+    // Parameter sets replaced while pictures are in flight (`Decoder::stream`, the 32..=34 arm):
+    // twelve real 256x256 pictures, each after its own VPS, SPS and PPS. The SPS (64 short-term
+    // RPS, 32 long-term entries) and the PPS take about 25 KB of heap together, and a picture
+    // holds its pair until it is retired, so with several pictures in flight the replaced pairs
+    // are more than the 64 KiB small reserve. If a replaced pair were released when it is
+    // replaced, the real heap would pass `max_alloc` at a budget where the ledger is just full:
+    // the budgets step by 4 KiB (16 KiB with one thread) from half of what the call needs.
+    let repeated = common::stream(&common::Spec {
+        width: 256,
+        height: 256,
+        pictures: 12,
+        big_sps: true,
+        repeat: true,
+        ..Default::default()
+    });
+    let eight = Limits {
+        max_threads: 8,
+        ..Limits::default()
+    };
+    let decoded = hevc::decode(&repeated, &opts, &eight, &cancel).map(|p| p.len());
+    assert_eq!(decoded, Ok(12), "the coded stream must decode");
+    let (_, rep_need) = peaked(|| hevc::decode(&repeated, &opts, &eight, &cancel).map(drop));
+    for (max_threads, step) in [(8, 4 << 10), (1, 16 << 10)] {
+        let mut max_alloc = rep_need / 2;
+        while max_alloc <= rep_need + (64 << 10) {
+            let limits = Limits {
+                max_alloc,
+                max_threads,
+                ..Limits::default()
+            };
+            let (_, peak) = peaked(|| hevc::decode(&repeated, &opts, &limits, &cancel).map(drop));
+            assert!(
+                peak <= max_alloc,
+                "heap peak {peak} over max_alloc {max_alloc} (threads {max_threads}, replaced parameter sets)"
+            );
+            max_alloc += step;
+        }
+    }
+
+    // Band-parallel filters on a real picture: one 512x512 picture (four bands of 64 Ki luma
+    // samples; one picture, so no picture worker) gives the same output for every max_threads,
+    // and with two or more a band thread runs next to the calling thread. The checks come after
+    // the scope, so a failure cannot leave the sampler running.
+    #[cfg(target_os = "linux")]
+    {
+        let big = common::stream(&common::Spec {
+            width: 512,
+            height: 512,
+            pictures: 1,
+            ..Default::default()
+        });
+        let one = Limits {
+            max_threads: 1,
             ..Limits::default()
         };
-        let (_, peak) = peaked(|| hevc::decode(&repeated, &opts, &limits, &cancel).map(drop));
+        let want = hevc::decode(&big, &opts, &one, &cancel);
         assert!(
-            peak <= max_alloc,
-            "heap peak {peak} over max_alloc {max_alloc} (repeated parameter sets)"
+            want.as_ref().is_ok_and(|p| p.len() == 1),
+            "the coded picture must decode: {:?}",
+            want.as_ref().map(Vec::len)
         );
+        for max_threads in [1usize, 2, 4, 8] {
+            let base = threads_now();
+            let done = AtomicBool::new(false);
+            let seen = AtomicUsize::new(base);
+            let mut same = true;
+            std::thread::scope(|sc| {
+                sc.spawn(|| {
+                    while !done.load(Ordering::Relaxed) {
+                        seen.fetch_max(threads_now(), Ordering::Relaxed);
+                    }
+                });
+                let limits = Limits {
+                    max_threads,
+                    ..Limits::default()
+                };
+                for _ in 0..10 {
+                    same &= hevc::decode(&big, &opts, &limits, &cancel) == want;
+                }
+                done.store(true, Ordering::Relaxed);
+            });
+            assert!(same, "output differs with max_threads {max_threads}");
+            // The sampler, plus bands - 1 band threads (bands = min(max_threads, 4)).
+            let seen = seen.load(Ordering::Relaxed);
+            assert!(
+                seen <= base + max_threads.min(4),
+                "{seen} threads over the bands of max_threads {max_threads} (base {base})"
+            );
+            assert!(
+                max_threads == 1 || seen >= base + 2,
+                "no band thread ran with max_threads {max_threads} (base {base}, seen {seen})"
+            );
+        }
     }
 
     // Threads: the peak during decodes is the test's own, plus the sampler, plus at most
