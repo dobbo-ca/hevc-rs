@@ -999,7 +999,7 @@ mod tests {
                     .unwrap();
                 f.fill_edge_h(x, y, 4, 4, [0, 1, 2, 2][(r.next() % 4) as usize])
                     .unwrap();
-                if r.next() % 8 == 0 {
+                if r.next().is_multiple_of(8) {
                     f.fill_no_filter(x, y, 4, 4, 1).unwrap();
                 }
             }
