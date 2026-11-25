@@ -78,8 +78,14 @@ The cancel flag is read before each NAL unit and before each CTU, per 16 rows of
   `AllocLimit`. `max_pixels` is checked against the size before and after the transforms.
   The cancel flag is passed through (the helper reads it between steps, per 64 x 64 tile of a
   rotation and every 64 rows). `decode_heic_item` does the same with `max_alloc - max_alloc / 8
-  - held`. `tests/limits.rs` measures the real heap peak against `max_alloc` of a 256x256
-  rotated HEIC, and for `max_threads` 1, 2 and 8 of a rotated 2x2 grid with a rotated alpha
+  - held`. A grid tile's own transforms run in the worker that decoded it, on that worker's
+  budget minus the tile's planes (the canvas and the other workers are outside it), so the
+  call peak stays within `max_alloc` for every `max_threads`; a tile whose transforms do not fit
+  its share is redone alone with the whole budget, like a decode that does not fit. An overlay
+  input's transforms get what is left after the canvas and the input. `tests/limits.rs`
+  measures the real heap peak against `max_alloc` of a 256x256
+  rotated HEIC, and for `max_threads` 1, 2 and 8 of a rotated 2x2 grid (its tiles turned or
+  mirrored by their own properties) with a rotated alpha
   item, of an `iden` primary whose input has its own transforms, and of `decode_heic_item` on a
   grid, an alpha item and an `iden` item; on Linux it also checks the grid's thread peak.
 - `iovl`: `max_width`, `max_height` and `max_pixels` are checked against the overlay output

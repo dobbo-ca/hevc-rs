@@ -94,9 +94,6 @@ All of this runs in CI only; nothing is built or run on a developer machine.
    - A second `irot`, `imir` or `clap` on one item: libheif rejects the file (also in G7, with
      `ignore_transformations`), isobmff-rs keeps every property as stored (the metadata rule) and
      the helper applies them all in order. Such a file shows as "hevc-rs decodes, libheif fails".
-   - A grid whose tiles have transforms of their own: libheif turns each tile before it pastes
-     it; hevc-rs returns `Unsupported` with the option on ("libheif decodes, hevc-rs rejects as
-     unsupported").
    - An alpha item without the main image's transforms: both apply the alpha item's own
      transforms; libheif then scales the alpha plane to the main image's size (nearest
      neighbour), hevc-rs does not. This would be a `d-heic-xfrm.diff` line (alpha differs), not

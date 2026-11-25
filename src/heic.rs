@@ -777,7 +777,8 @@ impl Ctx<'_> {
         }
     }
 
-    /// Grid tile `i`: a coded HEVC item that decodes to its `ispe` size, and that size.
+    /// Grid tile `i`: a coded HEVC item that decodes to its `ispe` size (then, with the option,
+    /// takes its own transforms), and its size.
     fn grid_tile(&self, g: &isobmff::Grid, i: usize, held: usize) -> Result<(Picture, (u32, u32))> {
         self.cancelled()?;
         let tid = *g
@@ -792,12 +793,6 @@ impl Ctx<'_> {
         else {
             return Err(Error::Unsupported("grid tile is not HEVC"));
         };
-        // libheif turns each tile by its own transforms before it is pasted; not done here.
-        if self.opts.apply_transforms && !t.transforms.is_empty() {
-            return Err(Error::Unsupported(
-                "grid tile with transformative properties",
-            ));
-        }
         let tile = self.coded(tid, hv, held)?;
         let (pw, ph) = tile
             .planes
@@ -808,6 +803,13 @@ impl Ctx<'_> {
         // it would place the tiles elsewhere.
         if (pw, ph) != (t.width, t.height) {
             return Err(Error::InvalidData("grid tile size differs from ispe"));
+        }
+        // With the option, each tile takes its own transforms before it is pasted (as libheif
+        // does); the pitch is then the size after them.
+        if self.opts.apply_transforms && !t.transforms.is_empty() {
+            let tile = self.transformed(tile, &t.transforms, held)?;
+            let dims = (tile.info.width, tile.info.height);
+            return Ok((tile, dims));
         }
         Ok((tile, (pw, ph)))
     }
@@ -889,15 +891,22 @@ impl Ctx<'_> {
             |i, held| {
                 let inp = o.inputs.get(i).ok_or(Error::InvalidData("overlay input"))?;
                 let img = self.heif.image(inp.id).map_err(iso_err)?;
-                // Pixels are not transformed here, so an input's own transforms cannot be applied
-                // before it is placed.
-                if !img.transforms.is_empty() {
+                // With the option, an input takes its own transforms before it is placed (as
+                // libheif does); without it, such an input is refused, not placed as coded.
+                if img.transforms.is_empty() {
+                    return Ok((
+                        self.leaf(&img, held, luma_only, what)?,
+                        nclx_of(&img.colour),
+                    ));
+                }
+                if !self.opts.apply_transforms {
                     return Err(Error::Unsupported(
                         "overlay input with transformative properties",
                     ));
                 }
+                let pic = self.leaf(&img, held, luma_only, what)?;
                 Ok((
-                    self.leaf(&img, held, luma_only, what)?,
+                    self.transformed(pic, &img.transforms, held)?,
                     nclx_of(&img.colour),
                 ))
             },
@@ -918,7 +927,8 @@ impl Ctx<'_> {
 /// those of its input, then its own). With [`Options::apply_transforms`] they are applied in that
 /// order by `isobmff::apply_transforms` (the list is still returned, and
 /// [`HeicImage::transforms_applied`] is true), and the alpha plane gets the alpha item's own
-/// transforms; a grid whose tiles have transforms is then `Unsupported`. An overlay is composed in the YCbCr layout of its inputs: the canvas
+/// transforms; each grid tile and each overlay input first takes its own transforms (as in
+/// libheif), before it is placed. An overlay is composed in the YCbCr layout of its inputs: the canvas
 /// is filled with the `iovl` fill colour converted to YCbCr, the inputs are painted in order at
 /// their offsets (later on top, clipped, no blending); see `docs/design.md`. The alpha image
 /// (`urn:mpeg:hevc:2015:auxid:1` or `urn:mpeg:mpegB:cicp:systems:auxiliary:alpha`, or
@@ -929,7 +939,8 @@ impl Ctx<'_> {
 /// at that moment, shared by the tile workers); the decoded pictures, the assembled planes and the
 /// decoder's working memory share the rest, the tile workers of a grid splitting what is left.
 /// With [`Options::apply_transforms`], the buffers the transforms make get what is left of that
-/// share after the decoded image and alpha plane.
+/// share after the decoded image and alpha plane; a tile's or an overlay input's transforms get
+/// what its own decode had (a tile worker's share) after the planes held at that moment.
 /// `max_threads` is the number of threads that decode the tiles of a grid (the calling thread
 /// included; 1 spawns none) and is 1 for isobmff. The output and the error are the same for every
 /// thread count. `max_width`, `max_height` and `max_pixels` apply to every coded picture and to
@@ -940,12 +951,13 @@ impl Ctx<'_> {
 ///
 /// [`Error::Unsupported`] when the primary (or alpha) image is not HEVC, a grid of HEVC tiles or
 /// an identity or overlay of those, or when a coded item is protected (`protection_index` not 0),
-/// for a grid tile with transformative properties when [`Options::apply_transforms`] is set,
-/// or for an overlay with no input, with an input that has transformative properties, whose
+/// or for an overlay with no input, with an input that has transformative properties (without
+/// [`Options::apply_transforms`]), whose
 /// inputs differ in chroma format or bit depth, or with an odd offset in a 4:2:0 image;
 /// [`Error::InvalidData`] for a
 /// container error (the text is the isobmff error class, for example `"truncated"`), an item that
-/// is not exactly one picture, or tiles that differ in size or format, do not cover the grid or
+/// is not exactly one picture, or tiles that differ in size (with [`Options::apply_transforms`]:
+/// after their own transforms, as libheif compares them) or format, do not cover the grid or
 /// decode to another size than their `ispe`, and (with [`Options::apply_transforms`]) a `clap` or
 /// `irot` that `isobmff::apply_transforms` rejects (`"malformed"`); the errors of [`decode_hvcc_into`] (including
 /// [`Error::InterSlice`] and [`Error::NoPicture`]); [`Error::WidthLimit`],
