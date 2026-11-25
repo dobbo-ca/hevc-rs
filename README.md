@@ -42,11 +42,11 @@ There is no unlimited entry point. Every call takes a `Limits`.
 - `max_alloc` is the enforced peak working memory of one call, all threads together, including the nested isobmff-rs parse: allocations are charged before they are made and released on drop. 64 KiB is booked up front for small fixed allocations, so a `max_alloc` below that is `Error::AllocLimit` at once (docs/limits.md).
 - `max_threads = 1` spawns no thread. With more, HEIC grid tiles, the pictures of a call that holds several, and the deblocking and SAO bands of a big picture run on up to `max_threads - 1` scoped threads; the output and the errors do not depend on the value. No thread pool: a shared pool gave no clear gain. Thread stacks are not charged to `max_alloc` (docs/threading.md).
 - Metadata (SEI messages, VUI) is kept raw and charged to `max_alloc`; `Options { metadata: false, .. }` drops it. `Options::check_hash` (default false) checks the decoded picture hash SEI (`Picture::hash_ok`).
-- Cancellation: every decode takes `&AtomicBool`, read before each NAL unit and each CTU, and per row in deblocking, SAO, the picture hash and the crop. When set, the call returns `Error::Cancelled`.
+- Cancellation: every decode takes `&AtomicBool`, read before each NAL unit and each CTU, per 16 rows of vertical edges and per row of horizontal edges in deblocking, per CTB row in SAO, and per row in the picture hash and the crop. When set, the call returns `Error::Cancelled`.
 
 ## HEIC
 
-`decode_heic` decodes the primary image of a HEIC file (`meta` or `mini` box; one `hvc1` item, a grid, `iden` or `iovl`, plus its alpha plane); `decode_heic_item` decodes any image item of a parsed `isobmff::Heif`. `irot`, `imir` and `clap` come back raw in `transforms` unless `Options { apply_transforms: true, .. }` applies them (docs/design.md, "HEIC glue" and "Transforms"). Exif and XMP: `isobmff::Heif::metadata`.
+`decode_heic` decodes the primary image of a HEIC file (`meta` or `mini` box; one `hvc1` item, a grid, `iden` or `iovl`, plus its alpha plane); `decode_heic_item` decodes any image item of a parsed `isobmff::Heif` (parse with the re-exported `hevc::isobmff`, the same rev). `irot`, `imir` and `clap` come back raw in `transforms` unless `Options { apply_transforms: true, .. }` applies them (docs/design.md, "HEIC glue" and "Transforms"). Exif and XMP: `isobmff::Heif::metadata`.
 
 ## Docs
 

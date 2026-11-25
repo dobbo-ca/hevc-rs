@@ -25,17 +25,20 @@ stream and on every file of the HEIC corpus. `.github/workflows/bench.yml` runs 
 
 ## Results
 
-Main at 5b860a0 (the speed round), bench run 45312989791, best of 3, 16 CPUs, ms. Reference:
+Main at e5deb9e (after round C), bench run 45512816593, best of 3, 16 CPUs, ms. Reference:
 dec265 for main/main10/rext, libheif with libde265 for heic. Ratio: hevc-rs / reference (lower
-is better). v4: hevc-rs built with `-C target-cpu=x86-64-v4` and the false-deps features.
+is better). v4: hevc-rs built with `-C target-cpu=x86-64-v4` and the false-deps features. The
+v4, scalar and avx2 HEIC columns of this run were disturbed (a host effect: v4 3259.3 ms against
+2131.4 to 2292.8 in the runs before, while the default build gave 2212.0); the speed round
+(main 5b860a0, run 45312989791) gave all 3071.4 ms 1t (ratio 0.91), 1600.1 nt (0.77).
 
 | class | n | ref 1t | ffmpeg 1t | hevc 1t | v4 1t | scalar 1t | avx2 1t | ratio 1t | ratio v4 1t | ref nt | ffmpeg nt | hevc nt | v4 nt | ratio nt | ratio v4 nt |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| main | 135 | 3298.0 | 5952.3 | 3032.4 | 2734.6 | 4656.4 | 3008.4 | 0.92 | 0.83 | 2016.6 | 5695.6 | 1561.3 | 1403.7 | 0.77 | 0.70 |
-| main10 | 11 | 40.4 | 317.3 | 25.1 | 23.2 | 32.1 | 25.1 | 0.62 | 0.57 | 36.5 | 347.7 | 25.0 | 23.4 | 0.68 | 0.64 |
-| rext | 3 | 19.5 | 101.2 | 13.8 | 12.4 | 17.4 | 13.5 | 0.71 | 0.64 | 18.0 | 107.2 | 13.8 | 12.5 | 0.77 | 0.69 |
-| all | 149 | 3357.9 | 6370.8 | 3071.4 | 2770.2 | 4706.0 | 3046.9 | 0.91 | 0.82 | 2071.1 | 6150.5 | 1600.1 | 1439.6 | 0.77 | 0.70 |
-| heic | 58 | 6486.0 | 0.0 | 2478.4 | 2292.8 | 4087.3 | 2531.8 | 0.38 | 0.35 | 6794.9 | 0.0 | 2289.0 | 2080.0 | 0.34 | 0.31 |
+| main | 135 | 3314.0 | 5871.6 | 2492.3 | 2388.0 | 3791.7 | 2475.9 | 0.75 | 0.72 | 2065.1 | 5577.4 | 1375.3 | 1334.2 | 0.67 | 0.65 |
+| main10 | 11 | 39.8 | 308.0 | 22.7 | 21.8 | 27.5 | 22.8 | 0.57 | 0.55 | 36.0 | 335.7 | 22.6 | 22.2 | 0.63 | 0.62 |
+| rext | 3 | 19.6 | 96.7 | 13.1 | 12.6 | 16.0 | 13.1 | 0.67 | 0.65 | 18.0 | 104.9 | 13.2 | 12.7 | 0.73 | 0.70 |
+| all | 149 | 3373.4 | 6276.3 | 2528.2 | 2422.4 | 3835.1 | 2511.8 | 0.75 | 0.72 | 2119.1 | 6018.0 | 1411.2 | 1369.1 | 0.67 | 0.65 |
+| heic | 60 | 6484.5 | 0.0 | 2212.0 | 3259.3 | 4675.9 | 3591.9 | 0.34 | 0.50 | 6389.1 | 0.0 | 2053.5 | 3081.0 | 0.32 | 0.48 |
 
 Before the speed round (bench run 45280698331, main 947dccb, scalar and serial; the HEIC column of
 that run timed the files' output writes too, so it is left out):
@@ -57,6 +60,7 @@ What each PR gave (all classes, 1 thread unless noted; each run against the main
 | #17 | SIMD SAO | 4173.9 | 3520.0 |
 | #19 | deblocking and SAO in CTB-row bands (default threads) | 3519.0 nt | 3226.8 nt |
 | #18 | pictures in parallel; hash check opt-in (`Options::check_hash`) | 3523.8 / 3226.8 nt | 3106.5 / 1684.3 nt |
+| #22 | intra reference gather: availability per cell run and slice copies (`intra::gather`, `frame::Avail`) (bench run 45475372926 vs main run 45466964176) | 3041.1 / 1622.6 nt; v4 2748.8; heic 2395.2 | 2810.7 / 1479.1 nt; v4 2614.1; heic 2310.8 |
 | #25 | deblocking in edge batches of 16 lines, AVX2 and NEON kernels (bench runs 45481933675 and 45483838642 vs main run 45466964176) | 3041.1 / 1622.6 nt | 2783.2 / 1532.7 nt (second run 2803.0 / 1545.4 nt) |
 | #29 | sparse inverse transform: scaling, passes and clearing only on the extent of the non-zero coefficients, DC-only blocks as one value (bench runs 45510056582 and 45510870457 vs main run 45496374688) | 2606.8; heic 2390.8 / 2376.1 nt | 2528.5; heic 2144.9 / 1946.0 nt (second run 2528.9; heic 2176.4 / 2008.9 nt) |
 
@@ -103,5 +107,5 @@ the Annex B geometric mean moved by -1.1% to -1.7% (default) and -1.8% to -2.4% 
 correcting for the reference's drift; the class totals moved by under 1% in the default build,
 which is inside run-to-run noise, and HEIC got no faster. Not merged. The engine's remaining
 cost is the serial dependency of one bin on the previous one; the next speed step for these
-streams is more likely a partial inverse transform for blocks whose coefficients sit in the
-top-left corner (transform.rs always transforms the whole block).
+streams was a partial inverse transform for blocks whose coefficients sit in the top-left
+corner, done in #29 (sparse inverse transform, above).

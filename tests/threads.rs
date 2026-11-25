@@ -348,6 +348,70 @@ fn real_pictures_same_result_for_every_thread_count() {
     }
 }
 
+/// The memory check is one-sided (docs/threading.md, "Errors and determinism"): on real pictures
+/// that decode, a parallel run never succeeds where the serial run hits `max_alloc`. The budget
+/// steps by 16 KiB from where every call fails to where the serial run decodes, then the exact
+/// serial boundary is found by bisection and both sides of it are checked.
+#[test]
+fn real_pictures_same_result_across_the_memory_budget() {
+    let cancel = AtomicBool::new(false);
+    let opts = Options::default();
+    let s = common::stream(&common::Spec {
+        width: 256,
+        height: 256,
+        pictures: 8,
+        big_sps: true,
+        repeat: true,
+        ..Default::default()
+    });
+    let check = |max_alloc: usize| {
+        let one = Limits {
+            max_alloc,
+            ..with_threads(1)
+        };
+        let want = run(&s, &opts, &one, &cancel);
+        assert!(
+            want.0.is_ok() || want.0 == Err(Error::AllocLimit),
+            "max_alloc {max_alloc}: {:?}",
+            want.0
+        );
+        for t in [2, 3, 8] {
+            let got = run(
+                &s,
+                &opts,
+                &Limits {
+                    max_threads: t,
+                    ..one
+                },
+                &cancel,
+            );
+            assert!(
+                got == want,
+                "threads {t}, max_alloc {max_alloc}: {:?} vs {:?}",
+                got.0,
+                want.0
+            );
+        }
+        want.0.is_ok()
+    };
+    let mut lo = 64 << 10;
+    assert!(!check(lo), "a 64 KiB budget must not hold the stream");
+    let mut hi = lo + (16 << 10);
+    while !check(hi) {
+        lo = hi;
+        hi += 16 << 10;
+        assert!(hi < 64 << 20, "the stream never decoded");
+    }
+    while hi - lo > 1 {
+        let mid = lo.midpoint(hi);
+        if check(mid) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+}
+
 /// `Decoder::finish_jobs` waits for every job before the last commit: a failing picture that is
 /// not output (in no output queue) is still in flight on a worker when the stream ends, after
 /// good pictures, and its error must be the call's error for every thread count. With every

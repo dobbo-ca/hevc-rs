@@ -874,9 +874,8 @@ fn kernel(
             true
         }
         #[cfg(target_arch = "aarch64")]
-        Tier::Neon => {
-            // SAFETY: simd::tier() / simd::available() return Neon only when
-            // is_aarch64_feature_detected! found neon (src/simd/mod.rs).
+        Tier::Neon if std::arch::is_aarch64_feature_detected!("neon") => {
+            // SAFETY: the match guard has just detected neon, the only feature the kernel enables.
             unsafe { armk::edges(win, stride, vertical, luma, segs, max) };
             true
         }
@@ -1041,9 +1040,10 @@ fn deblock_with(
 
 /// Both passes over every plane, each pass split into bands of whole CTB rows. The vertical
 /// edges of a band only touch samples of its own rows. A horizontal edge at row `y` reads and
-/// writes rows `y - 4..y + 4` (luma) or `y - 2..y + 2` (chroma), so the band that owns the edges
-/// of CTB rows `[B, B')` is the slice `[B - 4, B' - 4)` of the plane: the footprints stay inside
-/// it, and horizontal edges are independent of each other, so any split gives the serial result.
+/// writes rows `y - 4..y + 4` (p3..q3, luma and chroma: the kernels load and store all 8 rows), so
+/// the band that owns the edges of CTB rows `[B, B')` is the slice `[B - 4, B' - 4)` of the plane:
+/// the footprints stay inside it, and horizontal edges are independent of each other, so any split
+/// gives the serial result.
 /// A pass ends when all its bands are done (the scope of `par_bands`), before the next pass.
 fn deblock_planes(
     tier: Tier,

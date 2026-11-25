@@ -116,7 +116,7 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
-  # The NEON kernels: the three tier targets built for aarch64, run under qemu-user (no sanitizer:
+  # The NEON kernels: the four tier targets built for aarch64, run under qemu-user (no sanitizer:
   # ASan does not run under qemu), so every NEON tier is compared with scalar.
   # It starts after the x86_64 job, so there are never more than two fuzz jobs at a time.
   fuzz-arm64:

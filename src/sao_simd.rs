@@ -228,9 +228,8 @@ pub(crate) fn eo_row(
             unsafe { x86k::eo(cur, a, b, out, tab, max) }
         }
         #[cfg(target_arch = "aarch64")]
-        Tier::Neon => {
-            // SAFETY: simd::tier() / simd::available() return Neon only when
-            // is_aarch64_feature_detected! found neon (src/simd/mod.rs).
+        Tier::Neon if std::arch::is_aarch64_feature_detected!("neon") => {
+            // SAFETY: the match guard has just detected neon, the only feature the kernel enables.
             unsafe { armk::eo(cur, a, b, out, tab, max) }
         }
         _ => eo_scalar(cur, a, b, out, tab, max),
@@ -257,9 +256,8 @@ pub(crate) fn bo_row(
             unsafe { x86k::bo(cur, out, tab, band_pos, shift, max) }
         }
         #[cfg(target_arch = "aarch64")]
-        Tier::Neon => {
-            // SAFETY: simd::tier() / simd::available() return Neon only when
-            // is_aarch64_feature_detected! found neon (src/simd/mod.rs).
+        Tier::Neon if std::arch::is_aarch64_feature_detected!("neon") => {
+            // SAFETY: the match guard has just detected neon, the only feature the kernel enables.
             unsafe { armk::bo(cur, out, tab, band_pos, shift, max) }
         }
         _ => bo_scalar(cur, out, tab, band_pos, shift, max),

@@ -139,7 +139,7 @@ fn check(file: &[u8], plain: &[u8], ts: &[T]) -> HeicImage {
     );
     // decode_heic_item with the option gives the same picture.
     let cancel = AtomicBool::new(false);
-    let parsed = isobmff::parse(file, &isobmff::Limits::default(), &cancel).unwrap();
+    let parsed = hevc::isobmff::parse(file, &hevc::isobmff::Limits::default(), &cancel).unwrap();
     let id = parsed.primary_image().unwrap().id;
     let item = hevc::decode_heic_item(&parsed, file, id, &APPLY, &l, &cancel);
     assert_eq!(item.as_ref(), Ok(&got.image));
