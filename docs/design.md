@@ -1,8 +1,6 @@
 # hevc-rs design (v1)
 
 This is the build spec of the crate. It is binding for every module, oracle and workflow.
-Conventions: `dobbo-ca/rust-ports` `docs/conventions.md` (all of it), `docs/new-crates.md`,
-`docs/round-c.md`, `docs/quality.md`.
 
 hevc-rs is a new crate, not a port: an HEVC (ITU-T H.265) decoder for intra pictures only,
 bit-exact. HEIC stills and video keyframes are intra, so there is no inter prediction (no P/B
@@ -615,7 +613,7 @@ Implemented:
 
 ## HEIC glue
 
-`src/heic.rs`, on top of isobmff-rs (private git dependency, `docs/dependencies.md`). isobmff
+`src/heic.rs`, on top of isobmff-rs (git dependency, `docs/dependencies.md`). isobmff
 gives the item graph; this crate decodes the pixels. A file with the low-overhead `mini` box
 (ISO/IEC 23008-12 Annex O) instead of `meta` gives the same item graph (isobmff-rs
 docs/design.md, "The `mini` box"), so it takes the same path: item 1 is the primary `hvc1`
@@ -710,7 +708,7 @@ pub enum Transform { Clap(Clap), Rotate(u16), Mirror(Axis) }   // own types, sam
 
 ### Transforms (`Options::apply_transforms`)
 
-Rule (rust-ports docs/new-crates.md, "Transforms"): the decoders return `clap`, `irot` and `imir`
+Rule: the decoders return `clap`, `irot` and `imir`
 raw by default and never drop them; an opt-in option applies them through the one shared helper,
 `isobmff::apply_transforms` (isobmff-rs `src/transform.rs`, `docs/transforms.md`). This crate
 writes no crop or rotation of its own.

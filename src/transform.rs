@@ -916,7 +916,7 @@ mod tests {
     /// Every bounding box of every size: random sparse coefficients inside it (its last row and
     /// last column non-zero), DCT, DST, transform skip and bypass, flat and default scaling
     /// lists; every tier, given the tight extent and the whole block, against the full scalar
-    /// transform. 32x32 boxes take one of the cases each (time under qemu).
+    /// transform. 32x32 boxes take one of the cases each (test time).
     #[test]
     fn tiers_sparse_match_full() {
         let lists = [None, Some(ScalingList::default_lists())];

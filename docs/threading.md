@@ -177,7 +177,7 @@ and the heap peak against `max_alloc` while replaced parameter sets are held by 
 - Small inputs use fewer workers (no picture worker for one picture, one more per job that finds
   none free, one band per 64 Ki luma samples) instead of a pool.
 - Thread stacks are not charged to `max_alloc`.
-- A shared pool was tried and dropped (PR #27, branch `sp-pool-w9t5`, 2026-11-24; owner decision
+- A shared pool was tried and dropped (PR #27, branch `sp-pool-w9t5`, 2026-11-24; decision
   of that day: a pool crate only with a measured gain over `std::thread::scope`). The deblocking
   and SAO bands ran as tasks on one lazy `rayon-core` pool (a `OnceLock`, `available_parallelism`
   threads, 512 KiB stacks, made only when a pass had a thread for it, never with
