@@ -25,6 +25,8 @@ stream and on every file of the HEIC corpus. `.github/workflows/bench.yml` runs 
 
 ## Results
 
+These numbers come from the earlier 16-CPU self-hosted runner; runs on GitHub-hosted ubuntu-24.04 runners (4 vCPU) are a new baseline, so compare ratios, not ms.
+
 Main at 55ea54a (after the follow-up round), bench run 45525817059, best of 3, 16 CPUs, ms.
 Reference: dec265 for main/main10/rext, libheif with libde265 for heic. Ratio: hevc-rs / reference
 (lower is better). v4: hevc-rs built with `-C target-cpu=x86-64-v4` and the false-deps features.

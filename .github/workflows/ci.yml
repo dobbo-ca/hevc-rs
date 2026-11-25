@@ -97,6 +97,7 @@ jobs:
           context: .
           file: .github/ci/Dockerfile
           target: parity-report
+          build-args: CORPUS_RUN=${{ github.run_id }}-${{ github.run_attempt }}
           push: false
           outputs: type=local,dest=parity-out
           cache-from: type=gha,scope=hevc-rs-parity
@@ -136,6 +137,7 @@ jobs:
           context: .
           file: .github/ci/Dockerfile
           target: x86-ref-out
+          build-args: CORPUS_RUN=${{ github.run_id }}-${{ github.run_attempt }}
           push: false
           outputs: type=local,dest=parity-ref
           cache-from: type=gha,scope=hevc-rs-parity-ref

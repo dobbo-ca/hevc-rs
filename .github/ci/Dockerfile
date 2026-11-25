@@ -122,12 +122,16 @@ ENV CARGO_NET_OFFLINE=true
 # instead) in a cache mount, so a build downloads it once. sharing=locked: two builds never
 # download at once. Only a list of the bitstream files reaches the layer; the stages that read the
 # corpus mount the same cache and depend on this stage through that list.
+# A cache mount is not saved to the Actions cache, and each hosted job starts a new builder, so the
+# mount is empty there. CORPUS_RUN (the workflow run id) makes the fetch run again in each build,
+# so a fetch layer restored from the Actions cache never leaves the readers with an empty mount.
 FROM debian:bookworm-slim AS data
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates unzip \
     && rm -rf /var/lib/apt/lists/*
 COPY tests/parity/fetch.sh tests/parity/corpus.toml /parity/
+ARG CORPUS_RUN=0
 RUN --mount=type=cache,id=hevc-rs-data,target=/data,sharing=locked \
-    sh /parity/fetch.sh /parity/corpus.toml /data \
+    echo "corpus run $CORPUS_RUN" && sh /parity/fetch.sh /parity/corpus.toml /data \
     && (cd /data/x && find . -type f \( -iname '*.bit' -o -iname '*.bin' -o -iname '*.hevc' -o -iname '*.265' \) | sort) > /data.list \
     && wc -l /data.list
 
@@ -135,13 +139,14 @@ RUN --mount=type=cache,id=hevc-rs-data,target=/data,sharing=locked \
 # pinned commits, only *.heic *.heif *.hif) in a second cache mount, so a build downloads it once.
 # sharing=locked: two builds never download at once. Only a list of the files reaches the layer;
 # the stage that reads the corpus mounts the same cache and depends on this stage through that
-# list. git-lfs is for the LFS sources.
+# list. git-lfs is for the LFS sources. CORPUS_RUN: as for `data` above.
 FROM debian:bookworm-slim AS heic-data
 RUN apt-get update && apt-get install -y --no-install-recommends git git-lfs ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY tests/parity/heic-fetch.sh tests/parity/heic-corpus.toml /parity/
+ARG CORPUS_RUN=0
 RUN --mount=type=cache,id=hevc-rs-heic-data,target=/heic,sharing=locked \
-    sh /parity/heic-fetch.sh /parity/heic-corpus.toml /heic \
+    echo "corpus run $CORPUS_RUN" && sh /parity/heic-fetch.sh /parity/heic-corpus.toml /heic \
     && (cd /heic/x && find . -type f | sort) > /heic.list && wc -l /heic.list
 
 # The reference tree of hevc-rs on the first 20 corpus streams and the streams of ARM_SET

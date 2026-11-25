@@ -27,6 +27,12 @@ bad=0
 hevc-oracle prefix $W/in $W/prefix || bad=1
 hevc-oracle probe $W/prefix $W/probe || bad=1
 
+# The v4 binaries need AVX-512 (some hosted runners are AMD EPYC without it): without it they are
+# not run and their columns are 0.
+V4=0
+grep -q avx512bw /proc/cpuinfo && V4=1
+bestv4() { if [ "$V4" = 1 ]; then best "$@"; else echo 0; fi; }
+
 # best <cmd...>: the shortest wall time in ns of REPS runs; fails when a run fails.
 best() {
   b= i=0
@@ -60,13 +66,13 @@ for p in $W/prefix/*.bit; do
   if c1=$(best dec265 -q -t1 "$p") \
     && f1=$(best ffmpeg -v error -nostdin -threads 1 -i "$p" -f null -) \
     && r1=$(best hevc-bench --threads 1 "$p") \
-    && v1=$(best hevc-bench-v4 --threads 1 "$p") \
+    && v1=$(bestv4 hevc-bench-v4 --threads 1 "$p") \
     && s1=$(HEVC_SIMD=scalar best hevc-bench --threads 1 "$p") \
     && a1=$(HEVC_SIMD=avx2 best hevc-bench --threads 1 "$p") \
     && cn=$(best dec265 -q -t"$NP" "$p") \
     && fn=$(best ffmpeg -v error -nostdin -i "$p" -f null -) \
     && rn=$(best hevc-bench "$p") \
-    && vn=$(best hevc-bench-v4 "$p"); then
+    && vn=$(bestv4 hevc-bench-v4 "$p"); then
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$s" "$(class "$W/probe/$s.probe")" \
       "$(wc -c < "$p")" "$c1" "$f1" "$r1" "$v1" "$s1" "$a1" "$cn" "$fn" "$rn" "$vn" >> $W/all.tsv
   else
@@ -91,7 +97,7 @@ if [ -f /heic.list ]; then
       && a1=$(HEVC_SIMD=avx2 HEIC_THREADS=1 best hevc-heic $d/in $d/r) \
       && cn=$(best heic-oracle $d/in $d/o) \
       && rn=$(best hevc-heic $d/in $d/r) \
-      && vn=$(best hevc-heic-v4 $d/in $d/r); then
+      && vn=$(bestv4 hevc-heic-v4 $d/in $d/r); then
       printf '%s\theic\t%s\t%s\t0\t%s\t%s\t%s\t%s\t%s\t0\t%s\t%s\n' "$n" "$(wc -c < "/heic/x/${f#./}")" \
         "$c1" "$r1" "$v1" "$s1" "$a1" "$cn" "$rn" "$vn" >> $W/heic.tsv
     else
@@ -106,7 +112,9 @@ files=$(cat $W/all.tsv $W/heic.tsv | wc -l)
 {
   echo "## hevc-rs vs libde265, ffmpeg and libheif: decode time, ms (lower is better)"; echo
   echo "Best of $reps runs, $NP CPUs, SIMD tier of the host: $(hevc-bench --tier). Information only, no gate."
-  echo "$(wc -l < $W/skipped) inputs skipped (a tool failed or gave no picture)."; echo
+  echo "$(wc -l < $W/skipped) inputs skipped (a tool failed or gave no picture)."
+  [ "$V4" = 1 ] || echo "v4: not run, the host has no AVX-512"
+  echo
   echo "### Totals per class"; echo
   echo "Reference: dec265 for main/main10/rext, libheif (with libde265) for heic. v4: hevc-rs built"
   echo "with -C target-cpu=x86-64-v4 and the false-deps features. Ratio: hevc-rs / reference."; echo
