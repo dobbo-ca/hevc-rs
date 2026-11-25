@@ -422,7 +422,9 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
         data: Vec::new(),
         props: vec![irot()],
     };
-    let mirrored = || coded(8, 64, vec![common::bx(b"imir", &[1])]);
+    // 256 x 256 like the others, so that the picture, not the 64 KiB small reserve, sets what the
+    // iden calls need (the sweep below must reach a budget that decodes).
+    let mirrored = || coded(8, 256, vec![common::bx(b"imir", &[1])]);
     let mut items = vec![common::Item {
         id: 1,
         kind: *b"grid",
@@ -462,6 +464,8 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
         );
         let (_, need) = peaked(|| call(k, &Limits::default()));
         for max_threads in [1, 2, 8] {
+            // At least one budget of the sweep must decode, so the transforms are measured too.
+            let mut decoded = false;
             let mut max_alloc = need / 2;
             while max_alloc <= 2 * need {
                 let limits = Limits {
@@ -469,13 +473,21 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
                     max_threads,
                     ..Limits::default()
                 };
-                let (_, peak) = peaked(|| call(k, &limits));
+                let (_, peak) = peaked(|| {
+                    let r = call(k, &limits);
+                    decoded |= r.is_ok();
+                    r
+                });
                 assert!(
                     peak <= max_alloc,
                     "heap peak {peak} over max_alloc {max_alloc} (HEIC call {k}, threads {max_threads})"
                 );
                 max_alloc += need / 16;
             }
+            assert!(
+                decoded,
+                "no budget up to twice the need decoded (HEIC call {k}, threads {max_threads})"
+            );
         }
     }
 
@@ -562,13 +574,15 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
                 done.store(true, Ordering::Relaxed);
             });
             assert!(same, "output differs with max_threads {max_threads}");
-            // The sampler is one thread more; any other is a band thread. No upper bound here:
-            // a band thread joined at the end of one filter pass can still be listed while the
-            // next pass starts its own (the bound of the picture workers is checked below).
+            // The sampler is one thread more; any other is a band thread, at most max_threads - 1
+            // of them (`par_bands` joins its threads before the next pass, and `threads_now`
+            // leaves out exiting ones).
             let seen = seen.load(Ordering::Relaxed);
-            if max_threads == 1 {
-                assert!(seen <= base + 1, "a thread ran with max_threads 1");
-            } else {
+            assert!(
+                seen <= base + max_threads,
+                "band threads over max_threads {max_threads} (base {base}, seen {seen})"
+            );
+            if max_threads > 1 {
                 assert!(
                     seen >= base + 2,
                     "no band thread ran with max_threads {max_threads} (base {base}, seen {seen})"
@@ -578,9 +592,23 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
     }
 
     // Threads: the peak during decodes is the test's own, plus the sampler, plus at most
-    // max_threads - 1 workers (none at max_threads 1). Six pictures, so the workers start.
+    // max_threads - 1 workers and band threads together (none at max_threads 1). Six pictures,
+    // so the workers start; and four real 512x512 pictures, so that a picture run on the calling
+    // thread while the workers are busy filters in bands next to them (`run_inline` gives the
+    // bands only the threads the workers leave free).
     #[cfg(target_os = "linux")]
     {
+        let real = common::stream(&common::Spec {
+            width: 512,
+            height: 512,
+            pictures: 4,
+            ..Default::default()
+        });
+        assert_eq!(
+            hevc::decode(&real, &opts, &eight, &cancel).map(|p| p.len()),
+            Ok(4),
+            "the four coded pictures must decode"
+        );
         for max_threads in [1usize, 2, 4] {
             let many = stream_n(64, 2048, 6);
             let base = threads_now();
@@ -596,11 +624,15 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
                     max_threads,
                     ..Limits::default()
                 };
-                for _ in 0..50 {
+                for i in 0..50 {
                     // A worker joined at the end of the previous call can still be listed for a
                     // moment while it exits; let it go before the next call starts its own.
                     std::thread::sleep(std::time::Duration::from_millis(2));
                     let _ = hevc::decode(&many, &opts, &limits, &cancel);
+                    if i % 5 == 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                        let _ = hevc::decode(&real, &opts, &limits, &cancel);
+                    }
                 }
                 done.store(true, Ordering::Relaxed);
             });

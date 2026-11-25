@@ -442,14 +442,14 @@ EOT
 }
 
 # The tree every aarch64 run is compared with: the prefixes of the first 20 corpus streams plus
-# the streams of ARM_SET, and what hevc-oracle makes of them with one thread. The first 20 are
-# all 8-bit 4:2:0 Main streams; ARM_SET (name prefixes) adds the paths they never reach: 10 and
+# the streams of ARM_SET, and what hevc-oracle makes of them with one thread. Of the first 20, 18
+# give a prefix, all 8-bit 4:2:0; ARM_SET (name prefixes) adds the paths they never reach: 10 and
 # 12 bits and unequal luma/chroma depths (the deblocking batches in 16-bit lanes), 4:0:0, PCM,
 # transform skip, scaling lists (the dequantisation with a matrix), lossless
 # (cu_transquant_bypass), deblocking control and overrides, tiles and every SAO stream. Each
-# prefix must match a stream that gives an intra prefix, so a renamed or rejected stream cannot
-# drop out of the set unseen. The prefixes are grep patterns with no glob characters (they are
-# word-split unquoted).
+# prefix must match a stream, and every stream it matches must give an intra prefix, so a
+# renamed or rejected stream cannot drop out of the set unseen. The prefixes are grep patterns
+# with no glob characters (they are word-split unquoted).
 ARM_SET='WPP_._ericsson_MAIN10_ DBLK_A_MAIN10_ TSUNEQBD_A_MAIN10_ INITQP_B_Main10_ WP_A_MAIN10_ WP_MAIN10_B_ GENERAL_ ipcm_ TSKIP_A_ SLIST_ DBLK_._ TILES_ LS_ SAO_'
 ref() {
   rm -rf $W; mkdir -p $W/all $W/in "$1/prefix" "$1/out"
@@ -458,8 +458,12 @@ ref() {
   [ "$(ls $W/in | wc -l)" -gt 0 ] || { echo "corpus is empty" >&2; bad=1; }
   run hevc-oracle prefix $W/in "$1/prefix"
   for p in $ARM_SET; do
-    ls "$1/prefix" | grep -q "^$p" || { echo "parity-arm64: no intra prefix of a stream named $p*" >&2; bad=1; }
+    ls $W/in | grep -q "^$p" || { echo "parity-arm64: no stream named $p*" >&2; bad=1; }
   done
+  missing=$(for p in $ARM_SET; do ls $W/in | grep "^$p"; done | sort -u | while IFS= read -r f; do
+    [ -f "$1/prefix/${f%.*}.bit" ] || echo "$f"
+  done)
+  [ -z "$missing" ] || { echo "parity-arm64: no intra prefix of" $missing >&2; bad=1; }
   echo "parity-arm64 set: $(ls "$1/prefix" | wc -l) prefixes"
   run hevc-oracle --threads 1 "$1/prefix" "$1/out"
   rm -rf $W
