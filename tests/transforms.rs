@@ -203,7 +203,8 @@ fn grid_is_transformed_after_it_is_assembled() {
         };
         assert_eq!(decode(&file, &APPLY, &l).as_ref(), Ok(&got), "threads {t}");
     }
-    // A tile with transforms of its own: libheif turns the tile first, this crate does not.
+    // Tiles are compared after their own transforms, as in libheif: a tile turned to 32 x 64 next
+    // to a 64 x 32 one is an error with the option, and decodes raw without it.
     let items = [
         Item {
             id: 1,
@@ -211,15 +212,184 @@ fn grid_is_transformed_after_it_is_assembled() {
             data: vec![0, 0, 0, 1, 0, 120, 0, 32],
             props: vec![ispe(120, 32)],
         },
-        hvc_item(2, 64, 32, &[imir(1)]),
-        hvc_item(3, 64, 32, &[]),
+        hvc_item(2, 64, 32, &[]),
+        hvc_item(3, 64, 32, &[irot(90)]),
     ];
     let tiled = heif(&items, &[(b"dimg", 1, &[2u16, 3][..])]);
     assert!(decode(&tiled, &Options::default(), &Limits::default()).is_ok());
-    assert!(matches!(
+    assert_eq!(
         decode(&tiled, &APPLY, &Limits::default()),
-        Err(Error::Unsupported(_))
-    ));
+        Err(Error::InvalidData("grid tiles differ in size or format"))
+    );
+}
+
+/// The transforms of the four tiles of [`tiled_grid`], in tile order.
+fn tile_props() -> [(Vec<Vec<u8>>, Vec<T>); 4] {
+    [
+        (vec![irot(90)], vec![T::Rot(90)]),
+        (vec![imir(0)], vec![T::Flip(true)]),
+        (vec![imir(1), irot(180)], vec![T::Flip(false), T::Rot(180)]),
+        (vec![irot(270), imir(0)], vec![T::Rot(270), T::Flip(true)]),
+    ]
+}
+
+/// A 2 x 2 grid of 64 x 64 tiles, each with its own transforms (`tile_props`), and the grid
+/// turned by `grid_props`.
+fn tiled_grid(grid_props: Vec<Vec<u8>>) -> Vec<u8> {
+    let mut p = vec![ispe(128, 128)];
+    p.extend(grid_props);
+    let mut items = vec![Item {
+        id: 1,
+        kind: *b"grid",
+        data: vec![0, 0, 1, 1, 0, 128, 0, 128],
+        props: p,
+    }];
+    for (k, (props, _)) in tile_props().into_iter().enumerate() {
+        items.push(hvc_item(k as u16 + 2, 64, 64, &props));
+    }
+    heif(&items, &[(b"dimg", 1, &[2u16, 3, 4, 5][..])])
+}
+
+#[test]
+fn grid_tiles_take_their_own_transforms_before_the_paste() {
+    let l = Limits::default();
+    let tile = decode(
+        &heif(&[hvc_item(1, 64, 64, &[])], &[]),
+        &Options::default(),
+        &l,
+    )
+    .unwrap()
+    .image
+    .planes;
+    let file = tiled_grid(vec![]);
+    // Without the option the tiles stay as coded.
+    let plain = heif(
+        &[
+            Item {
+                id: 1,
+                kind: *b"grid",
+                data: vec![0, 0, 1, 1, 0, 128, 0, 128],
+                props: vec![ispe(128, 128)],
+            },
+            hvc_item(2, 64, 64, &[]),
+            hvc_item(3, 64, 64, &[]),
+            hvc_item(4, 64, 64, &[]),
+            hvc_item(5, 64, 64, &[]),
+        ],
+        &[(b"dimg", 1, &[2u16, 3, 4, 5][..])],
+    );
+    let raw = decode(&file, &Options::default(), &l).unwrap();
+    assert_eq!(
+        raw.image,
+        decode(&plain, &Options::default(), &l).unwrap().image
+    );
+    let got = decode(&file, &APPLY, &l).unwrap();
+    for (k, (_, ts)) in tile_props().into_iter().enumerate() {
+        let (x, y) = (64 * (k as u32 % 2), 64 * (k as u32 / 2));
+        assert_eq!(
+            reference(&got.image.planes, &[T::Crop(x, y, 64, 64)]),
+            reference(&tile, &ts),
+            "tile {k}"
+        );
+    }
+    // Then the grid's own transforms, on the canvas.
+    let turned = decode(&tiled_grid(vec![irot(90)]), &APPLY, &l).unwrap();
+    assert_eq!(
+        turned.image.planes,
+        reference(&got.image.planes, &[T::Rot(90)])
+    );
+    // The same for every max_threads, and decode_heic_item gives the same picture.
+    let cancel = AtomicBool::new(false);
+    let parsed = hevc::isobmff::parse(&file, &hevc::isobmff::Limits::default(), &cancel).unwrap();
+    for t in [1, 2, 4] {
+        let l = Limits {
+            max_threads: t,
+            ..Limits::default()
+        };
+        assert_eq!(decode(&file, &APPLY, &l).as_ref(), Ok(&got), "threads {t}");
+        let item = hevc::decode_heic_item(&parsed, &file, 1, &APPLY, &l, &cancel);
+        assert_eq!(item.as_ref(), Ok(&got.image), "threads {t}");
+    }
+    // A tight budget gives the same image or AllocLimit, for every max_threads.
+    for t in [1, 2, 4] {
+        let mut seen_ok = false;
+        for max_alloc in (0..160).map(|k| k * (8 << 10)) {
+            let l = Limits {
+                max_alloc,
+                max_threads: t,
+                ..Limits::default()
+            };
+            match decode(&file, &APPLY, &l) {
+                Ok(h) => {
+                    assert_eq!(h, got, "max_alloc {max_alloc} threads {t}");
+                    seen_ok = true;
+                }
+                Err(e) => assert_eq!(e, Error::AllocLimit, "max_alloc {max_alloc} threads {t}"),
+            }
+        }
+        assert!(seen_ok, "1.25 MiB must hold a 128 x 128 grid (threads {t})");
+    }
+    // Cancel passes through.
+    for t in [1, 2, 4] {
+        let l = Limits {
+            max_threads: t,
+            ..Limits::default()
+        };
+        let r = hevc::decode_heic(&file, &APPLY, &l, &AtomicBool::new(true));
+        assert_eq!(r, Err(Error::Cancelled), "threads {t}");
+    }
+}
+
+#[test]
+fn overlay_inputs_take_their_own_transforms() {
+    // A 128 x 64 overlay of two 64 x 64 inputs at (0, 0) and (64, 0).
+    let file = |a: Vec<Vec<u8>>, b: Vec<Vec<u8>>| {
+        let mut data = vec![0u8, 0];
+        data.extend_from_slice(&[0u8; 8]);
+        data.extend_from_slice(&[0, 128, 0, 64, 0, 0, 0, 0, 0, 64, 0, 0]);
+        let items = [
+            Item {
+                id: 1,
+                kind: *b"iovl",
+                data,
+                props: vec![ispe(128, 64)],
+            },
+            hvc_item(2, 64, 64, &a),
+            hvc_item(3, 64, 64, &b),
+        ];
+        heif(&items, &[(b"dimg", 1, &[2u16, 3][..])])
+    };
+    let l = Limits::default();
+    let tile = decode(
+        &heif(&[hvc_item(1, 64, 64, &[])], &[]),
+        &Options::default(),
+        &l,
+    )
+    .unwrap()
+    .image
+    .planes;
+    let f = file(vec![irot(90)], vec![imir(1)]);
+    // Without the option an input with transforms is still refused.
+    assert_eq!(
+        decode(&f, &Options::default(), &l),
+        Err(Error::Unsupported(
+            "overlay input with transformative properties"
+        ))
+    );
+    let got = decode(&f, &APPLY, &l).unwrap();
+    for (x, ts) in [(0, T::Rot(90)), (64, T::Flip(false))] {
+        assert_eq!(
+            reference(&got.image.planes, &[T::Crop(x, 0, 64, 64)]),
+            reference(&tile, &[ts]),
+            "input at {x}"
+        );
+    }
+    // Inputs without transforms: the option changes nothing.
+    let plain = file(vec![], vec![]);
+    assert_eq!(
+        decode(&plain, &APPLY, &l).unwrap().image,
+        decode(&plain, &Options::default(), &l).unwrap().image
+    );
 }
 
 #[test]

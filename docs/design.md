@@ -642,7 +642,8 @@ pub enum Transform { Clap(Clap), Rotate(u16), Mirror(Axis) }   // own types, sam
   at `(col * tile_w, row * tile_h)` (chroma at half), cropped to the grid `output_width x
   output_height`. Tiles must have the same size and format (chroma, bit depths) and cover the
   output, else `InvalidData`; 4:2:0 tiles must have even sides unless that axis has one tile.
-  The tile pitch is the tiles' `ispe` size (as libheif places them): a tile that decodes to
+  The tile pitch is the tiles' `ispe` size (as libheif places them; with
+  `Options::apply_transforms`, the size after each tile's own transforms): a tile that decodes to
   another size is `InvalidData`. A grid column or row wholly outside the output is skipped.
 - A protected item (`protection_index` not 0, for example CENC) is `Unsupported("protected
   item")`: its slice data is encrypted, so it is not decoded as if clear.
@@ -667,7 +668,8 @@ pub enum Transform { Clap(Clap), Rotate(u16), Mirror(Axis) }   // own types, sam
   painted in `dimg` order at `(horizontal_offset, vertical_offset)`, later inputs on top,
   clipped to the canvas, chroma at half the offset; there is no blending (an HEVC input has no
   alpha). Inputs are coded or grid items and must share chroma format and bit depths, and have no
-  transformative properties of their own (the pixels are not transformed here); in 4:2:0 every
+  transformative properties of their own unless `Options::apply_transforms` is set (then each
+  input takes its own first; "Transforms" below); in 4:2:0 every
   offset and every input width and height must be even. Else `Unsupported` with the reason; an overlay with no input is
   `Unsupported` too (no format to compose in). `sei`, `info.vui`, `poc` are the first input's,
   `hash_ok` is the merge over inputs as for grid tiles. An input wholly outside the canvas is
@@ -726,10 +728,15 @@ writes no crop or rotation of its own.
   the alpha plane (nearest neighbour) to the main image's size, this crate does not scale.
 - On, `decode_heic_item`: the item's own transforms (with the same `iden` rule) are applied to
   the returned picture; the caller set the option, so the `Picture` needs no flag.
-- A grid whose tiles have transforms of their own is `Unsupported("grid tile with transformative
-  properties")` with the option on (libheif turns each tile before it pastes it; with the option
-  off the tiles are decoded as before). An overlay input with transforms stays `Unsupported`
-  either way.
+- Derived images take each input's own transforms first (as libheif does): with the option on,
+  every grid tile is passed to the helper with its own `irot`/`imir`/`clap` before it is pasted
+  (in the worker that decoded it), then the grid item's transforms apply to the canvas. The tile
+  pitch is then each tile's size after its transforms; tiles that differ in that size are
+  `InvalidData("grid tiles differ in size or format")`, as libheif rejects them ("Grid tiles
+  have different sizes"), and the tiles must still cover the output. The decoded size must
+  still be the tile's `ispe`. An overlay input likewise takes its own transforms before it is
+  painted. With the option off the tiles are pasted as coded (as before), and an overlay input
+  with transforms stays `Unsupported("overlay input with transformative properties")`.
 - Chroma: hevc-rs pictures are 4:0:0 or 4:2:0, which the helper keeps (it changes the format only
   for 4:2:2 turned by 90 or 270 degrees). An odd crop offset or an odd side moves the chroma by one
   luma sample instead of converting; libheif converts to 4:4:4 there (docs/parity.md, G7t).

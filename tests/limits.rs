@@ -394,8 +394,9 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
 
     // The other HEIC paths, for max_threads 1, 2 and 8, the budget stepping by a sixteenth from
     // half to twice what the call needs: a 2 x 2 grid of real 128 x 128 tiles (decoded in
-    // parallel) turned by 90 degrees, with a 256 x 256 alpha item turned by its own `irot` (so
-    // the turned image is held while the alpha plane turns); decode_heic_item on the grid, on the
+    // parallel, each tile turned or mirrored by its own property first) turned by 90 degrees,
+    // with a 256 x 256 alpha item turned by its own `irot` (so the turned image is held while
+    // the alpha plane turns); decode_heic_item on the grid, on the
     // alpha item and on an `iden` item (`irot`) whose input has an `imir` of its own; and
     // decode_heic of a file whose primary is that `iden`. The real heap of every call stays
     // within max_alloc.
@@ -431,7 +432,15 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
         data: vec![0, 0, 1, 1, 1, 0, 1, 0],
         props: vec![common::ispe(256, 256), irot()],
     }];
-    items.extend((2..6).map(|id| coded(id, 128, vec![])));
+    // Each tile turns or mirrors by its own property before it is pasted (in its worker).
+    items.extend((2..6).map(|id| {
+        let own = if id % 2 == 0 {
+            irot()
+        } else {
+            common::bx(b"imir", &[1])
+        };
+        coded(id, 128, vec![own])
+    }));
     let auxc = common::fbx(b"auxC", b"urn:mpeg:hevc:2015:auxid:1\0");
     items.push(coded(6, 256, vec![auxc, irot()]));
     items.push(iden());
