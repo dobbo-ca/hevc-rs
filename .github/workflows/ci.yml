@@ -9,7 +9,7 @@ jobs:
   # The checks run inside .github/ci/Dockerfile, built with docker buildx on GitHub-hosted runners:
   # ubuntu-24.04 for x86_64 and ubuntu-24.04-arm (native, no emulator) for the arm64 jobs. The crate
   # depends on dobbo-ca/isobmff-rs by git rev: every job that builds the image gets a GitHub App
-  # token (dobbo-ca-ci-read, while that repo is private), passed as the BuildKit secret gh_token.
+  # token (while that repo is private), passed as the BuildKit secret gh_token.
   # The layers are saved to the Actions cache (one scope per job). Fork pull requests get no
   # secrets, so these jobs skip on them.
   # A PR needs only `test`; arm64, parity, parity-ref and parity-arm64 run on main and on
@@ -144,10 +144,12 @@ jobs:
           cache-to: type=gha,mode=max,scope=hevc-rs-parity-ref
           secrets: |
             gh_token=${{ steps.app.outputs.token }}
+      # A tar file: upload-artifact refuses file names with some characters (such as `:`).
+      - run: tar -C parity-ref -cf parity-ref.tar .
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: parity-ref-x86
-          path: parity-ref
+          path: parity-ref.tar
           retention-days: 1
 
   # The oracle built natively on an aarch64 runner, run on the parity-arm64 subset of the corpus
@@ -164,7 +166,8 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: parity-ref-x86
-          path: ${{ runner.temp }}/x86ref
+          path: ${{ runner.temp }}/x86ref-tar
+      - run: mkdir -p "$RUNNER_TEMP/x86ref" && tar -C "$RUNNER_TEMP/x86ref" -xf "$RUNNER_TEMP/x86ref-tar/parity-ref.tar"
       - id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
