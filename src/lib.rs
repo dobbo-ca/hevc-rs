@@ -105,6 +105,9 @@ pub use decoder::{
 };
 pub use error::Error;
 pub use heic::{Axis, Clap, HeicImage, Transform, decode_heic, decode_heic_item};
+/// The isobmff-rs crate this one is built with: `decode_heic_item` takes its `Heif`, so parse with
+/// `hevc::isobmff::parse` (a different isobmff rev in the caller would be a different type).
+pub use isobmff;
 pub use limits::Limits;
 
 /// Decode switches. Default: both in-loop filters on (conforming output), metadata kept, decoded

@@ -10,6 +10,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 hevc = { path = "../.." }
+# For `isobmff::parse` before `decode_heic_item` (the rev of the root Cargo.toml).
+isobmff = { git = "https://github.com/dobbo-ca/isobmff-rs", rev = "c4f748bbc4798bc6cc5eb56461851a28527be8c9" }
 
 # Not part of the root package: only this crate may depend on libfuzzer-sys.
 [workspace]

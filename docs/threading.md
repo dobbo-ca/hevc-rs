@@ -103,9 +103,9 @@ After a picture is reconstructed, deblocking and SAO split each plane into bands
 - Deblocking: the vertical-edge pass, then the horizontal-edge pass. A vertical edge only touches
   samples of its own row. In the horizontal pass the band that owns the edges of CTB rows
   `[B, B')` is the slice `[B - 4, B' - 4)` of the plane (chroma too): an edge reads and writes at
-  most 4 rows above and 3 below it (luma) or 2 above and 1 below (chroma), and edges are
-  independent of each other, so the result does not depend on the split. Every pass ends when its
-  bands have joined, before the next one starts.
+  most 4 rows above and 3 below it, p3..q3, in both planes (the SIMD kernels load and store all 8
+  rows, also for chroma), and edges are independent of each other, so the result does not depend
+  on the split. Every pass ends when its bands have joined, before the next one starts.
 - SAO: each plane is read from the deblocked copy (charged as before) and written in bands of
   whole CTB rows; the neighbour samples across a band edge come from the shared copy.
 

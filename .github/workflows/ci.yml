@@ -119,7 +119,8 @@ jobs:
           if-no-files-found: ignore
       - run: exit "$(cat parity-out/status)"
 
-  # The oracle built for aarch64, run under qemu-user on the first 20 corpus streams (both
+  # The oracle built for aarch64, run under qemu-user on the parity-arm64 subset of the corpus
+  # (tests/parity/run.sh, ARM_SET; both
   # HEVC_SIMD tiers), compared with the x86_64 output.
   parity-arm64:
     if: github.event_name != 'pull_request'

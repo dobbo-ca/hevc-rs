@@ -40,7 +40,7 @@ SPS and in `probe`. `max_pictures` counts pictures started in one call.
 
 ## Cancellation
 
-The cancel flag is read before each NAL unit and before each CTU, and per row in deblocking, SAO, the picture hash and the crop; set means `Error::Cancelled`.
+The cancel flag is read before each NAL unit and before each CTU, per 16 rows of vertical edges and per row of horizontal edges in deblocking, per CTB row in SAO, and per row in the picture hash and the crop; set means `Error::Cancelled`.
 
 ## decode_heic
 
@@ -78,8 +78,10 @@ The cancel flag is read before each NAL unit and before each CTU, and per row in
   `AllocLimit`. `max_pixels` is checked against the size before and after the transforms.
   The cancel flag is passed through (the helper reads it between steps, per 64 x 64 tile of a
   rotation and every 64 rows). `decode_heic_item` does the same with `max_alloc - max_alloc / 8
-  - held`. `tests/limits.rs` measures the real heap peak of a 256x256 rotated HEIC against
-  `max_alloc`.
+  - held`. `tests/limits.rs` measures the real heap peak against `max_alloc` of a 256x256
+  rotated HEIC, and for `max_threads` 1, 2 and 8 of a rotated 2x2 grid with a rotated alpha
+  item, of an `iden` primary whose input has its own transforms, and of `decode_heic_item` on a
+  grid, an alpha item and an `iden` item; on Linux it also checks the grid's thread peak.
 - `iovl`: `max_width`, `max_height` and `max_pixels` are checked against the overlay output
   size before any input is decoded; the canvas (all planes) is charged before it is allocated,
   with the first input and its SEI still alive; each later input is decoded with what is left,

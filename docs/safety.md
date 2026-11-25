@@ -29,7 +29,7 @@ thread, best of 3; `HEVC_SIMD` forces the tier). These were tried and removed:
 | Kernel | Tiers | Bench | Result |
 |---|---|---|---|
 | Output pack `u16` to `u8` (`src/crop.rs`) | AVX2 (`packus` + lane permute), AVX-512 (`vpmovwb`), NEON (`vmovn`) | run 45286842132: scalar 5914.7 ms, avx2 5912.9 ms, avx512 5912.4 ms (dec265 3360.8 ms) | no measurable gain; the scalar narrowing loop stays |
-| Deblocking luma/chroma line filters (`src/deblock.rs`, branch `sp-dblk-r5t1`, PR #16) | AVX2, NEON (Avx512 used AVX2) | run 45299840365 vs main run 45301270780: all classes 1t 4155.6 ms vs 4173.9 ms; ENTP_A 1055 vs 1053 ms, OPFLAG_B 949 vs 936 ms; the batched scalar path was slower (5273.4 vs 5216.7 ms) | no measurable gain; the scalar filters stay |
+| Deblocking luma/chroma line filters (`src/deblock.rs`, branch `sp-dblk-r5t1`, PR #16) | AVX2, NEON (Avx512 used AVX2) | run 45299840365 vs main run 45301270780: all classes 1t 4155.6 ms vs 4173.9 ms; ENTP_A 1055 vs 1053 ms, OPFLAG_B 949 vs 936 ms; the batched scalar path was slower (5273.4 vs 5216.7 ms) | no measurable gain; the scalar filters stayed (superseded by #25, edge batches) |
 | AVX-512 inverse transform 16x16 / 32x32 and SAO rows of 32 lanes (branch `sp-a512-h4w9`, PR #20) | AVX-512 F/BW/VL | run 45307535320: all classes 1t, avx512 tier 3543.4 ms vs `HEVC_SIMD=avx2` 3515.5 ms | 0.8% slower; `Tier::Avx512` keeps the AVX2 kernels |
 
 The output crop (`src/crop.rs`) and the picture hash (`sei::compute`) read the cancel flag before
@@ -139,10 +139,10 @@ scalar code, which is the oracle). Offsets equal to `i16::MIN` or tier Scalar sk
   saturating add/sub for the clip), AVX-512 (dispatched to the AVX2 kernel: a row kernel bound by
   loads gains nothing from 32 lanes), NEON (8 lanes, `vqtbl1q_u8` lookup).
 - `unsafe` blocks: the two dispatch fns `eo_row` and `bo_row` (call the safe `target_feature`
-  kernels; invariant: the tier came from `simd::tier()` / `simd::available()`, which return it
-  only when the feature was detected). The load/store helpers are the shared ones in
-  `src/simd/{x86,arm}.rs`; kernels get arrays from `as_chunks`, the tail runs the scalar row
-  code.
+  kernels; invariant: the CPU has AVX2 / NEON; checked by `is_x86_feature_detected!("avx2")` /
+  `is_aarch64_feature_detected!("neon")` in the match guard). The load/store helpers are the
+  shared ones in `src/simd/{x86,arm}.rs`; kernels get arrays from `as_chunks`, the tail runs the
+  scalar row code.
 - Tests: `sao_simd::tests::tiers_equal_scalar` (rows, bit depth 8/10/12/16, extreme offsets and
   samples) and `sao::tests::tiers_equal_scalar` (whole pictures with slices, PCM cells). Fuzz
   target `sao_tiers` (`__fuzz_sao::tiers`).
@@ -164,11 +164,10 @@ kernel; a partial one (the right or bottom end of a plane) and everything on `Ti
   scalar: `9 * (q0 - p0)` of a 12-bit sample does not fit 16 bits. Up to 10 bits every
   intermediate is below 2^14.
 - `unsafe` blocks: the two calls in `kernel` (invariant: the CPU has AVX2 / NEON; checked by
-  `is_x86_feature_detected!("avx2")` in the match guard, and Neon comes only from
-  `simd::tier()` / `simd::available()`). `kernel` cuts the window of the batch out of the plane in
-  safe code (16 rows of 8 samples, or 8 rows of 16) and returns false when it does not fit; the
-  kernels take their arrays from that window with `first_chunk`, load and store through the
-  shared helpers of `src/simd/{x86,arm}.rs`.
+  `is_x86_feature_detected!("avx2")` / `is_aarch64_feature_detected!("neon")` in the match guard).
+  `kernel` cuts the window of the batch out of the plane in safe code (16 rows of 8 samples, or 8
+  rows of 16) and returns false when it does not fit; the kernels take their arrays from that
+  window with `first_chunk`, load and store through the shared helpers of `src/simd/{x86,arm}.rs`.
 - Tests: `deblock::tests::tiers_match_scalar` (whole pictures: random bS, QpY, two slices with
   random beta/tC offsets, PCM/bypass cells, bit depths 8, 9, 10 and 12, sizes with partial
   batches) and `fuzz_tiers_random_bytes`. Fuzz target `deblock_tiers` (`__fuzz_deblock::tiers`).
