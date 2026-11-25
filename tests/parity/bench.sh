@@ -92,7 +92,7 @@ if [ -f /heic.list ]; then
     n=$(printf '%s' "${f#./}" | sed 's#/#__#g')
     if c1=$(HEIC_THREADS=1 best heic-oracle $d/in $d/o) && ls $d/o | grep -q '\.info$' \
       && r1=$(HEIC_THREADS=1 best hevc-heic $d/in $d/r) && ls $d/r | grep -q '\.info$' \
-      && v1=$(HEIC_THREADS=1 best hevc-heic-v4 $d/in $d/r) \
+      && v1=$(HEIC_THREADS=1 bestv4 hevc-heic-v4 $d/in $d/r) \
       && s1=$(HEVC_SIMD=scalar HEIC_THREADS=1 best hevc-heic $d/in $d/r) \
       && a1=$(HEVC_SIMD=avx2 HEIC_THREADS=1 best hevc-heic $d/in $d/r) \
       && cn=$(best heic-oracle $d/in $d/o) \
