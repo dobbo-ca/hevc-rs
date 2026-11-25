@@ -392,6 +392,125 @@ fn heap_peak_stays_under_max_alloc_and_no_thread_is_spawned() {
         max_alloc += 16 << 10;
     }
 
+    // The other HEIC paths, for max_threads 1, 2 and 8, the budget stepping by a sixteenth from
+    // half to twice what the call needs: a 2 x 2 grid of real 128 x 128 tiles (decoded in
+    // parallel) turned by 90 degrees, with a 256 x 256 alpha item turned by its own `irot` (so
+    // the turned image is held while the alpha plane turns); decode_heic_item on the grid, on the
+    // alpha item and on an `iden` item (`irot`) whose input has an `imir` of its own; and
+    // decode_heic of a file whose primary is that `iden`. The real heap of every call stays
+    // within max_alloc.
+    let coded = |id: u16, size: u32, extra: Vec<Vec<u8>>| {
+        let (hvcc, data) = common::hvc1(&common::stream(&common::Spec {
+            width: size,
+            height: size,
+            pictures: 1,
+            ..Default::default()
+        }));
+        let mut props = vec![common::ispe(size, size), hvcc];
+        props.extend(extra);
+        common::Item {
+            id,
+            kind: *b"hvc1",
+            data,
+            props,
+        }
+    };
+    let irot = || common::bx(b"irot", &[1]);
+    let iden = || common::Item {
+        id: 7,
+        kind: *b"iden",
+        data: Vec::new(),
+        props: vec![irot()],
+    };
+    let mirrored = || coded(8, 64, vec![common::bx(b"imir", &[1])]);
+    let mut items = vec![common::Item {
+        id: 1,
+        kind: *b"grid",
+        data: vec![0, 0, 1, 1, 1, 0, 1, 0],
+        props: vec![common::ispe(256, 256), irot()],
+    }];
+    items.extend((2..6).map(|id| coded(id, 128, vec![])));
+    let auxc = common::fbx(b"auxC", b"urn:mpeg:hevc:2015:auxid:1\0");
+    items.push(coded(6, 256, vec![auxc, irot()]));
+    items.push(iden());
+    items.push(mirrored());
+    let grid = common::heif(
+        &items,
+        &[
+            (b"dimg", 1, &[2u16, 3, 4, 5][..]),
+            (b"auxl", 6, &[1u16][..]),
+            (b"dimg", 7, &[8u16][..]),
+        ],
+    );
+    let iden_primary = common::heif(&[iden(), mirrored()], &[(b"dimg", 7, &[8u16][..])]);
+    let parsed = isobmff::parse(&grid, &isobmff::Limits::default(), &cancel).unwrap();
+    let full = hevc::decode_heic(&grid, &apply, &Limits::default(), &cancel).unwrap();
+    assert!(full.alpha.is_some() && full.transforms_applied);
+    let call = |k: usize, l: &Limits| match k {
+        0 => hevc::decode_heic(&grid, &apply, l, &cancel).map(drop),
+        1 => hevc::decode_heic(&iden_primary, &apply, l, &cancel).map(drop),
+        _ => {
+            let id = [1, 6, 7][k - 2];
+            hevc::decode_heic_item(&parsed, &grid, id, &apply, l, &cancel).map(drop)
+        }
+    };
+    for k in 0..5 {
+        assert_eq!(
+            call(k, &Limits::default()),
+            Ok(()),
+            "HEIC call {k} must decode"
+        );
+        let (_, need) = peaked(|| call(k, &Limits::default()));
+        for max_threads in [1, 2, 8] {
+            let mut max_alloc = need / 2;
+            while max_alloc <= 2 * need {
+                let limits = Limits {
+                    max_alloc,
+                    max_threads,
+                    ..Limits::default()
+                };
+                let (_, peak) = peaked(|| call(k, &limits));
+                assert!(
+                    peak <= max_alloc,
+                    "heap peak {peak} over max_alloc {max_alloc} (HEIC call {k}, threads {max_threads})"
+                );
+                max_alloc += need / 16;
+            }
+        }
+    }
+
+    // Threads of the grid decode: the test's own, plus the sampler, plus at most
+    // max_threads - 1 tile workers (none at max_threads 1).
+    #[cfg(target_os = "linux")]
+    {
+        for max_threads in [1usize, 2, 4] {
+            let base = threads_now();
+            let done = AtomicBool::new(false);
+            let seen = AtomicUsize::new(base);
+            std::thread::scope(|sc| {
+                sc.spawn(|| {
+                    while !done.load(Ordering::Relaxed) {
+                        seen.fetch_max(threads_now(), Ordering::Relaxed);
+                    }
+                });
+                let limits = Limits {
+                    max_threads,
+                    ..Limits::default()
+                };
+                for _ in 0..30 {
+                    // As below: let a worker of the previous call finish exiting first.
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    let _ = call(0, &limits);
+                }
+                done.store(true, Ordering::Relaxed);
+            });
+            assert!(
+                seen.load(Ordering::Relaxed) <= base + max_threads,
+                "grid threads over max_threads {max_threads}"
+            );
+        }
+    }
+
     // Band-parallel filters on a real picture: one 512x512 picture (four bands of 64 Ki luma
     // samples; one picture, so no picture worker) gives the same output for every max_threads,
     // and with two or more a band thread runs next to the calling thread. The checks come after

@@ -1,12 +1,10 @@
 # hevc-rs
 
-HEVC (H.265) decoding for intra pictures under strict resource limits, in Rust. It decodes Main, Main 10 and Main Still Picture streams (4:2:0 and 4:0:0, 8 to 12 bits per component) from an Annex B byte stream or from HEIF/MP4 samples plus an `hvcC` record, bit-exact with the spec; P and B slices are rejected with `Error::InterSlice`. It is a new crate written from the H.265 spec, not a port. Pure Rust, one dependency (isobmff-rs, for HEIC), `unsafe` only in the SIMD dispatch and load/store helpers (docs/safety.md). Apache-2.0; see `NOTICE`.
+HEVC (H.265) decoding for intra pictures under strict resource limits, in Rust. It decodes Main, Main 10 and Main Still Picture streams (4:2:0 and 4:0:0, 8 to 12 bits per component) from an Annex B byte stream or from HEIF/MP4 samples plus an `hvcC` record, bit-exact with the spec and with libde265 and ffmpeg on the JCT-VC conformance intra prefixes in CI (docs/parity.md). Every I picture is decoded (CABAC, intra prediction, residual, deblocking, SAO); P and B slices are rejected with `Error::InterSlice`. It is a new crate written from the H.265 spec, not a port. Pure Rust, one dependency (isobmff-rs, for HEIC), `unsafe` only in the SIMD dispatch and load/store helpers (docs/safety.md). Apache-2.0; see `NOTICE`.
 
-Dependency: `hevc = { git = "https://github.com/dobbo-ca/hevc-rs", rev = "5b860a0791fd5295aa2191b2c20b89d72d0cb9bb" }`
+Dependency: `hevc = { git = "https://github.com/dobbo-ca/hevc-rs", rev = "e5deb9e7852639a64b861966cddff446bbd5d9ed" }`
 
 **PATENT CAUTION (owner):** HEVC is covered by patent pools. Low risk for a private app; the owner must review before Drive goes public.
-
-Status: intra decoding works. Every I picture is decoded (CABAC, intra prediction, residual, deblocking, SAO), checked against its decoded picture hash SEI when present (with `Options { check_hash: true, .. }`; off by default), and bit-exact with libde265 and ffmpeg on the JCT-VC HEVC_v1 intra prefixes in CI. P and B slices are rejected with `Error::InterSlice`.
 
 ## Quick start
 
@@ -41,31 +39,15 @@ There is no unlimited entry point. Every call takes a `Limits`.
 | `max_pictures` | 4096 | decoded pictures per call | `Error::PictureLimit` |
 | `max_metadata` | 1 MiB | bytes of SEI messages kept per picture (payload plus the message struct) | no error; the message is dropped |
 
-- `max_alloc` is the enforced peak working memory of one call, all threads together, including the nested isobmff-rs parse (an eighth of `max_alloc` each for the parse and the item bytes): allocations are charged before they are made and released on drop. The stored parameter sets, the output pictures and the planes are charged one by one; 64 KiB is booked up front for the small fixed allocations, so a `max_alloc` below that is `Error::AllocLimit` at once. With `Options::apply_transforms`, the buffers of the crop and rotation get what is left of the decode share after the decoded planes (docs/limits.md).
-- Metadata (SEI messages, VUI) is kept by default and exposed raw; `Options { metadata: false, .. }` drops it. Kept SEI bytes are charged to `max_alloc` like the planes.
-- `max_threads = 1` spawns no thread. With more, the tiles of a HEIC grid and the pictures of a call that holds several are decoded in parallel, and deblocking and SAO of a big picture run in parallel bands of CTB rows (one band per 64 Ki luma samples), all on up to `max_threads - 1` extra threads (a call with one picture, or one picture and a P slice, spawns no picture worker; a worker starts only when a job finds none free); the output and the errors do not depend on the value. No thread pool: workers are scoped per call; a shared pool was tried and gave no clear gain (docs/threading.md, Known deviations). See `docs/threading.md`.
-- Thread stacks are not charged to `max_alloc` (band threads 512 KiB each, picture and grid workers the std default).
-- `Options::check_hash` (default false): the decoded picture hash SEI is checked (`Picture::hash_ok` is `Some`) only when it is true; otherwise `hash_ok` is `None` and no MD5, CRC or checksum is computed.
+- `max_alloc` is the enforced peak working memory of one call, all threads together, including the nested isobmff-rs parse: allocations are charged before they are made and released on drop. 64 KiB is booked up front for small fixed allocations, so a `max_alloc` below that is `Error::AllocLimit` at once (docs/limits.md).
+- `max_threads = 1` spawns no thread. With more, HEIC grid tiles, the pictures of a call that holds several, and the deblocking and SAO bands of a big picture run on up to `max_threads - 1` scoped threads; the output and the errors do not depend on the value. No thread pool: a shared pool gave no clear gain. Thread stacks are not charged to `max_alloc` (docs/threading.md).
+- Metadata (SEI messages, VUI) is kept raw and charged to `max_alloc`; `Options { metadata: false, .. }` drops it. `Options::check_hash` (default false) checks the decoded picture hash SEI (`Picture::hash_ok`).
 - Cancellation: every decode takes `&AtomicBool`, read before each NAL unit and each CTU, and per row in deblocking, SAO, the picture hash and the crop. When set, the call returns `Error::Cancelled`.
 
 ## HEIC
 
-`decode_heic` decodes the primary image of a HEIC file (one `hvc1` item or a grid of tiles, plus its alpha plane) on top of isobmff-rs, from a `meta` box or from the low-overhead `mini` box (ISO/IEC 23008-12 Annex O). `irot`, `imir` and `clap` come back raw in `transforms`, not applied, unless `Options { apply_transforms: true, .. }`: then isobmff-rs's shared `apply_transforms` crops, rotates and mirrors the image in `ipma` order (the alpha plane by the alpha item's own transforms), `info.width`/`height` are the size after them, `transforms` is still returned and `transforms_applied` is true. For a `mini` file the orientation comes back as `irot`/`imir`. Exif and XMP are not touched: read them with `isobmff::Heif::metadata`.
-`decode_heic_item` decodes any image item of an already parsed `isobmff::Heif` (a coded item or a grid, no alpha, transforms applied only with `apply_transforms`) without parsing again.
-
-```rust
-let file = std::fs::read("photo.heic")?;
-let heic = hevc::decode_heic(&file, &Options::default(), &limits, &cancel)?;
-println!("{}x{}, {} transforms", heic.image.info.width, heic.image.info.height, heic.transforms.len());
-```
+`decode_heic` decodes the primary image of a HEIC file (`meta` or `mini` box; one `hvc1` item, a grid, `iden` or `iovl`, plus its alpha plane); `decode_heic_item` decodes any image item of a parsed `isobmff::Heif`. `irot`, `imir` and `clap` come back raw in `transforms` unless `Options { apply_transforms: true, .. }` applies them (docs/design.md, "HEIC glue" and "Transforms"). Exif and XMP: `isobmff::Heif::metadata`.
 
 ## Docs
 
-- [docs/design.md](docs/design.md): the build spec
-- [docs/limits.md](docs/limits.md): limits, charging, errors
-- [docs/threading.md](docs/threading.md): grid tiles and pictures in parallel, the error and memory rules
-- [docs/safety.md](docs/safety.md): the `unsafe` inventory (SIMD dispatch and helpers), kernels removed, hostile input
-- [docs/dependencies.md](docs/dependencies.md): isobmff-rs
-- [docs/parity.md](docs/parity.md): oracles, corpus, gates
-- [docs/fuzzing.md](docs/fuzzing.md): fuzz targets
-- [docs/benchmarks.md](docs/benchmarks.md): benchmarks
+[design](docs/design.md) (the build spec, HEIC), [limits](docs/limits.md) (charging, errors), [threading](docs/threading.md), [safety](docs/safety.md) (the `unsafe` inventory, hostile input), [dependencies](docs/dependencies.md) (isobmff-rs), [parity](docs/parity.md) (oracles, corpus, gates), [fuzzing](docs/fuzzing.md), [benchmarks](docs/benchmarks.md).

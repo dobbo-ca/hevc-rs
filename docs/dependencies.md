@@ -10,4 +10,4 @@ libde265 and ffmpeg are used only by the CI parity oracle, built or installed in
 (see [parity.md](parity.md)). They are never linked into the crate and their code and tables are
 not copied: both are LGPL, so the decoder is written from the H.265 spec.
 
-`libfuzzer-sys` is used only by the separate `tests/fuzz/` crate.
+`libfuzzer-sys` is used only by the separate `tests/fuzz/` crate, which also depends on isobmff-rs at the same rev (the `heic` target parses with `isobmff::parse` before `decode_heic_item`).

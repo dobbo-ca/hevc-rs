@@ -143,7 +143,9 @@ RUN --mount=type=cache,id=hevc-rs-heic-data,target=/heic,sharing=locked \
     sh /parity/heic-fetch.sh /parity/heic-corpus.toml /heic \
     && (cd /heic/x && find . -type f | sort) > /heic.list && wc -l /heic.list
 
-# The reference tree of hevc-rs on the first 20 corpus streams (one thread), x86_64: the prefix
+# The reference tree of hevc-rs on the first 20 corpus streams and the streams of ARM_SET
+# (tests/parity/run.sh: 10 and 12 bits, 4:0:0, PCM, transform skip, scaling lists, lossless,
+# deblocking overrides, tiles, SAO), one thread, x86_64: the prefix
 # streams and what the aarch64 oracle must reproduce byte for byte.
 FROM src AS x86-ref
 COPY --from=data /data.list /data.list

@@ -55,6 +55,7 @@ name = "hevc-fuzz"
 version = "0.0.0"
 dependencies = [
  "hevc",
+ "isobmff",
  "libfuzzer-sys",
 ]
 
