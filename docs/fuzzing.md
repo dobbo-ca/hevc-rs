@@ -37,6 +37,9 @@ The `fuzz-arm64` job builds `transform_tiers`, `intra_tiers`, `sao_tiers` and `d
 |---|---|---|---|
 | 2026-11-23 | main 92cb413 | annexb, hvcc, params, probe, decode x 900 s | 0 |
 | 2026-11-23 | main 6dbe2a7 | heic x 900 s | 0 |
+| 2026-11-24 | main 4a8ef2a (run 45317016761) | 12 targets x 900 s (9 x86, 3 arm64) | 0 |
+| 2026-11-24 | main dcdc55d (run 45502807224, weekly) | 10 x86 targets x 600 s (arm64 jobs cancelled for CI load) | 0 |
+| 2026-11-25 | main 55ea54a (run 45526502667) | 14 targets x 900 s (10 x86, 4 arm64) | 0 |
 
-Fuzz hours on main: 1.5 (6 targets x 900 s). `decode` runs slowly (about 5 exec/s: its seeds are whole
+Fuzz hours on main: 9.7 (6 + 12 + 14 targets x 900 s, 10 targets x 600 s). `decode` runs slowly (about 5 exec/s: its seeds are whole
 pictures), the parsers run 2000-5600 exec/s.

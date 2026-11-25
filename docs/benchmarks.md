@@ -25,20 +25,20 @@ stream and on every file of the HEIC corpus. `.github/workflows/bench.yml` runs 
 
 ## Results
 
-Main at e5deb9e (after round C), bench run 45512816593, best of 3, 16 CPUs, ms. Reference:
-dec265 for main/main10/rext, libheif with libde265 for heic. Ratio: hevc-rs / reference (lower
-is better). v4: hevc-rs built with `-C target-cpu=x86-64-v4` and the false-deps features. The
-v4, scalar and avx2 HEIC columns of this run were disturbed (a host effect: v4 3259.3 ms against
-2131.4 to 2292.8 in the runs before, while the default build gave 2212.0); the speed round
-(main 5b860a0, run 45312989791) gave all 3071.4 ms 1t (ratio 0.91), 1600.1 nt (0.77).
+Main at 55ea54a (after the follow-up round), bench run 45525817059, best of 3, 16 CPUs, ms.
+Reference: dec265 for main/main10/rext, libheif with libde265 for heic. Ratio: hevc-rs / reference
+(lower is better). v4: hevc-rs built with `-C target-cpu=x86-64-v4` and the false-deps features.
+Before this round (main 4a8ef2a, run 45466964176): all 3041.1 ms 1t (ratio 0.90), 1622.6 nt
+(0.78); heic 2395.2 1t (0.37), 2104.8 nt (0.34). The speed round (main 5b860a0, run 45312989791)
+gave all 3071.4 ms 1t (ratio 0.91), 1600.1 nt (0.77).
 
 | class | n | ref 1t | ffmpeg 1t | hevc 1t | v4 1t | scalar 1t | avx2 1t | ratio 1t | ratio v4 1t | ref nt | ffmpeg nt | hevc nt | v4 nt | ratio nt | ratio v4 nt |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| main | 135 | 3314.0 | 5871.6 | 2492.3 | 2388.0 | 3791.7 | 2475.9 | 0.75 | 0.72 | 2065.1 | 5577.4 | 1375.3 | 1334.2 | 0.67 | 0.65 |
-| main10 | 11 | 39.8 | 308.0 | 22.7 | 21.8 | 27.5 | 22.8 | 0.57 | 0.55 | 36.0 | 335.7 | 22.6 | 22.2 | 0.63 | 0.62 |
-| rext | 3 | 19.6 | 96.7 | 13.1 | 12.6 | 16.0 | 13.1 | 0.67 | 0.65 | 18.0 | 104.9 | 13.2 | 12.7 | 0.73 | 0.70 |
-| all | 149 | 3373.4 | 6276.3 | 2528.2 | 2422.4 | 3835.1 | 2511.8 | 0.75 | 0.72 | 2119.1 | 6018.0 | 1411.2 | 1369.1 | 0.67 | 0.65 |
-| heic | 60 | 6484.5 | 0.0 | 2212.0 | 3259.3 | 4675.9 | 3591.9 | 0.34 | 0.50 | 6389.1 | 0.0 | 2053.5 | 3081.0 | 0.32 | 0.48 |
+| main | 135 | 3295.2 | 5760.7 | 2471.2 | 2375.4 | 3757.5 | 2454.9 | 0.75 | 0.72 | 2006.0 | 5502.7 | 1337.1 | 1299.1 | 0.67 | 0.65 |
+| main10 | 11 | 39.5 | 306.4 | 22.8 | 22.0 | 27.4 | 22.4 | 0.58 | 0.56 | 35.5 | 332.5 | 22.7 | 22.0 | 0.64 | 0.62 |
+| rext | 3 | 19.5 | 95.0 | 13.1 | 12.9 | 15.7 | 12.8 | 0.67 | 0.66 | 17.9 | 103.8 | 13.3 | 12.8 | 0.74 | 0.71 |
+| all | 149 | 3354.1 | 6162.2 | 2507.0 | 2410.3 | 3800.6 | 2490.2 | 0.75 | 0.72 | 2059.3 | 5938.9 | 1373.1 | 1333.9 | 0.67 | 0.65 |
+| heic | 60 | 6381.4 | 0.0 | 2168.7 | 2113.5 | 3399.6 | 2209.9 | 0.34 | 0.33 | 6242.9 | 0.0 | 1954.2 | 1898.1 | 0.31 | 0.30 |
 
 Before the speed round (bench run 45280698331, main 947dccb, scalar and serial; the HEIC column of
 that run timed the files' output writes too, so it is left out):
