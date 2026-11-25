@@ -3,7 +3,7 @@
 ## `unsafe`
 
 The crate root has `#![deny(unsafe_code, unsafe_op_in_unsafe_fn,
-clippy::undocumented_unsafe_blocks)]`. `unsafe` is allowed in two places only, as in the rust-ports
+clippy::undocumented_unsafe_blocks)]`. `unsafe` is allowed in two places only, as in the usual
 safe-SIMD pattern: the load/store helpers of `src/simd/x86.rs` and `src/simd/arm.rs` (each takes a
 fixed-size array reference, so its type proves the bounds), and the per-family dispatch that calls
 a `#[target_feature]` kernel after `simd::tier()` / `simd::available()` found the features at run

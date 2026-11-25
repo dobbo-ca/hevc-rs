@@ -16,8 +16,8 @@
 | `deblock_tiers` | `__fuzz_deblock::tiers`: one batch of 4 deblocking edge segments (luma or chroma, vertical or horizontal edge, bit depth 8 to 10, beta, tC and kept sides) and a 24x20 plane built from the input, every SIMD tier vs scalar, bit-exact |
 
 All targets run with `-rss_limit_mb=2048 -malloc_limit_mb=512`, so an allocation outside the
-limits is a crash. The malloc limit needs the sanitizer's allocator hooks, so it applies to the
-x86_64 jobs only; the `fuzz-arm64` jobs (no sanitizer, under qemu) have the RSS limit only.
+limits is a crash. The malloc limit needs the sanitizer's allocator hooks, which both the
+x86_64 jobs and the `fuzz-arm64` jobs have (default sanitizer).
 
 Seeds are made in the image build (`.github/ci/Dockerfile`, stage `fuzz`), one directory per
 target, and are not kept in git. `annexb`, `probe` and `decode` get a hand-written VPS, the start
@@ -29,7 +29,7 @@ cache. `heic` gets the first 20 files under 64 KiB of the HEIC corpus and its `m
 another crate) and on `workflow_dispatch`, never on push or pull request. The dispatch input
 `max_total_time` is at most 3000 s: the job times out at 60 minutes with the image build.
 
-The `fuzz-arm64` job builds `transform_tiers`, `intra_tiers`, `sao_tiers` and `deblock_tiers` for aarch64 without a sanitizer (ASan does not run under qemu-user) and runs them under `qemu-aarch64`, so every NEON tier is compared with scalar. It has the same time input and `max-parallel: 2`.
+The `fuzz-arm64` job builds `transform_tiers`, `intra_tiers`, `sao_tiers` and `deblock_tiers` for aarch64 natively on an arm64 runner (`ubuntu-24.04-arm`) with the default sanitizer and runs them there, so every NEON tier is compared with scalar. It has the same time input and `max-parallel: 2`.
 
 ## Runs
 

@@ -3,9 +3,9 @@
 # .github/ci/Dockerfile; needs the oracle binaries on PATH.
 #   run.sh full <report-dir>   the gates on /data/x + tests/data/fuzz-grown, and G7 and G7t on /heic/x
 #   run.sh ref <out-dir>       hevc-oracle on the first 20 corpus streams and ARM_SET, one thread
-#   run.sh arm <ref-dir>       the aarch64 oracle (qemu) on the same prefixes vs <ref-dir>
+#   run.sh arm <ref-dir>       the aarch64 oracle (native arm64) on the same prefixes vs <ref-dir>
 # Binaries: hevc-oracle (examples/oracle), hevc-heic (examples/heic), dec265 (libde265),
-# heic-oracle (libheif), ffmpeg, ffprobe, and for `arm` hevc-oracle-arm64 run by $ARM_RUN. Exit status 0 only when every gate is an empty diff.
+# heic-oracle (libheif), ffmpeg, ffprobe, and for `arm` hevc-oracle-arm64. Exit status 0 only when every gate is an empty diff.
 # PARITY_DECODE=1 turns the picture gates (dec265, ffmpeg, hash) on; otherwise they only report.
 set -u
 export LC_ALL=C
@@ -477,7 +477,7 @@ arm() {
   for simd in default scalar; do
     if [ $simd = scalar ]; then export HEVC_SIMD=scalar; else unset HEVC_SIMD; fi
     mkdir -p $W/out
-    run ${ARM_RUN:-qemu-aarch64 -L /usr/aarch64-linux-gnu} /usr/local/bin/hevc-oracle-arm64 --threads 1 "$REP/prefix" $W/out
+    run /usr/local/bin/hevc-oracle-arm64 --threads 1 "$REP/prefix" $W/out
     if diff -rq "$REP/out" $W/out > $W/d; then echo "aarch64 $simd: identical to x86_64"
     else echo "aarch64 $simd: DIFF"; head -n 50 $W/d; bad=1; fi
     rm -rf $W/out

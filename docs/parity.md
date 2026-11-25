@@ -102,7 +102,7 @@ All of this runs in CI only; nothing is built or run on a developer machine.
      `iovl` primary, for which libheif returns RGB, token `convert`), are explained.
 8. G8 (run after G5) `HEVC_SIMD=scalar` and `HEVC_SIMD=avx2` equal the default (best) tier,
    AVX-512 on the CI hosts. `parity-arm64` compares the aarch64 oracle (NEON, then
-   `HEVC_SIMD=scalar`, under qemu) with the x86_64 output on a subset, not the whole corpus: the
+   `HEVC_SIMD=scalar`, native arm64 runner) with the x86_64 output on a subset, not the whole corpus: the
    first 20 corpus streams (18 give a prefix, all 8-bit 4:2:0) plus the streams named in `ARM_SET`
    (`tests/parity/run.sh`), which reach the NEON paths those 20 miss: 10 and 12 bits and unequal
    luma/chroma depths (`WPP_*_MAIN10`, `DBLK_A_MAIN10`, `TSUNEQBD_A_MAIN10`, `INITQP_B_Main10`,

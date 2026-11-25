@@ -1,9 +1,9 @@
 # Dependencies
 
-One: `isobmff` ([isobmff-rs](https://github.com/dobbo-ca/isobmff-rs), private, same owner, pure
+One: `isobmff` ([isobmff-rs](https://github.com/dobbo-ca/isobmff-rs), same owner, pure
 Rust, no `unsafe`), pinned by git rev in `Cargo.toml` (`c4f748b`, which has the shared `apply_transforms` helper); it parses the HEIC container for
 `decode_heic` and decodes no pixels; with `Options::apply_transforms` its `apply_transforms` crops, rotates and mirrors the decoded planes (docs/design.md, "Transforms"). CI fetches it with a read-only GitHub App token (see
-`docs/conventions.md` in rust-ports, "Private git dependencies"). The build dependencies are
+`.github/ci/Dockerfile`). The build dependencies are
 empty. No C code.
 
 libde265 and ffmpeg are used only by the CI parity oracle, built or installed in the CI image

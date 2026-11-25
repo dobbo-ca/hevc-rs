@@ -1,5 +1,7 @@
-# CI image: Rust runs here, on the in-cluster BuildKit, because the ARC runner has no toolchain.
-# The crate depends on one private dobbo-ca port (isobmff-rs) by git rev. Its fetch is the only step
+# CI image: Rust runs here, built with docker buildx on GitHub-hosted runners (ubuntu-24.04 for
+# x86_64, ubuntu-24.04-arm for the native arm64 stages).
+# The crate depends on dobbo-ca/isobmff-rs by git rev; the dobbo-ca-ci-read app token fetches it
+# while that repo is private. Its fetch is the only step
 # of the crate stages that needs the GitHub App token, passed as the BuildKit secret `gh_token`
 # (never a build arg, never left in a layer); every later step runs offline. The fuzz crate's own
 # dependencies (libfuzzer-sys from crates.io, and hevc with isobmff-rs) are fetched in the same step
@@ -7,11 +9,15 @@
 # Every tool is installed in a stage before `COPY . .`, so a new commit does not install it again,
 # and the fetch runs from the manifests and lockfiles alone.
 FROM rust:1.99.1-bookworm AS toolchain
-# gcc-aarch64-linux-gnu: the linker of `cargo build --target aarch64-unknown-linux-gnu`.
+ARG TARGETARCH
+# On x86_64, gcc-aarch64-linux-gnu is the linker of `cargo build --target aarch64-unknown-linux-gnu`
+# (the aarch64 lint and link check in `ci`). On arm64 that target is the host: no cross toolchain.
 RUN rustup component add rustfmt clippy && rustup target add aarch64-unknown-linux-gnu \
-    && apt-get update && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
-    && rm -rf /var/lib/apt/lists/*
-ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+    && if [ "$TARGETARCH" = amd64 ]; then \
+         apt-get update && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+         && rm -rf /var/lib/apt/lists/* \
+         && printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"\n' >> "$CARGO_HOME/config.toml"; \
+       fi
 WORKDIR /src
 # The manifests and lockfiles of the crate and of the fuzz crate, with stub targets, so the fetch
 # is a layer that only a change to them rebuilds.
@@ -52,20 +58,15 @@ RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
 RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + && cargo build --locked --release --target aarch64-unknown-linux-gnu --examples
 
-# qemu-user, for the arm64 stages (the cross gcc is in `toolchain`).
-FROM toolchain AS qemu-tools
-RUN apt-get update && apt-get install -y --no-install-recommends qemu-user \
-    && rm -rf /var/lib/apt/lists/*
-ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER="qemu-aarch64 -L /usr/aarch64-linux-gnu" \
-    CARGO_NET_OFFLINE=true
-
-FROM qemu-tools AS qemu-arm64
+# The arm64 stages are built natively on an arm64 runner (ubuntu-24.04-arm): no emulator.
+FROM toolchain AS native-arm64
+ENV CARGO_NET_OFFLINE=true
 COPY . .
 
-# aarch64 kernel tests under qemu-user, both HEVC_SIMD tiers (HEVC_SIMD=scalar forces the scalar
+# aarch64 kernel tests, both HEVC_SIMD tiers (HEVC_SIMD=scalar forces the scalar
 # one): the NEON kernel and cross-tier tests (names with tiers_, fuzz_, frames_match_scalar) and the
 # dispatch tests (simd::tests). The full suite runs natively in the test job.
-FROM qemu-arm64 AS arm64
+FROM native-arm64 AS arm64
 RUN --mount=type=cache,id=hevc-rs-target-arm64,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + \
     && cargo test --locked --target aarch64-unknown-linux-gnu --lib -- tiers_ frames_match_scalar simd::tests fuzz_ \
@@ -181,14 +182,19 @@ RUN --mount=type=cache,id=hevc-rs-data,target=/data,sharing=locked,readonly \
 FROM scratch AS parity-report
 COPY --from=parity /report /
 
-# The oracle built for aarch64, run under qemu-user on the prefix streams of the x86-ref tree,
-# both HEVC_SIMD tiers, compared with the x86_64 output.
-FROM qemu-arm64 AS parity-arm64
+# The x86_64 reference tree as a build output (job parity-ref uploads it for parity-arm64).
+FROM scratch AS x86-ref-out
+COPY --from=x86-ref /ref /
+
+# The oracle built natively for aarch64, run on the prefix streams of the x86-ref tree, both
+# HEVC_SIMD tiers, compared with the x86_64 output. The workflow passes the tree of `x86-ref-out`
+# as the named build context `x86ref`.
+FROM native-arm64 AS parity-arm64
 RUN --mount=type=cache,id=hevc-rs-target-arm64,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + \
     && cargo build --locked --release --target aarch64-unknown-linux-gnu --example oracle \
     && cp target/aarch64-unknown-linux-gnu/release/examples/oracle /usr/local/bin/hevc-oracle-arm64
-RUN --mount=type=bind,from=x86-ref,source=/ref,target=/ref \
+RUN --mount=type=bind,from=x86ref,target=/ref \
     sh tests/parity/run.sh arm /ref
 
 # Fuzzing (fuzz.yml): nightly and cargo-fuzz, with the targets built into the image. The workflow
@@ -227,24 +233,19 @@ RUN --mount=type=cache,id=hevc-rs-data,target=/data,sharing=locked,readonly \
     && cp tests/fuzz/seeds/annexb/* tests/fuzz/seeds/decode/ \
     && cargo +nightly fuzz build --fuzz-dir tests/fuzz
 
-# The tier targets built for aarch64 (no sanitizer: ASan does not run under qemu-user), run
-# under qemu-aarch64 by fuzz.yml (`fuzz-arm64`): they compare the NEON kernels with scalar.
-FROM fuzz-tools AS fuzz-arm64-tools
-RUN apt-get update && apt-get install -y --no-install-recommends qemu-user g++-aarch64-linux-gnu \
-    && rm -rf /var/lib/apt/lists/* && rustup target add aarch64-unknown-linux-gnu --toolchain nightly
-ENV CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
-
-FROM fuzz-arm64-tools AS fuzz-arm64
+# The tier targets built natively on an arm64 runner (default sanitizer), run by fuzz.yml
+# (`fuzz-arm64`): they compare the NEON kernels with scalar.
+FROM fuzz-tools AS fuzz-arm64
 COPY . .
 # `cargo fuzz build` takes one target.
 RUN for t in transform_tiers intra_tiers sao_tiers deblock_tiers; do \
-      cargo +nightly fuzz build --fuzz-dir tests/fuzz --sanitizer none --target aarch64-unknown-linux-gnu $t || exit 1; \
+      cargo +nightly fuzz build --fuzz-dir tests/fuzz $t || exit 1; \
     done
 
 # Benchmark (bench.yml, tests/parity/bench.sh): libde265 (dec265), ffmpeg, libheif (heic-oracle)
 # and hevc-rs on the same corpus, in one container, so the ratios compare the same machine.
 # hevc-rs is built twice: the default build (runtime SIMD dispatch) and the x86-64-v4 build with
-# the Zen 4/5 false-dependency features of the release binaries (rust-ports conventions), with its
+# the Zen 4/5 false-dependency features of the release binaries, with its
 # own cache mount since RUSTFLAGS changes every artifact. BENCH_RUN changes per run, so a cache
 # hit of the same source does not reuse an old timing.
 FROM ffmpeg-oracle AS bench
