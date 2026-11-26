@@ -23,7 +23,24 @@ stream and on every file of the HEIC corpus. `.github/workflows/bench.yml` runs 
 `.github/workflows/profile.yml` (dispatch only) prints where hevc-rs and dec265 spend their time
 (`tests/parity/profile.sh`: perf, or callgrind when the host allows no perf events).
 
-## Results
+## Hosted-runner baseline
+
+Main 6de624c, `bench.yml` run 45718350632, on a GitHub-hosted `ubuntu-24.04` runner (4 CPUs, SIMD
+tier avx2, no AVX-512, so the v4 columns are not run and show 0). This is the baseline for later
+runs; compare ratios, not ms, with the older numbers below.
+
+Reference: dec265 for main/main10/rext, libheif (with libde265) for heic. v4: hevc-rs built
+with -C target-cpu=x86-64-v4 and the false-deps features. Ratio: hevc-rs / reference.
+
+| class | n | ref 1t | ffmpeg 1t | hevc 1t | v4 1t | scalar 1t | avx2 1t | ratio 1t | ratio v4 1t | ref nt | ffmpeg nt | hevc nt | v4 nt | ratio nt | ratio v4 nt |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| main | 135 | 6276.4 | 13015.0 | 5191.4 | 0.0 | 7941.6 | 5180.5 | 0.83 | 0.00 | 4492.9 | 12703.2 | 3681.6 | 0.0 | 0.82 | 0.00 |
+| main10 | 11 | 84.1 | 765.7 | 51.2 | 0.0 | 61.7 | 50.8 | 0.61 | 0.00 | 77.9 | 794.0 | 51.5 | 0.0 | 0.66 | 0.00 |
+| rext | 3 | 37.9 | 229.0 | 27.7 | 0.0 | 33.9 | 27.5 | 0.73 | 0.00 | 35.8 | 239.9 | 28.0 | 0.0 | 0.78 | 0.00 |
+| all | 149 | 6398.4 | 14009.7 | 5270.3 | 0.0 | 8037.3 | 5258.9 | 0.82 | 0.00 | 4606.6 | 13737.0 | 3761.1 | 0.0 | 0.82 | 0.00 |
+| heic | 60 | 8565.3 | 0.0 | 4625.2 | 0.0 | 6994.6 | 4605.2 | 0.54 | 0.00 | 8380.1 | 0.0 | 4248.5 | 0.0 | 0.51 | 0.00 |
+
+## Results (earlier self-hosted runner)
 
 These numbers come from the earlier 16-CPU self-hosted runner; runs on GitHub-hosted ubuntu-24.04 runners (4 vCPU) are a new baseline, so compare ratios, not ms.
 
