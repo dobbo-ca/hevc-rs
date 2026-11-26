@@ -11,7 +11,8 @@ time. The kernels themselves are safe functions. Each kernel family has a sectio
 
 SIMD tiers in CI: scalar, AVX2 (x86_64) and NEON (aarch64) natively; the AVX-512 tier under Intel SDE
 (job `avx512-sde`: the lib tests on `-spr` with `HEVC_SIMD=avx512`, which panics on a CPU without
-AVX-512 F, BW and VL, and fails the `-hsw` step by design). `Tier::Avx512` still runs the AVX2 kernels.
+AVX-512 F, BW and VL, and fails the `-hsw` step by design). `Tier::Avx512` still runs the AVX2 kernels,
+except for deblocking, which has an AVX-512 kernel (F, BW, VL).
 
 ## Hostile input
 
@@ -150,7 +151,7 @@ scalar code, which is the oracle). Offsets equal to `i16::MIN` or tier Scalar sk
 - Tests: `sao_simd::tests::tiers_equal_scalar` (rows, bit depth 8/10/12/16, extreme offsets and
   samples) and `sao::tests::tiers_equal_scalar` (whole pictures with slices, PCM cells). Fuzz
   target `sao_tiers` (`__fuzz_sao::tiers`).
-## SIMD: deblocking (`src/deblock.rs`, modules `x86k` and `armk`)
+## SIMD: deblocking (`src/deblock.rs`, modules `x86k`, `x512k` and `armk`)
 
 Each edge is filtered in batches of 4 segments of 4 lines (16 lines along the edge). The band
 code first computes the parameters of the 4 segments (`Seg`: beta, tC, kept p or q side; tC 0
@@ -164,11 +165,27 @@ kernel; a partial one (the right or bottom end of a plane) and everything on `Ti
   the strong/normal choice of a segment come from its lines 0 and 3 inside the vectors (lanes 0
   and 3 of each group of 4 added or and-ed, then broadcast) and are applied with blends, as are
   the kept sides (PCM with pcm_loop_filter_disabled, cu_transquant_bypass).
-- Tiers: Scalar, AVX2, AVX-512 (dispatched to the AVX2 kernel), NEON. Bit depths above 10 run
-  scalar: `9 * (q0 - p0)` of a 12-bit sample does not fit 16 bits. Up to 10 bits every
-  intermediate is below 2^14.
-- `unsafe` blocks: the two calls in `kernel` (invariant: the CPU has AVX2 / NEON; checked by
-  `is_x86_feature_detected!("avx2")` / `is_aarch64_feature_detected!("neon")` in the match guard).
+- Tiers: Scalar, AVX2, AVX-512, NEON. Bit depths above 10 run scalar: `9 * (q0 - p0)` of a
+  12-bit sample does not fit 16 bits. Up to 10 bits every intermediate is below 2^14.
+
+| Tier | Kernel | Subsets |
+|---|---|---|
+| AVX2 | `x86k::edges` | avx2 |
+| AVX-512 | `x512k::edges` | avx2, avx512f, avx512bw, avx512vl |
+
+  The AVX-512 kernel keeps the 16-line layout and the arithmetic of the AVX2 one (a batch of 16
+  lines of 16 bits is one 256-bit vector, so 512-bit vectors would not fill, and Zen 4 runs them
+  as two halves). It cuts instructions instead: the decisions (dE, dEp, dEq, strong, weak, kept
+  sides) are 16-bit mask registers, chained in the compares and combined with scalar integer ops
+  (lines 0 and 3 of a segment: `m & (m >> 3)`, then spread to 4 bits), and applied with one-op
+  masked blends instead of and/andnot and the two-op `blendv`; the per-segment beta and tC are
+  one `vpermw` of 4 packed values; a horizontal edge loads only the rows the filter reads
+  (chroma p1..q1) and stores only the rows it can change (luma p2..q2, chroma p0 and q0). The
+  vertical-edge transposes are the AVX2 ones. A CPU with AVX-512 F, BW, VL and AVX2 takes it;
+  any other runs the AVX2 kernel.
+- `unsafe` blocks: the three calls in `kernel` (invariant: the CPU has the subsets the kernel
+  enables, AVX2 / AVX-512 F, BW, VL / NEON; checked by `is_x86_feature_detected!` /
+  `is_aarch64_feature_detected!("neon")` in the match guard).
   `kernel` cuts the window of the batch out of the plane in safe code (16 rows of 8 samples, or 8
   rows of 16) and returns false when it does not fit; the kernels take their arrays from that
   window with `first_chunk`, load and store through the shared helpers of `src/simd/{x86,arm}.rs`.

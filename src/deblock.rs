@@ -331,21 +331,21 @@ mod x86k {
 
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn clip(v: __m256i, lo: __m256i, hi: __m256i) -> __m256i {
+    pub(super) fn clip(v: __m256i, lo: __m256i, hi: __m256i) -> __m256i {
         _mm256_min_epi16(_mm256_max_epi16(v, lo), hi)
     }
 
     /// `v` clipped to `x - t..=x + t`.
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn around(v: __m256i, x: __m256i, t: __m256i) -> __m256i {
+    pub(super) fn around(v: __m256i, x: __m256i, t: __m256i) -> __m256i {
         clip(v, _mm256_sub_epi16(x, t), _mm256_add_epi16(x, t))
     }
 
     /// 8x8 transpose of 16-bit lanes in each 128-bit half (rows 0..8 low, rows 8..16 high).
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn transpose(a: [__m256i; 8]) -> [__m256i; 8] {
+    pub(super) fn transpose(a: [__m256i; 8]) -> [__m256i; 8] {
         let [a0, a1, a2, a3, a4, a5, a6, a7] = a;
         let t0 = _mm256_unpacklo_epi16(a0, a1);
         let t1 = _mm256_unpackhi_epi16(a0, a1);
@@ -570,6 +570,256 @@ mod x86k {
             l = transpose(l);
         }
         for (r, &v) in l.iter().enumerate() {
+            if vertical {
+                if let Some(a) = row_mut::<8>(win, r * stride) {
+                    st_u16x8(a, _mm256_castsi256_si128(v));
+                }
+                if let Some(a) = row_mut::<8>(win, (r + 8) * stride) {
+                    st_u16x8(a, _mm256_extracti128_si256::<1>(v));
+                }
+            } else if let Some(a) = row_mut::<16>(win, r * stride) {
+                st_u16x16(a, v);
+            }
+        }
+    }
+}
+
+/// AVX-512 (F, BW, VL on 256-bit vectors) kernels. A batch is 16 lines, so a 512-bit vector
+/// would not fill; what AVX-512 gives here is the mask registers and `vpermw`. The segment
+/// decisions (dE, dEp, dEq, strong, weak, kept sides) are 16-bit masks, combined with scalar
+/// integer ops and applied with one-op masked blends (AVX2: and/andnot and a two-op `blendv`);
+/// the per-segment parameters are one `vpermw` of 4 packed values; the horizontal edges load and
+/// store only the rows the filter reads and changes. Same arithmetic as the AVX2 kernel.
+#[cfg(target_arch = "x86_64")]
+mod x512k {
+    use super::x86k::{around, clip, transpose};
+    use super::{Seg, row, row_mut};
+    use crate::simd::x86::{ld_u16x8, ld_u16x16, st_u16x8, st_u16x16};
+    use core::arch::x86_64::*;
+
+    /// `f(segment)` in the 4 lanes of each of the 4 segments (one `vpermw`).
+    #[inline]
+    #[target_feature(enable = "avx2,avx512f,avx512bw,avx512vl")]
+    fn per_seg(segs: &[Seg; 4], f: fn(&Seg) -> i32) -> __m256i {
+        let [a, b, c, d] = segs;
+        let w = |s: &Seg| u64::from(f(s) as u16);
+        let packed = w(a) | (w(b) << 16) | (w(c) << 32) | (w(d) << 48);
+        let idx = _mm256_setr_epi16(0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3);
+        _mm256_permutexvar_epi16(
+            idx,
+            _mm256_castsi128_si256(_mm_cvtsi64_si128(packed as i64)),
+        )
+    }
+
+    /// Mask of the lanes of the segments for which `f` holds.
+    fn seg_mask(segs: &[Seg; 4], f: fn(&Seg) -> bool) -> __mmask16 {
+        segs.iter()
+            .enumerate()
+            .fold(0, |m, (k, s)| if f(s) { m | (0xF << (4 * k)) } else { m })
+    }
+
+    /// Bit 0 of each group of 4 bits (lane 0 of a segment) in all 4 bits of the group.
+    fn spread(m: __mmask16) -> __mmask16 {
+        (m & 0x1111) * 0xF
+    }
+
+    /// Lane 0 of each segment: lanes 0 and 3 added (the other lanes are garbage).
+    #[inline]
+    #[target_feature(enable = "avx2,avx512f,avx512bw,avx512vl")]
+    fn sum03(v: __m256i) -> __m256i {
+        _mm256_add_epi16(v, _mm256_srli_epi64::<48>(v))
+    }
+
+    /// [`super::luma_segment`] on 16 lines: `l` is p3..q3, one line per lane.
+    #[inline]
+    #[target_feature(enable = "avx2,avx512f,avx512bw,avx512vl")]
+    fn luma(l: &mut [__m256i; 8], segs: &[Seg; 4], max: i32) {
+        let [p3, p2, p1, p0, q0, q1, q2, q3] = *l;
+        let beta = per_seg(segs, |s| s.beta);
+        let tc = per_seg(segs, |s| s.tc);
+        let keep_p = seg_mask(segs, |s| s.no_p);
+        let keep_q = seg_mask(segs, |s| s.no_q);
+        let dp = _mm256_abs_epi16(_mm256_add_epi16(
+            _mm256_sub_epi16(p2, _mm256_add_epi16(p1, p1)),
+            p0,
+        ));
+        let dq = _mm256_abs_epi16(_mm256_add_epi16(
+            _mm256_sub_epi16(q2, _mm256_add_epi16(q1, q1)),
+            q0,
+        ));
+        let dpq = _mm256_add_epi16(dp, dq);
+        // dE != 0: dpq0 + dpq3 < beta.
+        let on = spread(_mm256_cmpgt_epi16_mask(beta, sum03(dpq)));
+        if on == 0 {
+            return;
+        }
+        let side = _mm256_srai_epi16::<3>(_mm256_add_epi16(beta, _mm256_srai_epi16::<1>(beta)));
+        let dep = spread(_mm256_cmpgt_epi16_mask(side, sum03(dp)));
+        let deq = spread(_mm256_cmpgt_epi16_mask(side, sum03(dq)));
+        // dE == 2: dSam of lines 0 and 3; each compare is and-ed with the one before in the mask.
+        let tc5 = _mm256_srai_epi16::<1>(_mm256_add_epi16(
+            _mm256_mullo_epi16(tc, _mm256_set1_epi16(5)),
+            _mm256_set1_epi16(1),
+        ));
+        let s1 = _mm256_cmpgt_epi16_mask(_mm256_srai_epi16::<2>(beta), _mm256_add_epi16(dpq, dpq));
+        let s2 = _mm256_mask_cmpgt_epi16_mask(
+            s1,
+            _mm256_srai_epi16::<3>(beta),
+            _mm256_add_epi16(
+                _mm256_abs_epi16(_mm256_sub_epi16(p3, p0)),
+                _mm256_abs_epi16(_mm256_sub_epi16(q0, q3)),
+            ),
+        );
+        let s3 = _mm256_mask_cmpgt_epi16_mask(s2, tc5, _mm256_abs_epi16(_mm256_sub_epi16(p0, q0)));
+        let strong = spread(s3 & (s3 >> 3)) & on;
+        // Strong filter, clipped to +-2 tC.
+        let t2 = _mm256_add_epi16(tc, tc);
+        let (c2, c4) = (_mm256_set1_epi16(2), _mm256_set1_epi16(4));
+        let a = _mm256_add_epi16(_mm256_add_epi16(p1, p0), q0);
+        let b = _mm256_add_epi16(_mm256_add_epi16(p0, q0), q1);
+        let p0s = _mm256_srai_epi16::<3>(_mm256_add_epi16(
+            _mm256_add_epi16(p2, _mm256_add_epi16(a, a)),
+            _mm256_add_epi16(q1, c4),
+        ));
+        let p1s = _mm256_srai_epi16::<2>(_mm256_add_epi16(_mm256_add_epi16(p2, a), c2));
+        let p2s = _mm256_srai_epi16::<3>(_mm256_add_epi16(
+            _mm256_add_epi16(_mm256_slli_epi16::<1>(_mm256_add_epi16(p3, p2)), p2),
+            _mm256_add_epi16(a, c4),
+        ));
+        let q0s = _mm256_srai_epi16::<3>(_mm256_add_epi16(
+            _mm256_add_epi16(p1, _mm256_add_epi16(b, b)),
+            _mm256_add_epi16(q2, c4),
+        ));
+        let q1s = _mm256_srai_epi16::<2>(_mm256_add_epi16(_mm256_add_epi16(q2, b), c2));
+        let q2s = _mm256_srai_epi16::<3>(_mm256_add_epi16(
+            _mm256_add_epi16(_mm256_slli_epi16::<1>(_mm256_add_epi16(q3, q2)), q2),
+            _mm256_add_epi16(b, c4),
+        ));
+        let (p0s, p1s, p2s) = (
+            around(p0s, p0, t2),
+            around(p1s, p1, t2),
+            around(p2s, p2, t2),
+        );
+        let (q0s, q1s, q2s) = (
+            around(q0s, q0, t2),
+            around(q1s, q1, t2),
+            around(q2s, q2, t2),
+        );
+        // Normal filter where |delta| < 10 tC (and not strong).
+        let (d0, d1) = (_mm256_sub_epi16(q0, p0), _mm256_sub_epi16(q1, p1));
+        let delta = _mm256_srai_epi16::<4>(_mm256_add_epi16(
+            _mm256_sub_epi16(
+                _mm256_add_epi16(_mm256_slli_epi16::<3>(d0), d0),
+                _mm256_add_epi16(_mm256_add_epi16(d1, d1), d1),
+            ),
+            _mm256_set1_epi16(8),
+        ));
+        let tc10 = _mm256_mullo_epi16(tc, _mm256_set1_epi16(10));
+        let weak = _mm256_mask_cmpgt_epi16_mask(on & !strong, tc10, _mm256_abs_epi16(delta));
+        let z = _mm256_setzero_si256();
+        let maxv = _mm256_set1_epi16(max as i16);
+        let dc = clip(delta, _mm256_sub_epi16(z, tc), tc);
+        let p0n = clip(_mm256_add_epi16(p0, dc), z, maxv);
+        let q0n = clip(_mm256_sub_epi16(q0, dc), z, maxv);
+        let h = _mm256_srai_epi16::<1>(tc);
+        let nh = _mm256_sub_epi16(z, h);
+        let p1d = _mm256_srai_epi16::<1>(_mm256_sub_epi16(
+            _mm256_add_epi16(_mm256_avg_epu16(p2, p0), dc),
+            p1,
+        ));
+        let p1n = clip(_mm256_add_epi16(p1, clip(p1d, nh, h)), z, maxv);
+        let q1d = _mm256_srai_epi16::<1>(_mm256_sub_epi16(
+            _mm256_sub_epi16(_mm256_avg_epu16(q2, q0), q1),
+            dc,
+        ));
+        let q1n = clip(_mm256_add_epi16(q1, clip(q1d, nh, h)), z, maxv);
+        // Choose per lane; a kept side takes neither filter.
+        let (sp, sq) = (strong & !keep_p, strong & !keep_q);
+        let (wp, wq) = (weak & !keep_p, weak & !keep_q);
+
+        l[1] = _mm256_mask_blend_epi16(sp, p2, p2s);
+        l[2] = _mm256_mask_blend_epi16(sp, _mm256_mask_blend_epi16(wp & dep, p1, p1n), p1s);
+        l[3] = _mm256_mask_blend_epi16(sp, _mm256_mask_blend_epi16(wp, p0, p0n), p0s);
+        l[4] = _mm256_mask_blend_epi16(sq, _mm256_mask_blend_epi16(wq, q0, q0n), q0s);
+        l[5] = _mm256_mask_blend_epi16(sq, _mm256_mask_blend_epi16(wq & deq, q1, q1n), q1s);
+        l[6] = _mm256_mask_blend_epi16(sq, q2, q2s);
+    }
+
+    /// [`super::chroma_segment`] on 16 lines: `l[2..6]` are p1, p0, q0, q1.
+    #[inline]
+    #[target_feature(enable = "avx2,avx512f,avx512bw,avx512vl")]
+    fn chroma(l: &mut [__m256i; 8], segs: &[Seg; 4], max: i32) {
+        let [_, _, p1, p0, q0, q1, _, _] = *l;
+        let tc = per_seg(segs, |s| s.tc);
+        let keep_p = seg_mask(segs, |s| s.no_p);
+        let keep_q = seg_mask(segs, |s| s.no_q);
+        let delta = _mm256_srai_epi16::<3>(_mm256_add_epi16(
+            _mm256_sub_epi16(
+                _mm256_add_epi16(_mm256_slli_epi16::<2>(_mm256_sub_epi16(q0, p0)), p1),
+                q1,
+            ),
+            _mm256_set1_epi16(4),
+        ));
+        let z = _mm256_setzero_si256();
+        let maxv = _mm256_set1_epi16(max as i16);
+        let dc = clip(delta, _mm256_sub_epi16(z, tc), tc);
+        let p0n = clip(_mm256_add_epi16(p0, dc), z, maxv);
+        let q0n = clip(_mm256_sub_epi16(q0, dc), z, maxv);
+        l[3] = _mm256_mask_blend_epi16(keep_p, p0n, p0);
+        l[4] = _mm256_mask_blend_epi16(keep_q, q0n, q0);
+    }
+
+    /// [`super::x86k::edges`] with the AVX-512 filters. A horizontal edge loads only the rows
+    /// the filter reads (chroma: p1..q1) and stores only the rows it can change (luma p2..q2,
+    /// chroma p0 and q0); a vertical edge transposes all 8 columns as the AVX2 kernel does.
+    #[target_feature(enable = "avx2,avx512f,avx512bw,avx512vl")]
+    pub(super) fn edges(
+        win: &mut [u16],
+        stride: usize,
+        vertical: bool,
+        luma_edge: bool,
+        segs: &[Seg; 4],
+        max: i32,
+    ) {
+        let (rd, wr) = match (vertical, luma_edge) {
+            (true, _) => (0..8, 0..8),
+            (false, true) => (0..8, 1..7),
+            (false, false) => (2..6, 3..5),
+        };
+        let mut l = [_mm256_setzero_si256(); 8];
+        for (r, v) in l.iter_mut().enumerate() {
+            if !rd.contains(&r) {
+                continue;
+            }
+            if vertical {
+                let (Some(lo), Some(hi)) =
+                    (row::<8>(win, r * stride), row::<8>(win, (r + 8) * stride))
+                else {
+                    return;
+                };
+                *v = _mm256_set_m128i(ld_u16x8(hi), ld_u16x8(lo));
+            } else {
+                let Some(a) = row::<16>(win, r * stride) else {
+                    return;
+                };
+                *v = ld_u16x16(a);
+            }
+        }
+        if vertical {
+            l = transpose(l);
+        }
+        if luma_edge {
+            luma(&mut l, segs, max);
+        } else {
+            chroma(&mut l, segs, max);
+        }
+        if vertical {
+            l = transpose(l);
+        }
+        for (r, &v) in l.iter().enumerate() {
+            if !wr.contains(&r) {
+                continue;
+            }
             if vertical {
                 if let Some(a) = row_mut::<8>(win, r * stride) {
                     st_u16x8(a, _mm256_castsi256_si128(v));
@@ -867,6 +1117,19 @@ fn kernel(
     };
     match tier {
         #[cfg(target_arch = "x86_64")]
+        Tier::Avx512
+            if std::arch::is_x86_feature_detected!("avx2")
+                && std::arch::is_x86_feature_detected!("avx512f")
+                && std::arch::is_x86_feature_detected!("avx512bw")
+                && std::arch::is_x86_feature_detected!("avx512vl") =>
+        {
+            // SAFETY: the match guard has just detected avx2, avx512f, avx512bw and avx512vl, the
+            // features the kernel enables; the kernel reads and writes `win` through
+            // bounds-checked safe Rust.
+            unsafe { x512k::edges(win, stride, vertical, luma, segs, max) };
+            true
+        }
+        #[cfg(target_arch = "x86_64")]
         Tier::Avx2 | Tier::Avx512 if std::arch::is_x86_feature_detected!("avx2") => {
             // SAFETY: the match guard has just detected avx2, the only feature the kernel enables;
             // the kernel reads and writes `win` through bounds-checked safe Rust.
@@ -1040,8 +1303,8 @@ fn deblock_with(
 
 /// Both passes over every plane, each pass split into bands of whole CTB rows. The vertical
 /// edges of a band only touch samples of its own rows. A horizontal edge at row `y` reads and
-/// writes rows `y - 4..y + 4` (p3..q3, luma and chroma: the kernels load and store all 8 rows), so
-/// the band that owns the edges of CTB rows `[B, B')` is the slice `[B - 4, B' - 4)` of the plane:
+/// writes rows `y - 4..y + 4` (p3..q3, luma and chroma: no kernel reads or writes outside these 8
+/// rows), so the band that owns the edges of CTB rows `[B, B')` is the slice `[B - 4, B' - 4)` of the plane:
 /// the footprints stay inside it, and horizontal edges are independent of each other, so any split
 /// gives the serial result.
 /// A pass ends when all its bands are done (the scope of `par_bands`), before the next pass.
