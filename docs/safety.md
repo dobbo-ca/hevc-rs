@@ -9,6 +9,10 @@ fixed-size array reference, so its type proves the bounds), and the per-family d
 a `#[target_feature]` kernel after `simd::tier()` / `simd::available()` found the features at run
 time. The kernels themselves are safe functions. Each kernel family has a section below.
 
+SIMD tiers in CI: scalar, AVX2 (x86_64) and NEON (aarch64) natively; the AVX-512 tier under Intel SDE
+(job `avx512-sde`: the lib tests on `-spr` with `HEVC_SIMD=avx512`, which panics on a CPU without
+AVX-512 F, BW and VL, and fails the `-hsw` step by design). `Tier::Avx512` still runs the AVX2 kernels.
+
 ## Hostile input
 
 - No `unwrap`, `expect`, `panic!`, `todo!`, `unimplemented!` or slice indexing in non-test code

@@ -2,7 +2,9 @@
 //! the cross-tier tests and the fallback. The tier is detected once per process.
 //!
 //! `HEVC_SIMD=scalar|avx2|avx512|neon` (read once) forces a tier. A value that names a tier the
-//! CPU does not have, or an unknown value, selects the best detected tier.
+//! CPU does not have, or an unknown value, selects the best detected tier. The exception is
+//! `avx512`, which is a requirement (for CI under an emulator): it panics on a CPU without AVX-512
+//! F, BW and VL (and on a non-x86_64 target), so a test run cannot fall back to AVX2 without a word.
 
 // Per-tier load/store helpers: the only `unsafe` besides the dispatch of each kernel family
 // (docs/safety.md). dead_code: each kernel family uses only some helpers.
@@ -73,15 +75,45 @@ fn select(forced: Option<&str>) -> Tier {
     }
 }
 
+/// Whether the AVX-512 tier is available here: false on a target without it.
+pub(crate) fn avx512_kernels() -> bool {
+    available().contains(&Tier::Avx512)
+}
+
 /// The tier of this process: the best detected one, or the one `HEVC_SIMD` forces.
+/// `HEVC_SIMD=avx512` panics when the AVX-512 tier is not available.
 pub(crate) fn tier() -> Tier {
     static TIER: OnceLock<Tier> = OnceLock::new();
-    *TIER.get_or_init(|| select(std::env::var("HEVC_SIMD").ok().as_deref()))
+    *TIER.get_or_init(|| {
+        let forced = std::env::var("HEVC_SIMD").ok();
+        if forced.as_deref() == Some("avx512") {
+            assert!(
+                avx512_kernels(),
+                "HEVC_SIMD=avx512, but this CPU lacks AVX-512 F, BW and VL"
+            );
+        }
+        select(forced.as_deref())
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Also logs the tier in use (`--nocapture`), so a CI log shows what the run tested.
+    #[test]
+    fn tier_is_detected_or_forced() {
+        eprintln!(
+            "SIMD tier: {}, AVX-512 kernels: {}",
+            tier().name(),
+            avx512_kernels()
+        );
+        match std::env::var("HEVC_SIMD").as_deref() {
+            Ok("avx512") => assert_eq!(tier(), Tier::Avx512),
+            Ok("scalar") => assert_eq!(tier(), Tier::Scalar),
+            _ => {}
+        }
+    }
 
     #[test]
     fn selection() {
