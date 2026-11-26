@@ -1,5 +1,14 @@
 name: profile
-on: { workflow_dispatch: {} }
+on:
+  workflow_dispatch:
+    inputs:
+      require_avx512:
+        description: Fail at once on a runner without AVX-512 (rerun to get one)
+        type: boolean
+        default: false
+      simd:
+        description: HEVC_SIMD for hevc-rs (empty = the best tier of the host)
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -14,6 +23,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
+      # The CPU model and its AVX-512 subsets, in the job summary (hosted runners are Intel with
+      # AVX-512 or AMD EPYC without it). With require_avx512 the job stops here on a host without
+      # AVX-512 F, BW and VL, so a rerun can get one.
+      - name: CPU
+        env: { REQ: "${{ inputs.require_avx512 }}" }
+        run: |
+          model=$(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//')
+          flags=$(grep -m1 '^flags' /proc/cpuinfo)
+          sub=$(echo "$flags" | tr ' ' '\n' | grep '^avx512' | sort | tr '\n' ' ')
+          echo "CPU: $model, $(nproc) CPUs. AVX-512: ${sub:-none}" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          ok=1
+          for f in avx512f avx512bw avx512vl; do echo "$flags" | grep -qw $f || ok=0; done
+          if [ "$REQ" = true ] && [ $ok = 0 ]; then echo "require_avx512: this host has no AVX-512" >&2; exit 1; fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { lfs: false }
       - id: app
@@ -38,4 +61,6 @@ jobs:
           cache-to: type=gha,mode=max,scope=hevc-rs-profile
           secrets: |
             gh_token=${{ steps.app.outputs.token }}
-      - run: docker run --rm --privileged hevc-profile:local sh tests/parity/profile.sh | tee -a "$GITHUB_STEP_SUMMARY"
+      - env: { HEVC_SIMD: "${{ inputs.simd }}" }
+        run: |
+          docker run --rm --privileged ${HEVC_SIMD:+-e HEVC_SIMD} hevc-profile:local sh tests/parity/profile.sh | tee -a "$GITHUB_STEP_SUMMARY"
