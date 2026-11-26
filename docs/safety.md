@@ -11,9 +11,10 @@ time. The kernels themselves are safe functions. Each kernel family has a sectio
 
 SIMD tiers in CI: scalar, AVX2 (x86_64) and NEON (aarch64) natively; the AVX-512 tier under Intel SDE
 (job `avx512-sde`: the lib tests on `-spr` with `HEVC_SIMD=avx512`, which panics on a CPU without
-AVX-512 F, BW and VL, and fails the `-hsw` step by design). `Tier::Avx512` has its own kernels in the transform family: `residual` needs VNNI too (without it
-the AVX2 `residual` runs), `add_row` only F, BW and VL; the other families still run the AVX2
-kernels.
+AVX-512 F, BW and VL, and fails the `-hsw` step by design). `Tier::Avx512` has its own kernels
+in two families: transform (`residual` needs VNNI too, without it the AVX2 `residual` runs;
+`add_row` needs only F, BW and VL) and SAO (`src/sao_simd.rs`, F, BW and VL). The other
+families still run the AVX2 kernels.
 
 ## Hostile input
 
@@ -143,13 +144,17 @@ and last column of the CTB, other rows, and everything on `Tier::Scalar` take th
 scalar code, which is the oracle). Offsets equal to `i16::MIN` or tier Scalar skip the kernel.
 
 - Tiers: Scalar (per-sample code in `sao_ctb`), AVX2 (16 lanes, `shuffle_epi8` offset lookup,
-  saturating add/sub for the clip), AVX-512 (dispatched to the AVX2 kernel: a row kernel bound by
-  loads gains nothing from 32 lanes), NEON (8 lanes, `vqtbl1q_u8` lookup).
+  saturating add/sub for the clip), AVX-512 F+BW+VL (`x86k512`, 32 lanes: unsigned compares into
+  mask registers, edgeIdx by masked add/sub, the offset by one `vpermw`, and the tail of fewer
+  than 32 samples as one masked load/store, so no scalar tail; the dispatch arm sits before the
+  AVX2 arm, which stays the fallback), NEON (8 lanes, `vqtbl1q_u8` lookup).
 - `unsafe` blocks: the two dispatch fns `eo_row` and `bo_row` (call the safe `target_feature`
-  kernels; invariant: the CPU has AVX2 / NEON; checked by `is_x86_feature_detected!("avx2")` /
-  `is_aarch64_feature_detected!("neon")` in the match guard). The load/store helpers are the
-  shared ones in `src/simd/{x86,arm}.rs`; kernels get arrays from `as_chunks`, the tail runs the
-  scalar row code.
+  kernels; invariant: the CPU has AVX2 / NEON / AVX-512 F, BW and VL; checked by
+  `is_x86_feature_detected!` / `is_aarch64_feature_detected!("neon")` in the match guard), and
+  the masked tail helpers `ld_u16_tail` / `st_u16_tail` in `src/simd/x86.rs` (the mask is built
+  from the slice length, and masked-out lanes of an AVX-512 masked access do not fault). The
+  other load/store helpers are the shared ones in `src/simd/{x86,arm}.rs`; kernels get arrays
+  from `as_chunks`; the AVX2 and NEON tails run the scalar row code.
 - Tests: `sao_simd::tests::tiers_equal_scalar` (rows, bit depth 8/10/12/16, extreme offsets and
   samples) and `sao::tests::tiers_equal_scalar` (whole pictures with slices, PCM cells). Fuzz
   target `sao_tiers` (`__fuzz_sao::tiers`).

@@ -1,11 +1,12 @@
 //! SAO row kernels (8.7.3.2): band offset and edge offset of one run of samples that the caller
 //! has already cleared of every exclusion (picture border, slice/tile boundary, PCM/bypass).
-//! `Tier::Scalar` is the plain per-sample code; AVX2 (also used for AVX-512, 16 u16 lanes are
-//! enough for a row kernel that is bound by loads) and NEON work on 16-bit lanes.
+//! `Tier::Scalar` is the plain per-sample code; AVX2 (16 u16 lanes), AVX-512 (32 lanes, mask
+//! registers, `vpermw` lookup, masked tail) and NEON work on 16-bit lanes.
 //!
 //! The add step is `clamp(rec + off, 0, max)` as `min(sat_sub(sat_add(rec, max(off, 0)),
 //! max(-off, 0)), max)`, which is exact for `off` in `-32767..=32767` (the caller excludes
-//! `i16::MIN`). The offset of a lane is looked up from a 5-entry table by byte shuffle.
+//! `i16::MIN`). The offset of a lane is looked up from a 5-entry table by byte shuffle
+//! (AVX2, NEON) or `vpermw` (AVX-512).
 
 use crate::simd::Tier;
 
@@ -131,6 +132,101 @@ mod x86k {
     }
 }
 
+/// AVX-512 F+BW+VL kernels: 32 lanes, the compares go straight into mask registers and edgeIdx
+/// is built with masked add/sub, the offset is one `vpermw` from the table, and the tail (fewer
+/// than 32 samples) is one masked load/store, so no scalar tail runs.
+#[cfg(target_arch = "x86_64")]
+mod x86k512 {
+    use super::tab8;
+    use crate::simd::x86::{ld_i16x32, ld_u16_tail, ld_u16x32, st_u16_tail, st_u16x32};
+    use core::arch::x86_64::*;
+
+    /// The table in lanes 0..5 (`vpermw` indexes with the low 5 bits).
+    #[inline]
+    #[target_feature(enable = "avx512f,avx512bw")]
+    fn table(tab: &[i16; 5]) -> __m512i {
+        let mut w = [0i16; 32];
+        for (d, s) in w.iter_mut().zip(tab8(tab)) {
+            *d = s;
+        }
+        ld_i16x32(&w)
+    }
+
+    /// `clamp(r + tab[idx], 0, max)` for 32 lanes; `idx` holds 0..=4 per lane.
+    #[inline]
+    #[target_feature(enable = "avx512f,avx512bw")]
+    fn apply(r: __m512i, idx: __m512i, t: __m512i, max: __m512i) -> __m512i {
+        let z = _mm512_setzero_si512();
+        let add = _mm512_permutexvar_epi16(idx, t);
+        let pos = _mm512_max_epi16(add, z);
+        let neg = _mm512_max_epi16(_mm512_sub_epi16(z, add), z);
+        let s = _mm512_subs_epu16(_mm512_adds_epu16(r, pos), neg);
+        _mm512_min_epu16(s, max)
+    }
+
+    /// `apply` with edgeIdx = 2 + sign(r - a) + sign(r - b).
+    #[inline]
+    #[target_feature(enable = "avx512f,avx512bw")]
+    fn eo_vec(r: __m512i, a: __m512i, b: __m512i, t: __m512i, max: __m512i) -> __m512i {
+        let one = _mm512_set1_epi16(1);
+        let mut e = _mm512_set1_epi16(2);
+        e = _mm512_mask_add_epi16(e, _mm512_cmpgt_epu16_mask(r, a), e, one);
+        e = _mm512_mask_add_epi16(e, _mm512_cmpgt_epu16_mask(r, b), e, one);
+        e = _mm512_mask_sub_epi16(e, _mm512_cmplt_epu16_mask(r, a), e, one);
+        e = _mm512_mask_sub_epi16(e, _mm512_cmplt_epu16_mask(r, b), e, one);
+        apply(r, e, t, max)
+    }
+
+    #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+    pub(super) fn eo(cur: &[u16], a: &[u16], b: &[u16], out: &mut [u16], tab: &[i16; 5], max: u16) {
+        let t = table(tab);
+        let mx = _mm512_set1_epi16(max as i16);
+        let (cc, ct) = cur.as_chunks::<32>();
+        let (ac, at) = a.as_chunks::<32>();
+        let (bc, bt) = b.as_chunks::<32>();
+        let (oc, ot) = out.as_chunks_mut::<32>();
+        for (((c, a), b), o) in cc.iter().zip(ac).zip(bc).zip(oc.iter_mut()) {
+            st_u16x32(o, eo_vec(ld_u16x32(c), ld_u16x32(a), ld_u16x32(b), t, mx));
+        }
+        if !ot.is_empty() {
+            let r = ld_u16_tail(ct);
+            st_u16_tail(ot, eo_vec(r, ld_u16_tail(at), ld_u16_tail(bt), t, mx));
+        }
+    }
+
+    /// `apply` with the band index `min(((r >> shift) - band_pos) & 31, 4)`.
+    #[inline]
+    #[target_feature(enable = "avx512f,avx512bw")]
+    fn bo_vec(r: __m512i, t: __m512i, max: __m512i, bp: __m512i, cnt: __m128i) -> __m512i {
+        let band = _mm512_srl_epi16(r, cnt);
+        let k = _mm512_and_si512(_mm512_sub_epi16(band, bp), _mm512_set1_epi16(31));
+        apply(r, _mm512_min_epu16(k, _mm512_set1_epi16(4)), t, max)
+    }
+
+    #[target_feature(enable = "avx512f,avx512bw,avx512vl")]
+    pub(super) fn bo(
+        cur: &[u16],
+        out: &mut [u16],
+        tab: &[i16; 5],
+        band_pos: u16,
+        shift: u32,
+        max: u16,
+    ) {
+        let t = table(tab);
+        let mx = _mm512_set1_epi16(max as i16);
+        let bp = _mm512_set1_epi16(band_pos as i16);
+        let cnt = _mm_cvtsi32_si128(shift.min(16) as i32);
+        let (cc, ct) = cur.as_chunks::<32>();
+        let (oc, ot) = out.as_chunks_mut::<32>();
+        for (c, o) in cc.iter().zip(oc.iter_mut()) {
+            st_u16x32(o, bo_vec(ld_u16x32(c), t, mx, bp, cnt));
+        }
+        if !ot.is_empty() {
+            st_u16_tail(ot, bo_vec(ld_u16_tail(ct), t, mx, bp, cnt));
+        }
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 mod armk {
     use super::{bo_scalar, eo_scalar, tab8};
@@ -222,6 +318,16 @@ pub(crate) fn eo_row(
 ) {
     match tier {
         #[cfg(target_arch = "x86_64")]
+        Tier::Avx512
+            if std::arch::is_x86_feature_detected!("avx512f")
+                && std::arch::is_x86_feature_detected!("avx512bw")
+                && std::arch::is_x86_feature_detected!("avx512vl") =>
+        {
+            // SAFETY: the match guard has just detected avx512f, avx512bw and avx512vl, the only
+            // features the kernel enables; the kernel's slices are bounds-checked safe Rust.
+            unsafe { x86k512::eo(cur, a, b, out, tab, max) }
+        }
+        #[cfg(target_arch = "x86_64")]
         Tier::Avx2 | Tier::Avx512 if std::arch::is_x86_feature_detected!("avx2") => {
             // SAFETY: the match guard has just detected avx2, the only feature the kernel enables;
             // the kernel's slices are bounds-checked safe Rust.
@@ -249,6 +355,16 @@ pub(crate) fn bo_row(
     max: u16,
 ) {
     match tier {
+        #[cfg(target_arch = "x86_64")]
+        Tier::Avx512
+            if std::arch::is_x86_feature_detected!("avx512f")
+                && std::arch::is_x86_feature_detected!("avx512bw")
+                && std::arch::is_x86_feature_detected!("avx512vl") =>
+        {
+            // SAFETY: the match guard has just detected avx512f, avx512bw and avx512vl, the only
+            // features the kernel enables; the kernel's slices are bounds-checked safe Rust.
+            unsafe { x86k512::bo(cur, out, tab, band_pos, shift, max) }
+        }
         #[cfg(target_arch = "x86_64")]
         Tier::Avx2 | Tier::Avx512 if std::arch::is_x86_feature_detected!("avx2") => {
             // SAFETY: the match guard has just detected avx2, the only feature the kernel enables;
@@ -325,8 +441,8 @@ mod tests {
         assert!(simd::available().contains(&Tier::Neon), "NEON not detected");
         let mut s = 0x9e37_79b9_7f4a_7c15u64;
         for iter in 0..3000 {
-            let n = [0, 1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 100][iter % 12];
-            let depth = [8u32, 10, 12, 16][(iter / 12) % 4];
+            let n = [0, 1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 100][iter % 15];
+            let depth = [8u32, 10, 12, 16][(iter / 15) % 4];
             let max = u16::try_from((1u32 << depth) - 1).unwrap();
             // Extreme samples, small-range samples (many ties) and full-range ones.
             let mode = (iter / 48) % 3;

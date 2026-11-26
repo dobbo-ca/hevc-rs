@@ -127,13 +127,24 @@ ld_st!(
     _mm256_loadu_si256,
     _mm256_storeu_si256
 );
-// 512 bits, for the AVX-512 transform kernels (`src/transform/avx512.rs`).
+// 512 bits, for the AVX-512 transform kernels (`src/transform/avx512.rs`) and SAO
+// (`src/sao_simd.rs`).
 ld_st!(
     "avx512f",
     ld_i32x16,
     st_i32x16,
     i32,
     16,
+    __m512i,
+    _mm512_loadu_si512,
+    _mm512_storeu_si512
+);
+ld_st!(
+    "avx512f",
+    ld_u16x32,
+    st_u16x32,
+    u16,
+    32,
     __m512i,
     _mm512_loadu_si512,
     _mm512_storeu_si512
@@ -148,3 +159,28 @@ ld_st!(
     _mm512_loadu_si512,
     _mm512_storeu_si512
 );
+
+// Masked tail loads and stores (SAO) for runs of fewer than 32 u16.
+
+/// Mask of the first `n` (at most 32) lanes.
+fn tail_mask(n: usize) -> u32 {
+    ((1u64 << n.min(32)) - 1) as u32
+}
+
+/// Loads `s` (at most the first 32 samples) into the low lanes, the other lanes are 0.
+#[inline]
+#[target_feature(enable = "avx512bw")]
+pub(crate) fn ld_u16_tail(s: &[u16]) -> __m512i {
+    // SAFETY: the mask has one bit per sample of `s` (at most 32), and a masked-out lane of an
+    // AVX-512 masked load reads no memory and cannot fault, so no byte outside `s` is accessed.
+    unsafe { _mm512_maskz_loadu_epi16(tail_mask(s.len()), s.as_ptr().cast()) }
+}
+
+/// Stores the low lanes of `v` to `s` (at most the first 32 samples); no lane beyond `s.len()`.
+#[inline]
+#[target_feature(enable = "avx512bw")]
+pub(crate) fn st_u16_tail(s: &mut [u16], v: __m512i) {
+    // SAFETY: the mask has one bit per sample of `s` (at most 32), and a masked-out lane of an
+    // AVX-512 masked store writes no memory and cannot fault, so no byte outside `s` is accessed.
+    unsafe { _mm512_mask_storeu_epi16(s.as_mut_ptr().cast(), tail_mask(s.len()), v) }
+}
