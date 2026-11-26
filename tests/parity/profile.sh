@@ -9,14 +9,16 @@ export LC_ALL=C
 echo "## Profile: hevc-rs $(hevc-bench --tier) tier vs dec265, 1 thread, $(ls /prof/prefix | wc -l) prefix streams"
 echo
 P=$(ls /usr/bin/perf_* 2>/dev/null | sort | tail -n 1)
-if [ -n "$P" ] && "$P" record -q -o /tmp/probe.data -- true > /dev/null 2>&1; then
+# cpu-clock (a software event): the hosted VMs expose no hardware PMU, so the default cycles
+# event fails there.
+if [ -n "$P" ] && "$P" record -q -e cpu-clock -o /tmp/probe.data -- true > /tmp/probe.log 2>&1; then
   for tool in hevc dec265; do
     case $tool in
       hevc) cmd='hevc-bench --threads 1' comm=hevc-bench ;;
       dec265) cmd='dec265 -q -t1' comm=dec265 ;;
     esac
     s=$(date +%s%N)
-    "$P" record -q -F 4999 -o /tmp/$tool.data -- sh -c "for f in /prof/prefix/*.bit; do $cmd \$f > /dev/null 2>&1; done" > /dev/null 2>&1
+    "$P" record -q -e cpu-clock -F 4999 -o /tmp/$tool.data -- sh -c "for f in /prof/prefix/*.bit; do $cmd \$f > /dev/null 2>&1; done" > /dev/null 2>&1
     t=$(( ($(date +%s%N) - s) / 1000000 ))
     echo "### $tool (perf, self time, $t ms wall under perf)"
     echo
@@ -39,6 +41,11 @@ if [ -n "$P" ] && "$P" record -q -o /tmp/probe.data -- true > /dev/null 2>&1; th
   done
 else
   echo "perf events are not allowed on this host: callgrind (instruction counts) on the 8 largest prefix files."
+  echo "callgrind cannot run AVX-512 code: profile the avx512 tier with perf only. The perf probe said:"
+  echo
+  echo '```'
+  head -n 5 /tmp/probe.log 2>/dev/null
+  echo '```'
   echo
   for f in $(ls -S /prof/prefix/*.bit | head -n 8); do
     valgrind --tool=callgrind --callgrind-out-file=/tmp/cg.out hevc-bench --threads 1 "$f" > /dev/null 2>&1
