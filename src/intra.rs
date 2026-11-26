@@ -9,13 +9,17 @@ use crate::simd::{self, Tier};
 mod arm;
 #[cfg(target_arch = "x86_64")]
 mod x86;
+#[cfg(target_arch = "x86_64")]
+mod x86_512;
 
 /// Largest transform block (32) gives 4 * 32 + 1 = 129 reference samples; 7 more slots of
-/// zero padding keep the 8-lane loads of the smoothing kernel inside the array.
+/// zero padding keep the 8-lane (AVX2) and 16-lane (AVX-512) loads of the smoothing kernel
+/// inside the array: the last 16-lane load reads up to index 129 of 136.
 const MAX_REF: usize = 136;
 
 /// Length of the `ref[]` array of the angular modes: x = -32..=64 at index x + 32, plus padding
-/// for the 8-lane loads of the angular kernels.
+/// for the 8-lane loads of the AVX2 angular kernel (up to rf[98]); the 16-lane AVX-512 loads
+/// (n = 4, 8 only) end before index 56.
 const RF_LEN: usize = 112;
 
 /// A predicted block before the clamp, [y][x].
@@ -225,11 +229,24 @@ enum Op<'a> {
 }
 
 /// Runs `op` on the vector kernels of `tier`; false (nothing done) for `Scalar` or a tier this
-/// CPU lacks, and the caller then runs the scalar code. Avx512 uses the AVX2 kernels: the blocks
-/// are at most 32 samples wide, so 512-bit lanes (16 of i32) would not fill.
+/// CPU lacks, and the caller then runs the scalar code. Avx512 has its own kernels (4x4 and 8x8
+/// blocks share a vector), and falls back to the AVX2 ones.
 #[allow(unsafe_code, unused_unsafe)]
 fn run(tier: Tier, op: Op) -> bool {
     match tier {
+        #[cfg(target_arch = "x86_64")]
+        Tier::Avx512
+            if std::arch::is_x86_feature_detected!("avx512f")
+                && std::arch::is_x86_feature_detected!("avx512bw")
+                && std::arch::is_x86_feature_detected!("avx512vl")
+                && std::arch::is_x86_feature_detected!("avx2") =>
+        {
+            // SAFETY: the guard has just detected AVX-512 F, BW and VL, the features the kernel
+            // enables, and AVX2, which avx512f implies and which the AVX2 load/store helpers,
+            // `_mm256_extracti128_si256` and the `x86::run` calls need.
+            unsafe { x86_512::run(op) };
+            true
+        }
         #[cfg(target_arch = "x86_64")]
         Tier::Avx2 | Tier::Avx512 if std::arch::is_x86_feature_detected!("avx2") => {
             // SAFETY: the guard has just detected AVX2 (the only feature the kernel enables);

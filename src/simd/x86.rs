@@ -127,3 +127,15 @@ ld_st!(
     _mm256_loadu_si256,
     _mm256_storeu_si256
 );
+
+// 512 bits (AVX-512 F). Intra prediction.
+ld_st!(
+    "avx512f",
+    ld_i32x16,
+    st_i32x16,
+    i32,
+    16,
+    __m512i,
+    _mm512_loadu_si512,
+    _mm512_storeu_si512
+);
