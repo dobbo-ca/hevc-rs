@@ -9,6 +9,9 @@ export LC_ALL=C
 echo "## Profile: hevc-rs $(hevc-bench --tier) tier vs dec265, 1 thread, $(ls /prof/prefix | wc -l) prefix streams"
 echo
 P=$(ls /usr/bin/perf_* 2>/dev/null | sort | tail -n 1)
+[ -n "$P" ] || P=$(command -v perf || true)
+echo "perf binary: ${P:-none}"
+echo
 # cpu-clock (a software event): the hosted VMs expose no hardware PMU, so the default cycles
 # event fails there.
 if [ -n "$P" ] && "$P" record -q -e cpu-clock -o /tmp/probe.data -- true > /tmp/probe.log 2>&1; then
