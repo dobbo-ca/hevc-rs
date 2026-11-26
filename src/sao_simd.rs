@@ -323,8 +323,10 @@ pub(crate) fn eo_row(
                 && std::arch::is_x86_feature_detected!("avx512bw")
                 && std::arch::is_x86_feature_detected!("avx512vl") =>
         {
-            // SAFETY: the match guard has just detected avx512f, avx512bw and avx512vl, the only
-            // features the kernel enables; the kernel's slices are bounds-checked safe Rust.
+            // SAFETY: the match guard has just detected avx512f, avx512bw and avx512vl, the
+            // features the kernel enables; `simd::available()` lists Avx512 only with the
+            // features that avx512f implies (AVX2, FMA, F16C). The kernel's slices are
+            // bounds-checked safe Rust.
             unsafe { x86k512::eo(cur, a, b, out, tab, max) }
         }
         #[cfg(target_arch = "x86_64")]
@@ -361,8 +363,10 @@ pub(crate) fn bo_row(
                 && std::arch::is_x86_feature_detected!("avx512bw")
                 && std::arch::is_x86_feature_detected!("avx512vl") =>
         {
-            // SAFETY: the match guard has just detected avx512f, avx512bw and avx512vl, the only
-            // features the kernel enables; the kernel's slices are bounds-checked safe Rust.
+            // SAFETY: the match guard has just detected avx512f, avx512bw and avx512vl, the
+            // features the kernel enables; `simd::available()` lists Avx512 only with the
+            // features that avx512f implies (AVX2, FMA, F16C). The kernel's slices are
+            // bounds-checked safe Rust.
             unsafe { x86k512::bo(cur, out, tab, band_pos, shift, max) }
         }
         #[cfg(target_arch = "x86_64")]

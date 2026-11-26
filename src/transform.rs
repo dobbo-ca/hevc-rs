@@ -437,8 +437,9 @@ fn residual_simd(
         {
             let dq = dq_for(coeffs, ext, list, p);
             // SAFETY: the guard above found AVX-512 F, BW, VL and VNNI on this CPU, the features
-            // the kernel enables; `coeffs` and `res` have n * n entries, `ext` is at most
-            // (n, n) and `p` is validated (residual_block).
+            // the kernel enables; `simd::available()` lists Avx512 only with the features that
+            // avx512f implies (AVX2, FMA, F16C). `coeffs` and `res` have n * n entries, `ext` is
+            // at most (n, n) and `p` is validated (residual_block).
             unsafe { avx512::residual(coeffs, ext, dq, p, res) };
             true
         }
@@ -478,7 +479,9 @@ fn add_row(tier: Tier, row: &mut [u16], res: &[i32], max: i32) {
                 && std::arch::is_x86_feature_detected!("avx512vl") =>
         {
             // SAFETY: the guard above found AVX-512 F, BW and VL on this CPU, the features the
-            // kernel enables; the kernel only reads and writes within the two slices.
+            // kernel enables; `simd::available()` lists Avx512 only with the features that
+            // avx512f implies (AVX2, FMA, F16C). The kernel only reads and writes within the two
+            // slices.
             unsafe { avx512::add_row(row, res, max) }
         }
         #[cfg(target_arch = "x86_64")]

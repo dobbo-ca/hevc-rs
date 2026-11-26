@@ -11,7 +11,7 @@ on:
         description: Run only this target (empty = all)
         default: ''
       require_avx512:
-        description: Fail an x86_64 job at once on a runner without AVX-512, so the tier targets test the AVX-512 kernels (rerun the failed jobs)
+        description: Fail an x86_64 job at once on a runner without AVX-512 F, BW, VL and VNNI, so the tier targets test the AVX-512 kernels (rerun the failed jobs)
         type: boolean
         default: false
 permissions:
@@ -59,7 +59,8 @@ jobs:
     steps:
       # The CPU model and its AVX-512 subsets, in the job summary (hosted runners are Intel with
       # AVX-512 or AMD EPYC without it). With require_avx512 the job stops here on a host without
-      # AVX-512 F, BW and VL, so a rerun can get one.
+      # AVX-512 F, BW, VL and VNNI (the AVX-512 transform residual kernel needs VNNI), so a
+      # rerun can get one.
       - name: CPU
         env: { REQ: "${{ inputs.require_avx512 }}" }
         run: |
@@ -69,7 +70,7 @@ jobs:
           echo "CPU: $model, $(nproc) CPUs. AVX-512: ${sub:-none}" | tee -a "$GITHUB_STEP_SUMMARY"
           echo >> "$GITHUB_STEP_SUMMARY"
           ok=1
-          for f in avx512f avx512bw avx512vl; do echo "$flags" | grep -qw $f || ok=0; done
+          for f in avx512f avx512bw avx512vl avx512_vnni; do echo "$flags" | grep -qw $f || ok=0; done
           if [ "$REQ" = true ] && [ $ok = 0 ]; then echo "require_avx512: this host has no AVX-512" >&2; exit 1; fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { lfs: false }

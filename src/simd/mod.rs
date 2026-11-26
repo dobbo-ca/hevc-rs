@@ -17,7 +17,8 @@ pub(crate) mod x86;
 
 use std::sync::OnceLock;
 
-/// A SIMD tier. `Avx512` means AVX-512 F, BW and VL (and AVX2).
+/// A SIMD tier. `Avx512` means AVX-512 F, BW and VL (and AVX2, FMA and F16C, which rustc's
+/// avx512f implies).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code, reason = "each target constructs only its own tiers")]
 pub(crate) enum Tier {
@@ -45,9 +46,13 @@ pub(crate) fn available() -> Vec<Tier> {
     {
         if std::arch::is_x86_feature_detected!("avx2") {
             v.push(Tier::Avx2);
+            // rustc's avx512f implies avx2, fma and f16c, so the AVX-512 kernels may use them:
+            // list the tier only when the CPU reports them too.
             if std::arch::is_x86_feature_detected!("avx512f")
                 && std::arch::is_x86_feature_detected!("avx512bw")
                 && std::arch::is_x86_feature_detected!("avx512vl")
+                && std::arch::is_x86_feature_detected!("fma")
+                && std::arch::is_x86_feature_detected!("f16c")
             {
                 v.push(Tier::Avx512);
             }
@@ -101,13 +106,24 @@ mod tests {
     use super::*;
 
     /// Also logs the tier in use (`--nocapture`), so a CI log shows what the run tested.
+    /// `HEVC_EXPECT_VNNI=1|0` (the SDE steps of CI) also checks AVX-512 VNNI, which selects the
+    /// AVX-512 transform residual kernel over the AVX2 one.
     #[test]
     fn tier_is_detected_or_forced() {
+        #[cfg(target_arch = "x86_64")]
+        let vnni = std::arch::is_x86_feature_detected!("avx512vnni");
+        #[cfg(not(target_arch = "x86_64"))]
+        let vnni = false;
         eprintln!(
-            "SIMD tier: {}, AVX-512 kernels: {}",
+            "SIMD tier: {}, AVX-512 kernels: {}, VNNI: {vnni}",
             tier().name(),
             avx512_kernels()
         );
+        match std::env::var("HEVC_EXPECT_VNNI").as_deref() {
+            Ok("1") => assert!(vnni, "HEVC_EXPECT_VNNI=1, but VNNI is not detected"),
+            Ok("0") => assert!(!vnni, "HEVC_EXPECT_VNNI=0, but VNNI is detected"),
+            _ => {}
+        }
         match std::env::var("HEVC_SIMD").as_deref() {
             Ok("avx512") => assert_eq!(tier(), Tier::Avx512),
             Ok("scalar") => assert_eq!(tier(), Tier::Scalar),
