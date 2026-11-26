@@ -263,6 +263,7 @@ pub struct Picture {
 
 /// The SIMD tier this process uses: `"scalar"`, `"avx2"`, `"avx512"` or `"neon"`. It is
 /// detected once; the environment variable `HEVC_SIMD` (same names) forces a tier the CPU has.
+/// `HEVC_SIMD=avx512` on a CPU without AVX-512 F, BW and VL panics (for CI under an emulator).
 /// The output is the same for every tier.
 pub fn simd_tier() -> &'static str {
     simd::tier().name()

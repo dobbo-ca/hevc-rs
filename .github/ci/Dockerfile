@@ -49,7 +49,8 @@ RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
 RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + && cargo clippy --locked --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
 RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
-    find src examples tests -name '*.rs' -exec touch {} + && cargo test --locked --no-fail-fast
+    find src examples tests -name '*.rs' -exec touch {} + && cargo test --locked --no-fail-fast \
+    && cargo test --locked --lib -- --nocapture tier_is_detected_or_forced
 RUN --mount=type=cache,id=hevc-rs-target-ci,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + && HEVC_SIMD=scalar cargo test --locked --no-fail-fast
 # The second run forces the scalar tier through HEVC_SIMD=scalar for every test that decodes through
@@ -70,6 +71,7 @@ FROM native-arm64 AS arm64
 RUN --mount=type=cache,id=hevc-rs-target-arm64,sharing=locked,target=/src/target \
     find src examples tests -name '*.rs' -exec touch {} + \
     && cargo test --locked --target aarch64-unknown-linux-gnu --lib -- tiers_ frames_match_scalar simd::tests fuzz_ \
+    && cargo test --locked --target aarch64-unknown-linux-gnu --lib -- --nocapture tier_is_detected_or_forced \
     && HEVC_SIMD=scalar cargo test --locked --target aarch64-unknown-linux-gnu --lib -- tiers_ frames_match_scalar simd::tests fuzz_
 
 # libde265 oracle (CI only, never linked into the crate): dec265 built from the tag, static
