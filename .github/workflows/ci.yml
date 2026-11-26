@@ -70,7 +70,18 @@ jobs:
       - name: Unit tests under SDE (-spr, HEVC_SIMD=avx512)
         env:
           HEVC_SIMD: avx512
+          HEVC_EXPECT_VNNI: '1'
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ runner.temp }}/sde/sde64 -spr --
+        run: |
+          cargo test --locked --release --lib
+          cargo test --locked --release --lib -- --nocapture tier_is_detected_or_forced
+      # Skylake-X: AVX-512 F, BW and VL without VNNI, so the Avx512 tier runs the AVX2 transform
+      # residual kernel with the AVX-512 add_row (and the AVX-512 SAO kernels).
+      - name: Unit tests under SDE (-skx, HEVC_SIMD=avx512, no VNNI)
+        env:
+          HEVC_SIMD: avx512
+          HEVC_EXPECT_VNNI: '0'
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ runner.temp }}/sde/sde64 -skx --
         run: |
           cargo test --locked --release --lib
           cargo test --locked --release --lib -- --nocapture tier_is_detected_or_forced

@@ -10,8 +10,9 @@ a `#[target_feature]` kernel after `simd::tier()` / `simd::available()` found th
 time. The kernels themselves are safe functions. Each kernel family has a section below.
 
 SIMD tiers in CI: scalar, AVX2 (x86_64) and NEON (aarch64) natively; the AVX-512 tier under Intel SDE
-(job `avx512-sde`: the lib tests on `-spr` with `HEVC_SIMD=avx512`, which panics on a CPU without
-AVX-512 F, BW and VL, and fails the `-hsw` step by design). `Tier::Avx512` has its own kernels
+(job `avx512-sde`: the lib tests on `-spr` (with VNNI) and on `-skx` (without VNNI) with
+`HEVC_SIMD=avx512`, which panics on a CPU without AVX-512 F, BW and VL, and fails the `-hsw` step
+by design). Native hosts with AVX-512 (some hosted runners) also run every tier in `cargo test`. `Tier::Avx512` has its own kernels
 in two families: transform (`residual` needs VNNI too, without it the AVX2 `residual` runs;
 `add_row` needs only F, BW and VL) and SAO (`src/sao_simd.rs`, F, BW and VL). The other
 families still run the AVX2 kernels.
