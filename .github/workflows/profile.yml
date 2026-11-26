@@ -61,6 +61,9 @@ jobs:
           cache-to: type=gha,mode=max,scope=hevc-rs-profile
           secrets: |
             gh_token=${{ steps.app.outputs.token }}
+      # The hosted runners default to perf_event_paranoid=4 (no perf events, even in a privileged
+      # container), so profile.sh would fall back to callgrind, which cannot run AVX-512 code.
+      - run: sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
       - env: { HEVC_SIMD: "${{ inputs.simd }}" }
         run: |
           docker run --rm --privileged ${HEVC_SIMD:+-e HEVC_SIMD} hevc-profile:local sh tests/parity/profile.sh | tee -a "$GITHUB_STEP_SUMMARY"

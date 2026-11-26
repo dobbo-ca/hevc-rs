@@ -22,9 +22,20 @@ if [ -n "$P" ] && "$P" record -q -o /tmp/probe.data -- true > /dev/null 2>&1; th
     echo
     echo '```'
     "$P" report -q -i /tmp/$tool.data --comms $comm --no-children --sort dso,symbol --stdio --percent-limit 0.3 2>/dev/null \
-      | grep -v '^$' | head -n 60 | cut -c1-160
+      | grep -v '^$' | head -n 60 | cut -c1-220
     echo '```'
     echo
+    # The SIMD kernels are inlined into their callers: self time per source file shows the share
+    # of each kernel family (src/transform/avx2.rs, src/intra/x86.rs, src/sao_simd.rs, ...).
+    if [ $tool = hevc ]; then
+      echo "### $tool (perf, self time per source file)"
+      echo
+      echo '```'
+      "$P" report -q -i /tmp/$tool.data --comms $comm --no-children --sort srcfile --stdio --percent-limit 0.3 2>/dev/null \
+        | grep -v '^$' | head -n 40 | cut -c1-220
+      echo '```'
+      echo
+    fi
   done
 else
   echo "perf events are not allowed on this host: callgrind (instruction counts) on the 8 largest prefix files."
