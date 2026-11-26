@@ -127,3 +127,24 @@ ld_st!(
     _mm256_loadu_si256,
     _mm256_storeu_si256
 );
+// 512 bits, for the AVX-512 transform kernels (`src/transform/avx512.rs`).
+ld_st!(
+    "avx512f",
+    ld_i32x16,
+    st_i32x16,
+    i32,
+    16,
+    __m512i,
+    _mm512_loadu_si512,
+    _mm512_storeu_si512
+);
+ld_st!(
+    "avx512f",
+    ld_i16x32,
+    st_i16x32,
+    i16,
+    32,
+    __m512i,
+    _mm512_loadu_si512,
+    _mm512_storeu_si512
+);

@@ -410,6 +410,8 @@ fn pack(coeffs: &[i32], n: usize, (rows, cols): (usize, usize), c16: &mut [i16])
 
 #[cfg(target_arch = "x86_64")]
 mod avx2;
+#[cfg(target_arch = "x86_64")]
+mod avx512;
 #[cfg(target_arch = "aarch64")]
 mod neon;
 
@@ -426,6 +428,20 @@ fn residual_simd(
     res: &mut [i32],
 ) -> bool {
     match tier {
+        #[cfg(target_arch = "x86_64")]
+        Tier::Avx512
+            if std::arch::is_x86_feature_detected!("avx512f")
+                && std::arch::is_x86_feature_detected!("avx512bw")
+                && std::arch::is_x86_feature_detected!("avx512vl")
+                && std::arch::is_x86_feature_detected!("avx512vnni") =>
+        {
+            let dq = dq_for(coeffs, ext, list, p);
+            // SAFETY: the guard above found AVX-512 F, BW, VL and VNNI on this CPU, the features
+            // the kernel enables; `coeffs` and `res` have n * n entries, `ext` is at most
+            // (n, n) and `p` is validated (residual_block).
+            unsafe { avx512::residual(coeffs, ext, dq, p, res) };
+            true
+        }
         #[cfg(target_arch = "x86_64")]
         Tier::Avx2 | Tier::Avx512 if std::arch::is_x86_feature_detected!("avx2") => {
             let dq = dq_for(coeffs, ext, list, p);
@@ -454,6 +470,17 @@ fn add_row(tier: Tier, row: &mut [u16], res: &[i32], max: i32) {
     // The kernels handle equal-length rows of 4, 8, 16 or 32 only; anything else runs scalar.
     let simd_ok = row.len() == res.len() && matches!(row.len(), 4 | 8 | 16 | 32);
     match tier {
+        #[cfg(target_arch = "x86_64")]
+        Tier::Avx512
+            if simd_ok
+                && std::arch::is_x86_feature_detected!("avx512f")
+                && std::arch::is_x86_feature_detected!("avx512bw")
+                && std::arch::is_x86_feature_detected!("avx512vl") =>
+        {
+            // SAFETY: the guard above found AVX-512 F, BW and VL on this CPU, the features the
+            // kernel enables; the kernel only reads and writes within the two slices.
+            unsafe { avx512::add_row(row, res, max) }
+        }
         #[cfg(target_arch = "x86_64")]
         Tier::Avx2 | Tier::Avx512 if simd_ok && std::arch::is_x86_feature_detected!("avx2") => {
             // SAFETY: the guard above found AVX2 on this CPU (Avx512 implies it, see
@@ -1142,6 +1169,63 @@ mod tests {
                 // Mostly zero bytes: sparse blocks.
                 let sparse: Vec<u8> = data.iter().map(|&b| if b < 200 { 0 } else { b }).collect();
                 assert!(fuzz_tiers(&sparse), "sparse len {len}");
+            }
+        }
+    }
+
+    /// `add_row` on every tier against the scalar loop: every row length, sample values at the
+    /// ends of the range, residuals at the ends of i32 and around the clip points.
+    #[test]
+    fn add_row_edges_match_scalar() {
+        let res_vals = [
+            i32::MIN,
+            i32::MIN + 1,
+            -65537,
+            -65536,
+            -65535,
+            -255,
+            -1,
+            0,
+            1,
+            254,
+            255,
+            256,
+            65534,
+            65535,
+            65536,
+            65537,
+            i32::MAX - 1,
+            i32::MAX,
+        ];
+        for tier in simd::available() {
+            for len in [4usize, 8, 16, 32] {
+                for bd in [8u32, 10, 12, 16] {
+                    let max = (1i32 << bd) - 1;
+                    for i in 0..res_vals.len() {
+                        let res: Vec<i32> = (0..len)
+                            .map(|k| res_vals[(i + k) % res_vals.len()])
+                            .collect();
+                        for base in [0i32, 1, max / 2, max - 1, max] {
+                            let pred: Vec<u16> = (0..len)
+                                .map(|k| {
+                                    (if k.is_multiple_of(3) {
+                                        base
+                                    } else {
+                                        max - base
+                                    }) as u16
+                                })
+                                .collect();
+                            let mut got = pred.clone();
+                            add_row(tier, &mut got, &res, max);
+                            let want: Vec<u16> = pred
+                                .iter()
+                                .zip(&res)
+                                .map(|(&s, &r)| i32::from(s).saturating_add(r).clamp(0, max) as u16)
+                                .collect();
+                            assert_eq!(got, want, "{tier:?} len {len} bd {bd} res {res:?}");
+                        }
+                    }
+                }
             }
         }
     }

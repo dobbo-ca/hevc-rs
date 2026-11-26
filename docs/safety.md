@@ -11,7 +11,9 @@ time. The kernels themselves are safe functions. Each kernel family has a sectio
 
 SIMD tiers in CI: scalar, AVX2 (x86_64) and NEON (aarch64) natively; the AVX-512 tier under Intel SDE
 (job `avx512-sde`: the lib tests on `-spr` with `HEVC_SIMD=avx512`, which panics on a CPU without
-AVX-512 F, BW and VL, and fails the `-hsw` step by design). `Tier::Avx512` still runs the AVX2 kernels.
+AVX-512 F, BW and VL, and fails the `-hsw` step by design). `Tier::Avx512` has its own kernels in the transform family: `residual` needs VNNI too (without it
+the AVX2 `residual` runs), `add_row` only F, BW and VL; the other families still run the AVX2
+kernels.
 
 ## Hostile input
 
@@ -38,7 +40,7 @@ thread, best of 3; `HEVC_SIMD` forces the tier). These were tried and removed:
 
 The output crop (`src/crop.rs`) and the picture hash (`sei::compute`) read the cancel flag before
 every row and return `Error::Cancelled`.
-## SIMD: transform (`src/transform.rs`, `src/transform/avx2.rs`, `src/transform/neon.rs`)
+## SIMD: transform (`src/transform.rs`, `src/transform/{avx2,avx512,neon}.rs`)
 
 Scope: dequantisation (8.6.3), inverse DCT 4 to 32 and DST 4 (both passes, the i16 clip between
 them, the bdShift rounding), the transform-skip shift, and the residual add with clip (8.6.7).
@@ -61,14 +63,15 @@ residual goes to a scratch buffer, so the coefficient buffer is cleared only on 
 |---|---|
 | Scalar | `dequant_scalar` and `transform_sparse` on the extent |
 | AVX2 | `avx2::residual` (dequant, transform, transform-skip rounding), `avx2::add_row` |
-| AVX-512 | no kernel of its own: dispatches to the AVX2 ones (the rows are 4 to 32 wide, 256 bits are enough) |
+| AVX-512 | `avx512::residual` (F, BW, VL, VNNI: `vpdpwssd` fuses the multiply and the add, `vpermw` builds the input pairs, 4x4 and 8x8 hold 16 outputs per zmm, `vpmovsdw` is the i16 clip), `avx512::add_row` (F, BW, VL: `vpmovusdw` clip); a CPU without VNNI runs the AVX2 `residual` and the AVX-512 `add_row` |
 | NEON | `neon::residual`, `neon::add_row` |
 
 `unsafe` blocks, all in `residual_simd` and `add_row` of `transform.rs` (`#[allow(unsafe_code)]`
 on those two fns), plus the shared load/store helpers of `simd/x86.rs` and `simd/arm.rs`:
 
-- Four calls of a `#[target_feature]` kernel. Invariant: the CPU has the feature. Checked by the
-  match guard right before the call (`is_x86_feature_detected!("avx2")` /
+- Six calls of a `#[target_feature]` kernel. Invariant: the CPU has the features the kernel
+  enables. Checked by the match guard right before the call (`is_x86_feature_detected!` of
+  `avx2`, or of `avx512f`, `avx512bw`, `avx512vl` (and `avx512vnni` for `residual`) /
   `is_aarch64_feature_detected!("neon")`), so even `residual_block(tier, ..)` with a tier the CPU
   lacks falls back to scalar. The detection is std's cached atomic load, not a CPUID per call.
 `add_row` also runs scalar unless both slices have the same length 4, 8, 16 or 32. The kernels contain no `unsafe`: arrays come from slices with
