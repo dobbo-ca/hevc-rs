@@ -13,9 +13,9 @@ SIMD tiers in CI: scalar, AVX2 (x86_64) and NEON (aarch64) natively; the AVX-512
 (job `avx512-sde`: the lib tests on `-spr` (with VNNI) and on `-skx` (without VNNI) with
 `HEVC_SIMD=avx512`, which panics on a CPU without AVX-512 F, BW and VL, and fails the `-hsw` step
 by design). Native hosts with AVX-512 (some hosted runners) also run every tier in `cargo test`. `Tier::Avx512` has its own kernels
-in two families: transform (`residual` needs VNNI too, without it the AVX2 `residual` runs;
-`add_row` needs only F, BW and VL) and SAO (`src/sao_simd.rs`, F, BW and VL). The other
-families still run the AVX2 kernels.
+in three families: transform (`residual` needs VNNI too, without it the AVX2 `residual` runs;
+`add_row` needs only F, BW and VL), SAO (`src/sao_simd.rs`, F, BW and VL) and intra prediction
+(`src/intra/x86_512.rs`, F, BW and VL). The other families still run the AVX2 kernels.
 
 ## Hostile input
 
@@ -99,9 +99,9 @@ coefficient buffer is all zero afterwards, also on error.
 Fuzz: `tests/fuzz/fuzz_targets/transform_tiers.rs` calls `hevc::__fuzz_transform::tiers_agree`.
 ## SIMD: intra prediction (`src/intra.rs`, `src/intra/{x86,arm}.rs`)
 
-Scalar is the oracle and the `Scalar` tier. The vector kernels work on 8 (AVX2) or 4 (NEON)
-lanes of i32 over the same `[[i32; 32]; 32]` block the scalar code fills, so every tier gives the
-same bits, including for out-of-range reference samples. They are safe `#[target_feature]` fns
+Scalar is the oracle and the `Scalar` tier. The vector kernels work on 8 (AVX2), 16 (AVX-512) or
+4 (NEON) lanes of i32 over the same `[[i32; 32]; 32]` block the scalar code fills, so every tier
+gives the same bits, including for out-of-range reference samples. They are safe `#[target_feature]` fns
 with no `unsafe`; arrays come from slices with `chunks_exact` / `try_from` in safe code, loads
 and stores are the `simd::{x86,arm}` helpers.
 
@@ -112,17 +112,23 @@ and stores are the `simd::{x86,arm}` helpers.
 | `angular` | the (32-f)*a + f*b + 16 >> 5 interpolation | building `ref[]` (invAngle), the transpose of horizontal modes |
 | `store` | clamp to the bit depth, narrow to u16 | |
 
-Tiers: Avx2 (x86 AVX2), Avx512 runs the AVX2 kernels (a block is at most 32 wide, 16 i32 lanes
-would not fill), Neon. `run` is the one dispatch.
+Tiers: Avx2 (x86 AVX2), Avx512 (`x86_512.rs`, AVX-512 F + BW + VL, 16 lanes of i32: a 4x4 block
+fills one vector with 4 rows and an 8x8 block with 2 rows, `vpermd` picks their reference samples,
+`vpmovdw` narrows in `store`; same four kernels, no new subset beyond F; planar and angular of
+16x16 and 32x32 blocks run the AVX2 kernels, since 16 lanes save nothing there; a CPU without
+F/BW/VL/AVX2 gets the AVX2 kernels), Neon. `run` is the one dispatch.
 
-`unsafe` inventory (besides the helpers of `simd/`): two blocks, both in `intra::run`, the calls of `x86::run` and
-`arm::run`. Invariant: the CPU has AVX2 / NEON; checked by `is_x86_feature_detected!("avx2")` /
+`unsafe` inventory (besides the helpers of `simd/`): three blocks, all in `intra::run`, the calls
+of `x86_512::run`, `x86::run` and `arm::run`. Invariant: the CPU has AVX-512 F + BW + VL + AVX2 /
+AVX2 / NEON; checked by `is_x86_feature_detected!` (those subsets, or "avx2") /
 `is_aarch64_feature_detected!("neon")` in the match guard right before the call, so even a tier
 value that was not taken from `simd::available()` falls back to scalar.
 
 Bounds: block size is validated in `predict` (log2 2..=5, block inside the plane); the reference
 line has 7 slots of zero padding after the 129 samples and `ref[]` has room for the 8-lane
-loads, so the loads past the last sample stay inside the arrays. `arr` returns None instead of
+loads, so the loads past the last sample stay inside the arrays. The 16-lane loads stay inside
+too: `smooth` reads up to index 129 of 136, and the AVX-512 angular kernel (n = 4, 8) reads below
+index 56 of 112 (the AVX2 kernel reaches rf[98]). `arr` returns None instead of
 reading out of range. Samples are u16 so the i32 arithmetic cannot overflow (at most 64 * 65535).
 
 The reference gather walks the left column, the corner and the top row in runs of the samples of
