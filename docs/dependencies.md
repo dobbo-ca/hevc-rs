@@ -1,7 +1,7 @@
 # Dependencies
 
 One: `isobmff` ([isobmff-rs](https://github.com/dobbo-ca/isobmff-rs), same owner, pure
-Rust, no `unsafe`), pinned by git rev in `Cargo.toml` (`c4f748b`, which has the shared `apply_transforms` helper); it parses the HEIC container for
+Rust, no `unsafe`), pinned by git rev in `Cargo.toml` (`439720a`, which has the shared `apply_transforms` helper and charges the id lists of `Heif::image` to the `max_alloc` of the parse); it parses the HEIC container for
 `decode_heic` and decodes no pixels; with `Options::apply_transforms` its `apply_transforms` crops, rotates and mirrors the decoded planes (docs/design.md, "Transforms"). CI fetches it with a read-only GitHub App token (see
 `.github/ci/Dockerfile`). The build dependencies are
 empty. No C code.
