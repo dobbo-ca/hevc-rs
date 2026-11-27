@@ -574,9 +574,10 @@ fn angular(
             },
         );
         if ok {
-            for (a, row) in t.iter().enumerate().take(n) {
-                for (b, &v) in row.iter().enumerate().take(n) {
-                    if let Some(d) = pred.get_mut(b).and_then(|r| r.get_mut(a)) {
+            // Row by row of `pred` (contiguous stores, strided loads); b < 32, so `get` holds.
+            for (b, row) in pred.iter_mut().enumerate().take(n) {
+                for (d, src) in row.iter_mut().zip(t.iter()).take(n) {
+                    if let Some(&v) = src.get(b) {
                         *d = v;
                     }
                 }
