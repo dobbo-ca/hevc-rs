@@ -41,6 +41,37 @@ if [ -n "$P" ] && "$P" record -q -e cpu-clock -o /tmp/probe.data -- true > /tmp/
       echo '```'
       echo
     fi
+    # PROF_LINES (profile.yml input `lines`): for each listed symbol, its self time per source
+    # line from perf annotate (objdump -l line markers; inlined code counts at its own line),
+    # in percent of the symbol's samples.
+    if [ $tool = hevc ] && [ -n "${PROF_LINES:-}" ]; then
+      echo "$PROF_LINES" | tr ',' '\n' | while IFS= read -r sym; do
+        [ -n "$sym" ] || continue
+        echo "### $tool: $sym, self time per source line (percent of the symbol)"
+        echo
+        echo '```'
+        "$P" annotate -i /tmp/$tool.data --stdio --symbol="$sym" 2>/dev/null > /tmp/ann.txt
+        echo "$(wc -l < /tmp/ann.txt) annotate lines"
+        awk '
+          $2 == ":" && $1 ~ /^[0-9]+\.[0-9]+$/ { S[cur] += $1; next }
+          match($0, /[^ \t]*\.rs:[0-9]+/) { cur = substr($0, RSTART, RLENGTH); sub(/^.*\/src\//, "src/", cur) }
+          END { for (k in S) if (S[k] >= 0.2) printf "%6.2f%%  %s\n", S[k], k }' /tmp/ann.txt \
+          | sort -rn | head -n 50
+        echo '```'
+        echo
+      done
+      # Callers of the libc memset / memmove (zeroing and copies), by DWARF unwinding, on the
+      # 8 largest prefix files.
+      echo "### $tool: callers of memset / memmove (perf --call-graph dwarf, 8 largest streams)"
+      echo
+      echo '```'
+      "$P" record -q -e cpu-clock -F 999 --call-graph dwarf,8192 -o /tmp/cg.data -- sh -c \
+        "for f in $(ls -S /prof/prefix/*.bit | head -n 8 | tr '\n' ' '); do $cmd \$f > /dev/null 2>&1; done" > /dev/null 2>&1
+      "$P" report -q -i /tmp/cg.data --comms $comm --no-children --sort symbol --symbol-filter=mem -G \
+        --stdio --percent-limit 0.3 2>/dev/null | grep -v '^$' | head -n 100 | cut -c1-200
+      echo '```'
+      echo
+    fi
   done
 else
   echo "perf events are not allowed on this host: callgrind (instruction counts) on the 8 largest prefix files."
