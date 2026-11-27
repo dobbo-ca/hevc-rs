@@ -42,21 +42,30 @@ if [ -n "$P" ] && "$P" record -q -e cpu-clock -o /tmp/probe.data -- true > /tmp/
       echo
     fi
     # PROF_LINES (profile.yml input `lines`): for each listed symbol, its self time per source
-    # line from perf annotate (objdump -l line markers; inlined code counts at its own line),
-    # in percent of the symbol's samples.
+    # line, in percent of the symbol's samples: the per-instruction percentages of perf
+    # annotate, each address mapped by `addr2line -i`. "inner" is the innermost line (std code
+    # counts at its library line), "crate" the innermost line in this crate's src/.
     if [ $tool = hevc ] && [ -n "${PROF_LINES:-}" ]; then
+      bin=$(command -v hevc-bench)
       echo "$PROF_LINES" | tr ',' '\n' | while IFS= read -r sym; do
         [ -n "$sym" ] || continue
         echo "### $tool: $sym, self time per source line (percent of the symbol)"
         echo
         echo '```'
-        "$P" annotate -i /tmp/$tool.data --stdio --symbol="$sym" 2>/dev/null > /tmp/ann.txt
-        echo "$(wc -l < /tmp/ann.txt) annotate lines"
-        awk '
-          $2 == ":" && $1 ~ /^[0-9]+\.[0-9]+$/ { S[cur] += $1; next }
-          match($0, /[^ \t]*\.rs:[0-9]+/) { cur = substr($0, RSTART, RLENGTH); sub(/^.*\/src\//, "src/", cur) }
-          END { for (k in S) if (S[k] >= 0.2) printf "%6.2f%%  %s\n", S[k], k }' /tmp/ann.txt \
-          | sort -rn | head -n 50
+        "$P" annotate -i /tmp/$tool.data --stdio --no-source --symbol="$sym" 2>/dev/null > /tmp/ann.txt
+        awk '$2 == ":" && $1 ~ /^[0-9]+\.[0-9]+$/ && $1 + 0 > 0 { a = $3; sub(/:$/, "", a); print a, $1 }' \
+          /tmp/ann.txt > /tmp/pct.txt
+        echo "$(wc -l < /tmp/ann.txt) annotate lines, $(wc -l < /tmp/pct.txt) instructions with samples"
+        cut -d' ' -f1 /tmp/pct.txt | sed 's/^/0x/' | addr2line -e "$bin" -i -a > /tmp/loc.txt 2>/dev/null
+        awk 'NR == FNR { a = $1; sub(/^0+/, "", a); P[a] = $2; next }
+          /^0x/ { a = substr($1, 3); sub(/^0+/, "", a); n = 0; next }
+          { l = $1; sub(/^\/src\/src\//, "src/", l); sub(/^.*\/library\//, "", l); n++
+            if (n == 1) I[l] += P[a]
+            if (!(a in D) && l ~ /^src\//) { D[a] = 1; C[l] += P[a] } }
+          END { for (k in I) if (I[k] >= 0.3) printf "inner %6.2f%%  %s\n", I[k], k
+                for (k in C) if (C[k] >= 0.3) printf "crate %6.2f%%  %s\n", C[k], k }' \
+          /tmp/pct.txt /tmp/loc.txt | sort -k1,1 -k2,2rn | head -n 90
+        [ -s /tmp/pct.txt ] || sed -n '1,12p' /tmp/ann.txt | cut -c1-160
         echo '```'
         echo
       done
@@ -67,8 +76,11 @@ if [ -n "$P" ] && "$P" record -q -e cpu-clock -o /tmp/probe.data -- true > /tmp/
       echo '```'
       "$P" record -q -e cpu-clock -F 999 --call-graph dwarf,8192 -o /tmp/cg.data -- sh -c \
         "for f in $(ls -S /prof/prefix/*.bit | head -n 8 | tr '\n' ' '); do $cmd \$f > /dev/null 2>&1; done" > /dev/null 2>&1
-      "$P" report -q -i /tmp/cg.data --comms $comm --no-children --sort symbol --symbol-filter=mem -G \
-        --stdio --percent-limit 0.3 2>/dev/null | grep -v '^$' | head -n 100 | cut -c1-200
+      mems=$("$P" report -q -i /tmp/cg.data --comms $comm --no-children --sort symbol --stdio -g none 2>/dev/null \
+        | grep -o '__mem\(set\|move\|cpy\)[a-z0-9_]*' | sort -u | tr '\n' ',')
+      echo "symbols: ${mems:-none}"
+      [ -z "$mems" ] || "$P" report -q -i /tmp/cg.data --comms $comm --no-children --sort symbol \
+        --symbols="${mems%,}" -g graph,0.5,callee --stdio 2>/dev/null | grep -v '^$' | head -n 120 | cut -c1-200
       echo '```'
       echo
     fi
