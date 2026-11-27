@@ -527,30 +527,30 @@ fn angular(
     let side = |k: usize| if vertical { p.left(k) } else { p.top(k) };
     // ref[x] for x = -n..=2n lives at index x + 32.
     let mut rf = [0i32; RF_LEN];
-    for k in 0..=n {
-        if let Some(d) = rf.get_mut(32 + k) {
-            *d = main(k);
+    // ref[x] = main(x) for x = 0..=n (negative angles) or 0..=2n, as slice copies: main(k) is
+    // r[2n + k] (vertical) or r[2n - k] (horizontal).
+    let m = if angle < 0 { n } else { 2 * n };
+    let dst = rf.get_mut(32..=32 + m).ok_or_else(bad)?;
+    if vertical {
+        dst.copy_from_slice(p.r.get(2 * n..=2 * n + m).ok_or_else(bad)?);
+    } else {
+        let src = p.r.get(2 * n - m..=2 * n).ok_or_else(bad)?;
+        for (d, &v) in dst.iter_mut().zip(src.iter().rev()) {
+            *d = v;
         }
     }
     let last = (ni * angle) >> 5;
-    if angle < 0 {
-        if last < -1 {
-            let inv = mode
-                .checked_sub(11)
-                .and_then(|i| INV_ANGLE.get(i as usize))
-                .copied()
-                .ok_or_else(bad)?;
-            for x in last..=-1 {
-                let k = usize::try_from((x * inv + 128) >> 8).map_err(|_| bad())?;
-                if let Some(d) = rf.get_mut((32 + x) as usize) {
-                    *d = side(k);
-                }
-            }
-        }
-    } else {
-        for k in n + 1..=2 * n {
-            if let Some(d) = rf.get_mut(32 + k) {
-                *d = main(k);
+    // Negative angles (last < -1 only for them): ref[x] for x = last..=-1 from the side.
+    if last < -1 {
+        let inv = mode
+            .checked_sub(11)
+            .and_then(|i| INV_ANGLE.get(i as usize))
+            .copied()
+            .ok_or_else(bad)?;
+        for x in last..=-1 {
+            let k = usize::try_from((x * inv + 128) >> 8).map_err(|_| bad())?;
+            if let Some(d) = rf.get_mut((32 + x) as usize) {
+                *d = side(k);
             }
         }
     }
