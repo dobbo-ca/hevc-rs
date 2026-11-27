@@ -23,14 +23,36 @@ type Block = [[i32; 32]; 32];
 /// A predicted block, [y][x]; the columns at and past the block size are scratch.
 type Pred = [[u16; 32]; 32];
 
-/// Block buffers of [`predict`], kept by the caller across calls so that no 4 KiB array is
-/// zeroed per prediction. Every mode writes the whole n x n part of each buffer it reads.
+/// Buffers of [`predict`], kept by the caller across calls so that no array is zeroed per
+/// prediction. Every mode writes the whole n x n part of each block buffer it reads; `gather`
+/// writes the whole `4 * n + 1` line of `refs`, and `angular` every entry of `rf` it reads for
+/// the block. Past those parts the buffers keep older values, which only reach the lanes past
+/// the block size (scratch) of the vector kernels.
 #[derive(Default)]
 pub(crate) struct Scratch {
+    blk: Blocks,
+    refs: Refs,
+}
+
+/// The block buffers of [`Scratch`].
+struct Blocks {
     pred: Block,
     /// The transposed result of a horizontal angular mode.
     t: Block,
     out: Pred,
+    /// ref[] of the angular modes (see `angular`).
+    rf: [i32; RF_LEN],
+}
+
+impl Default for Blocks {
+    fn default() -> Self {
+        Self {
+            pred: [[0; 32]; 32],
+            t: [[0; 32]; 32],
+            out: [[0; 32]; 32],
+            rf: [0; RF_LEN],
+        }
+    }
 }
 
 /// intraPredAngle (Table 8-5) for predModeIntra 2..=34, index = mode - 2.
@@ -59,6 +81,15 @@ fn at(a: &[i32], i: usize) -> i32 {
 struct Refs {
     r: [i32; MAX_REF],
     n: usize,
+}
+
+impl Default for Refs {
+    fn default() -> Self {
+        Self {
+            r: [0; MAX_REF],
+            n: 0,
+        }
+    }
 }
 
 impl Refs {
@@ -130,21 +161,13 @@ fn predict_in(
     } else {
         (act.sps.bit_depth_chroma, 2) // SubWidthC = SubHeightC = 2 for 4:2:0
     };
-    let mut p = Refs { r: [0; MAX_REF], n };
-    gather(frame, act, c_idx, x0, y0, n, sub, bit_depth, &mut p)?;
+    let Scratch { blk, refs: p } = s;
+    p.n = n;
+    gather(frame, act, c_idx, x0, y0, n, sub, bit_depth, p)?;
 
     let strong = act.sps.strong_intra_smoothing_enabled;
-    compute_into(
-        tier,
-        s,
-        &mut p,
-        mode,
-        log2_size,
-        c_idx == 0,
-        strong,
-        bit_depth,
-    )?;
-    for (y, row) in s.out.iter().take(n).enumerate() {
+    compute_into(tier, blk, p, mode, log2_size, c_idx == 0, strong, bit_depth)?;
+    for (y, row) in blk.out.iter().take(n).enumerate() {
         frame
             .row_mut(c_idx, x0, y0 + y, n)?
             .copy_from_slice(row.get(..n).ok_or_else(bad)?);
@@ -164,7 +187,7 @@ fn compute(
     strong: bool,
     bit_depth: u32,
 ) -> Result<Pred> {
-    let mut s = Scratch::default();
+    let mut s = Blocks::default();
     compute_into(tier, &mut s, p, mode, log2, luma, strong, bit_depth)?;
     Ok(s.out)
 }
@@ -173,7 +196,7 @@ fn compute(
 #[allow(clippy::too_many_arguments)]
 fn compute_into(
     tier: Tier,
-    s: &mut Scratch,
+    s: &mut Blocks,
     p: &mut Refs,
     mode: u32,
     log2: u32,
@@ -188,7 +211,7 @@ fn compute_into(
     match mode {
         0 => planar_with(tier, p, &mut s.pred, log2),
         1 => dc(p, &mut s.pred, log2, luma),
-        _ => angular(tier, p, &mut s.pred, &mut s.t, mode, luma, max)?,
+        _ => angular(tier, p, s, mode, luma, max)?,
     }
     store(tier, &s.pred, &mut s.out, p.n, max);
     Ok(())
@@ -506,17 +529,9 @@ fn dc(p: &Refs, pred: &mut Block, log2: u32, luma: bool) {
     }
 }
 
-/// 8.4.4.2.6.
-#[allow(clippy::too_many_arguments)]
-fn angular(
-    tier: Tier,
-    p: &Refs,
-    pred: &mut Block,
-    t: &mut Block,
-    mode: u32,
-    luma: bool,
-    max: i32,
-) -> Result<()> {
+/// 8.4.4.2.6, into `s.pred` (with `s.t` and `s.rf`).
+fn angular(tier: Tier, p: &Refs, s: &mut Blocks, mode: u32, luma: bool, max: i32) -> Result<()> {
+    let Blocks { pred, t, rf, .. } = s;
     let n = p.n;
     let ni = n as i32;
     let idx = usize::try_from(mode - 2).map_err(|_| bad())?;
@@ -525,8 +540,8 @@ fn angular(
     // main(k) / side(k) are p[-1+k][-1] / p[-1][-1+k] for vertical modes, swapped otherwise.
     let main = |k: usize| if vertical { p.top(k) } else { p.left(k) };
     let side = |k: usize| if vertical { p.left(k) } else { p.top(k) };
-    // ref[x] for x = -n..=2n lives at index x + 32.
-    let mut rf = [0i32; RF_LEN];
+    // ref[x] for x = -n..=2n lives at index x + 32. Not zeroed: every entry the block reads is
+    // written below (main for x = 0..=n, then x = n+1..=2n or the side for x = last..=-1).
     for k in 0..=n {
         if let Some(d) = rf.get_mut(32 + k) {
             *d = main(k);
@@ -554,12 +569,13 @@ fn angular(
             }
         }
     }
+    let rf: &[i32; RF_LEN] = rf;
     // The vector kernels give out[a][b]; horizontal modes are transposed into place.
     let done = if vertical {
         run(
             tier,
             Op::Angular {
-                rf: &rf,
+                rf,
                 angle,
                 n,
                 out: &mut *pred,
@@ -569,7 +585,7 @@ fn angular(
         let ok = run(
             tier,
             Op::Angular {
-                rf: &rf,
+                rf,
                 angle,
                 n,
                 out: &mut *t,
@@ -594,9 +610,9 @@ fn angular(
             for b in 0..n {
                 let base = (32 + b as i32 + i_idx + 1) as usize;
                 let v = if i_fact != 0 {
-                    ((32 - i_fact) * at(&rf, base) + i_fact * at(&rf, base + 1) + 16) >> 5
+                    ((32 - i_fact) * at(rf, base) + i_fact * at(rf, base + 1) + 16) >> 5
                 } else {
-                    at(&rf, base)
+                    at(rf, base)
                 };
                 // Vertical modes: a = y, b = x; horizontal modes: a = x, b = y.
                 let (x, y) = if vertical { (b, a) } else { (a, b) };
