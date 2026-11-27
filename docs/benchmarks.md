@@ -21,7 +21,61 @@ stream and on every file of the HEIC corpus. `.github/workflows/bench.yml` runs 
   4:0:0), `heic`.
 
 `.github/workflows/profile.yml` (dispatch only) prints where hevc-rs and dec265 spend their time
-(`tests/parity/profile.sh`: perf, or callgrind when the host allows no perf events).
+(`tests/parity/profile.sh`: perf, or callgrind when the host allows no perf events; callgrind
+cannot run AVX-512 code).
+
+Every bench, profile and fuzz job prints the CPU model in its summary. A hosted `ubuntu-24.04`
+runner is one of these CPUs (seen so far): AMD EPYC 7763 (Zen 3, no AVX-512), AMD EPYC 9V74 and
+9V45 (Zen 4/5), Intel Xeon Platinum 8370C (Ice Lake), Intel Xeon Platinum 8573C (Emerald Rapids)
+and Intel Xeon 6975P-C (Granite Rapids). The dispatch input `require_avx512` stops the job at once
+on a host without AVX-512 (fuzz: without VNNI too), so a rerun can land on one:
+`gh workflow run bench.yml --ref <branch> -f require_avx512=true`.
+
+The default tier runs first for each stream in `bench.sh`, and that gives it a small bias against
+it: on main c6f4caf (run 45898645393, Xeon 6975P-C), with the same kernels in both tiers, the
+default tier was faster than `HEVC_SIMD=avx2` on only 35 of 149 streams, +0.2% in total.
+
+## AVX-512 kernels
+
+Profile of main c6f4caf on an Intel Xeon 6975P-C (profile run 45896383881, perf, 1 thread, avx512
+tier then running the AVX2 kernels), self time of the SIMD kernels: transform 7.0%
+(`avx2::run::<8>` 3.0%, `add_row` 1.4%, dequant 1.3%, 16/32 passes 1.3%), intra 3.6%, SAO 2.8%,
+deblocking 1.8%; about 15% in total. The rest is scalar (intra::predict 12.1%, the CTU and
+residual parse 11.8%, CABAC 8.0%).
+
+One PR per kernel family, each benched on an AVX-512 runner: before is `HEVC_SIMD=avx2`, after
+the default (avx512) tier, same build and host, all Annex B classes at 1 thread, ms.
+
+| PR | family | AVX-512 subsets | run, CPU | avx2 | avx512 | change | streams faster | heic change | result |
+|---|---|---|---|---|---|---|---|---|---|
+| #38 | transform: residual (VNNI dot products, vpermw operands, vpmovsdw clip), add_row (vpmovusdw) | F, BW, VL, VNNI (add_row: F, BW, VL) | 45900863802, Xeon 8370C | 5229.8 | 5198.3 | −0.6% | 76 / 149 | −1.6% | kept |
+| #39 | intra: smooth, planar, angular, store | F, BW, VL | 45901715151, Xeon 8370C | 5361.1 | 5499.5 | +2.6% | 3 / 149 | +2.3% | dropped |
+| #40 | SAO: edge and band offset (vpermw lookup, mask compares, masked tails) | F, BW, VL | 45903926963, Xeon 6975P-C | 3896.8 | 3875.0 | −0.6% | 97 / 149 | −0.4% | kept |
+| #41 | deblocking edge kernel (vpermt2w transposes, mask decisions) | F, BW, VL | 45904887986 (2 runs), Xeon 6975P-C | 3917.5 / 3951.5 | 3899.2 / 3944.4 | −0.5% / −0.2% | 61, 56 / 149 | +0.1% / +0.05% | dropped |
+
+Intra and deblocking keep the AVX2 kernels (docs/safety.md, "Kernels removed"). A CPU with
+AVX-512 F, BW and VL but no VNNI runs the AVX2 transform residual with the AVX-512 add_row and SAO
+kernels (tested under SDE -skx).
+
+Main 06717f1 (#38, #40 and the review fixes #42), `bench.yml` runs 45908276617 to 45918427976,
+ms. The dec265 ratio is hevc-rs (default tier) / dec265, at 1 thread and at the default threads
+(4 CPUs); heic is against libheif. A CPU with no AVX-512 (Zen 3) runs the unchanged AVX2 code: see
+the hosted-runner baseline below (ratio 0.82 / 0.82).
+
+| CPU | run | dec265 1t | avx2 1t | avx512 1t | change | ratio 1t | ratio nt | heic ratio 1t | heic ratio nt |
+|---|---|---|---|---|---|---|---|---|---|
+| AMD EPYC 9V74 (Zen 4) | 45908276617 | 5165.7 | 4031.7 | 3827.1 | −5.1% | 0.74 | 0.74 | 0.46 | 0.43 |
+| AMD EPYC 9V74 (Zen 4) | 45913669608 | 5166.1 | 4030.2 | 3823.9 | −5.1% | 0.74 | 0.74 | 0.46 | 0.43 |
+| Intel Xeon 6975P-C | 45911621683 | 4955.3 | 3980.4 | 3833.0 | −3.7% | 0.77 | 0.78 | 0.35 | 0.34 |
+| Intel Xeon 6975P-C | 45915240857 | 4957.4 | 3962.6 | 3824.0 | −3.5% | 0.77 | 0.77 | 0.35 | 0.34 |
+| Intel Xeon 6975P-C | 45916817418 | 4892.8 | 3912.2 | 3753.9 | −4.0% | 0.77 | 0.76 | 0.35 | 0.34 |
+| Intel Xeon 6975P-C | 45918427976 | 4974.9 | 4001.2 | 3847.7 | −3.8% | 0.77 | 0.77 | 0.35 | 0.34 |
+| Intel Xeon 8573C | 45909998606 | 5993.2 | 4855.3 | 4726.0 | −2.7% | 0.79 | 0.79 | 0.37 | 0.35 |
+
+Before (main c6f4caf, run 45898645393, Xeon 6975P-C): ratio 0.80 at 1 thread and 0.79 at the
+default threads, heic 0.36 / 0.35. Per family, the gain on Ice Lake (8370C, the host with the
+largest frequency drop for 512-bit code) was smaller than the combined gain on Zen 4 and Granite
+Rapids; no combined run landed on an Ice Lake host.
 
 ## Hosted-runner baseline
 
