@@ -144,10 +144,24 @@ fn predict_in(
         strong,
         bit_depth,
     )?;
-    for (y, row) in s.out.iter().take(n).enumerate() {
-        frame
-            .row_mut(c_idx, x0, y0 + y, n)?
-            .copy_from_slice(row.get(..n).ok_or_else(bad)?);
+    // One slice from the first sample of the block to its last (inside the plane: checked
+    // above), cut into rows of `stride` samples, instead of a checked row lookup per row.
+    let stride = frame
+        .stride
+        .get(c_idx)
+        .copied()
+        .filter(|&s| s >= n)
+        .ok_or_else(bad)?;
+    let start = y0 * stride + x0;
+    let rows = frame
+        .planes
+        .get_mut(c_idx)
+        .and_then(|p| p.get_mut(start..start + (n - 1) * stride + n))
+        .ok_or_else(bad)?;
+    for (dst, src) in rows.chunks_mut(stride).zip(&s.out).take(n) {
+        dst.get_mut(..n)
+            .ok_or_else(bad)?
+            .copy_from_slice(src.get(..n).ok_or_else(bad)?);
     }
     Ok(())
 }
