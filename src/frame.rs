@@ -415,6 +415,8 @@ pub(crate) struct Avail<'a> {
     frame: &'a Frame,
     act: &'a Active,
     zs: u32,
+    /// CtbAddrInRs of the current block.
+    rs: usize,
     slice_addr_rs: u32,
     tile: u32,
     last: Option<(usize, bool)>,
@@ -430,6 +432,7 @@ impl<'a> Avail<'a> {
             frame,
             act,
             zs: act.min_tb_addr_zs(x >> shift, y >> shift)?,
+            rs,
             slice_addr_rs: frame.ctb_slice(rs)?.slice_addr_rs,
             tile: Self::tile(act, rs)?,
             last: None,
@@ -461,6 +464,22 @@ impl<'a> Avail<'a> {
                 a
             }
         }
+    }
+
+    /// [`Avail::at`], where `before` says that the neighbour precedes the current block in
+    /// z-scan order by its position alone: left of the block within its rows, above it within
+    /// its columns, or the above-left corner (z-scan order grows with x at a fixed y and with y
+    /// at a fixed x). In the current CTB, such a neighbour is available without a lookup: a CTB
+    /// lies in one slice and one tile and was started.
+    pub(crate) fn at_or_before(&mut self, x: usize, y: usize, before: bool) -> bool {
+        if before && Self::ctb(self.act, x, y) == Some(self.rs) {
+            debug_assert!(
+                self.at(x, y),
+                "z-scan neighbour before the block is available"
+            );
+            return true;
+        }
+        self.at(x, y)
     }
 
     /// CtbAddrInRs of luma (x, y), None outside the picture.

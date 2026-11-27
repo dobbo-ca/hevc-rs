@@ -303,7 +303,12 @@ fn gather(
     };
     let line = p.r.get_mut(..4 * n + 1).ok_or_else(bad)?;
     let mut cur = Avail::new(frame, act, x0 * sub, y0 * sub);
-    let mut avail = |x: usize, y: usize| cur.as_mut().is_some_and(|a| a.at(x * sub, y * sub));
+    // `before`: the neighbour is left of the block within its rows, above it within its columns,
+    // or the corner (`Avail::at_or_before`).
+    let mut avail = |x: usize, y: usize, before: bool| {
+        cur.as_mut()
+            .is_some_and(|a| a.at_or_before(x * sub, y * sub, before))
+    };
     // log2 of the component samples per min-TB cell along an edge.
     let ul = act
         .sps
@@ -319,7 +324,7 @@ fn gather(
         while y > y0 {
             let lo = (((y - 1) >> ul) << ul).max(y0);
             let k = y - lo;
-            let ok = avail(xl, y - 1);
+            let ok = avail(xl, y - 1, y <= y0 + n);
             if ok {
                 let col = plane
                     .get(lo * stride + xl..=(y - 1) * stride + xl)
@@ -338,7 +343,7 @@ fn gather(
     }
     // Corner, line index 2n.
     let corner = x0.checked_sub(1).zip(y0.checked_sub(1));
-    let ok = corner.is_some_and(|(x, y)| avail(x, y));
+    let ok = corner.is_some_and(|(x, y)| avail(x, y, true));
     if let (true, Some((x, y))) = (ok, corner) {
         let v = plane.get(y * stride + x).ok_or_else(bad)?;
         *line.get_mut(2 * n).ok_or_else(bad)? = i32::from(*v);
@@ -359,7 +364,7 @@ fn gather(
         while x < x_end {
             let hi = (((x >> ul) + 1) << ul).min(x_end);
             let (i, k) = (2 * n + 1 + x - x0, hi - x);
-            let ok = avail(x, yt);
+            let ok = avail(x, yt, hi <= x0 + n);
             if ok {
                 let dst = line.get_mut(i..i + k).ok_or_else(bad)?;
                 for (d, &v) in dst.iter_mut().zip(row.get(x..hi).ok_or_else(bad)?) {
