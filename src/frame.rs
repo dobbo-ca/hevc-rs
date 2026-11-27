@@ -408,13 +408,25 @@ impl Frame {
     }
 }
 
-/// [`Frame::available`] for many neighbours of one current block: the z-scan address, slice and
-/// tile of the current block are looked up once, and the CTB part of the answer (started, same
-/// slice, same tile) is kept for the last CTB asked. Same answers as `Frame::available`.
+/// [`Frame::available`] for many neighbours of one current block: the CTB, z-scan order, slice
+/// and tile of the current block are looked up once, and the CTB part of the answer (started,
+/// same slice, same tile) is kept for the last CTB asked. Same answers as `Frame::available`.
+///
+/// MinTbAddrZs (6-10) is CtbAddrRsToTs of the CTB, shifted left by 2 * (CtbLog2SizeY -
+/// Log2MinTrafoSize), plus the z-scan order of the min-TB cell inside the CTB. So the
+/// comparison of two addresses is that of (CtbAddrInTs, order inside the CTB), and the order
+/// inside the CTB comes from the cell coordinates (`Avail::morton`), with no load from the
+/// picture-sized MinTbAddrZs table.
 pub(crate) struct Avail<'a> {
     frame: &'a Frame,
     act: &'a Active,
-    zs: u32,
+    /// CtbAddrInRs and CtbAddrInTs of the current block, and its z-scan order in the CTB.
+    rs: usize,
+    ts: u32,
+    m: u32,
+    /// Luma position of the current block, for the debug check against `Frame::available`.
+    #[cfg(debug_assertions)]
+    cur: (usize, usize),
     slice_addr_rs: u32,
     tile: u32,
     last: Option<(usize, bool)>,
@@ -425,28 +437,46 @@ impl<'a> Avail<'a> {
     /// started: then no neighbour is available.
     pub(crate) fn new(frame: &'a Frame, act: &'a Active, x: usize, y: usize) -> Option<Self> {
         let rs = Self::ctb(act, x, y)?;
-        let shift = act.sps.log2_min_trafo_size;
+        let ts = *act.rs_to_ts.get(rs)?;
         Some(Self {
             frame,
             act,
-            zs: act.min_tb_addr_zs(x >> shift, y >> shift)?,
+            rs,
+            ts,
+            m: Self::morton(act, x, y),
+            #[cfg(debug_assertions)]
+            cur: (x, y),
             slice_addr_rs: frame.ctb_slice(rs)?.slice_addr_rs,
-            tile: Self::tile(act, rs)?,
+            tile: *act.tile_id.get(ts as usize)?,
             last: None,
         })
     }
 
     /// 6.4.1 for the neighbour at luma (x, y).
     pub(crate) fn at(&mut self, x: usize, y: usize) -> bool {
+        let a = self.at_zs(x, y);
+        #[cfg(debug_assertions)]
+        {
+            let c = |v: usize| i32::try_from(v).unwrap_or(i32::MAX);
+            let (cx, cy) = self.cur;
+            debug_assert_eq!(
+                a,
+                self.frame.available(self.act, c(cx), c(cy), c(x), c(y)),
+                "Avail::at against Frame::available at ({x}, {y}) for ({cx}, {cy})"
+            );
+        }
+        a
+    }
+
+    fn at_zs(&mut self, x: usize, y: usize) -> bool {
         let Some(rs) = Self::ctb(self.act, x, y) else {
             return false;
         };
-        let shift = self.act.sps.log2_min_trafo_size;
-        if self
-            .act
-            .min_tb_addr_zs(x >> shift, y >> shift)
-            .is_none_or(|z| z > self.zs)
-        {
+        if rs == self.rs {
+            // The current CTB: started, same slice and tile; only the z-scan order counts.
+            return Self::morton(self.act, x, y) <= self.m;
+        }
+        if self.act.rs_to_ts.get(rs).is_none_or(|&t| t > self.ts) {
             return false;
         }
         match self.last {
@@ -475,6 +505,23 @@ impl<'a> Avail<'a> {
 
     fn tile(act: &Active, rs: usize) -> Option<u32> {
         act.tile_id.get(*act.rs_to_ts.get(rs)? as usize).copied()
+    }
+
+    /// The z-scan order of the min-TB cell of luma (x, y) inside its CTB: the low
+    /// 2 * (CtbLog2SizeY - Log2MinTrafoSize) bits of MinTbAddrZs (6-10), x bits at the even
+    /// positions and y bits at the odd ones. The SPS bounds the difference to 1..=4.
+    fn morton(act: &Active, x: usize, y: usize) -> u32 {
+        let sps = &act.sps;
+        let s = sps.log2_min_trafo_size;
+        let mask = (1usize << sps.ctb_log2_size_y.saturating_sub(s).min(8)) - 1;
+        // Bits 0..8 of v to the even bit positions 0..16.
+        let spread = |v: usize| {
+            let mut v = (v & mask) as u32;
+            v = (v | v << 4) & 0x0f0f;
+            v = (v | v << 2) & 0x3333;
+            (v | v << 1) & 0x5555
+        };
+        spread(x >> s) | spread(y >> s) << 1
     }
 }
 
