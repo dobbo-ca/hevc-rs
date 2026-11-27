@@ -22,13 +22,15 @@ stream and on every file of the HEIC corpus. `.github/workflows/bench.yml` runs 
 
 A/B mode: `gh workflow run bench.yml --ref <branch> -f base=<ref>` also builds `<ref>` (default
 build; its `Cargo.lock` must equal the branch's) and times it at 1 thread right after the branch's
-default build, on the same host. The summary then has an "A/B" table per class (base, this, change,
-inputs faster), and column 14 of `all.tsv` / `heic.tsv` is the base time.
+default build, on the same host. The summary then has an "A/B" table with one row per class (base,
+this, change, inputs faster), and column 14 of `all.tsv` / `heic.tsv` is the base time. The base
+runs right after the branch's build, which gives a small bias against the branch.
 
 `.github/workflows/profile.yml` (dispatch only) prints where hevc-rs and dec265 spend their time
 (`tests/parity/profile.sh`: perf, or callgrind when the host allows no perf events; callgrind
 cannot run AVX-512 code). With `-f lines='<symbol>,<symbol>'` (names as the report prints them) it
-also prints the self time per source line of each symbol and the callers of memset / memmove.
+also prints the self time per source line of each symbol and the callers of the libc memset,
+memmove and memcpy symbols (DWARF unwinding; it does not find every caller).
 
 Every bench, profile and fuzz job prints the CPU model in its summary. A hosted `ubuntu-24.04`
 runner is one of these CPUs (seen so far): AMD EPYC 7763 (Zen 3, no AVX-512), AMD EPYC 9V74 and

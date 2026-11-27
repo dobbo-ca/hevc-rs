@@ -69,9 +69,9 @@ if [ -n "$P" ] && "$P" record -q -e cpu-clock -o /tmp/probe.data -- true > /tmp/
         echo '```'
         echo
       done
-      # Callers of the libc memset / memmove (zeroing and copies), by DWARF unwinding, on the
-      # 8 largest prefix files.
-      echo "### $tool: callers of memset / memmove (perf --call-graph dwarf, 8 largest streams)"
+      # Callers of the libc memset / memmove / memcpy symbols (zeroing and copies), by DWARF
+      # unwinding, on the 8 largest prefix files.
+      echo "### $tool: callers of memset / memmove / memcpy (perf --call-graph dwarf, 8 largest streams)"
       echo
       echo '```'
       "$P" record -q -e cpu-clock -F 999 --call-graph dwarf,8192 -o /tmp/cg.data -- sh -c \
