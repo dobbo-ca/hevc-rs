@@ -325,7 +325,9 @@ fn gather(
                     .get(lo * stride + xl..=(y - 1) * stride + xl)
                     .ok_or_else(bad)?;
                 let dst = line.get_mut(i..i + k).ok_or_else(bad)?;
-                for (d, &v) in dst.iter_mut().zip(col.iter().step_by(stride).rev()) {
+                // Rows lo..y top down fill dst from its end: a forward StepBy, since its
+                // next_back takes a division per sample.
+                for (d, &v) in dst.iter_mut().rev().zip(col.iter().step_by(stride)) {
                     *d = i32::from(v);
                 }
             }
