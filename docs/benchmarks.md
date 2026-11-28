@@ -35,7 +35,7 @@ memmove and memcpy symbols (DWARF unwinding; it does not find every caller).
 Every bench, profile and fuzz job prints the CPU model in its summary. A hosted `ubuntu-24.04`
 runner is one of these CPUs (seen so far): AMD EPYC 7763 (Zen 3, no AVX-512), AMD EPYC 9V74 and
 9V45 (Zen 4/5), Intel Xeon Platinum 8370C (Ice Lake), Intel Xeon Platinum 8573C (Emerald Rapids)
-and Intel Xeon 6975P-C (Granite Rapids). The dispatch input `require_avx512` stops the job at once
+and Intel Xeon 6975P-C and 6973P-C (Granite Rapids). The dispatch input `require_avx512` stops the job at once
 on a host without AVX-512 (fuzz: without VNNI too), so a rerun can land on one:
 `gh workflow run bench.yml --ref <branch> -f require_avx512=true`.
 
@@ -57,7 +57,7 @@ the default (avx512) tier, same build and host, all Annex B classes at 1 thread,
 | PR | family | AVX-512 subsets | run, CPU | avx2 | avx512 | change | streams faster | heic change | result |
 |---|---|---|---|---|---|---|---|---|---|
 | #38 | transform: residual (VNNI dot products, vpermw operands, vpmovsdw clip), add_row (vpmovusdw) | F, BW, VL, VNNI (add_row: F, BW, VL) | 45900863802, Xeon 8370C | 5229.8 | 5198.3 | −0.6% | 76 / 149 | −1.6% | kept |
-| #39 | intra: smooth, planar, angular, store | F, BW, VL | 45901715151, Xeon 8370C | 5361.1 | 5499.5 | +2.6% | 3 / 149 | +2.3% | dropped |
+| #39 | intra: smooth, planar, angular, store | F, BW, VL | 45901715151, Xeon 8370C | 5361.1 | 5499.5 | +2.6% | 3 / 149 | +2.3% | dropped (retried on Zen 4 and Granite Rapids below: dropped again) |
 | #40 | SAO: edge and band offset (vpermw lookup, mask compares, masked tails) | F, BW, VL | 45903926963, Xeon 6975P-C | 3896.8 | 3875.0 | −0.6% | 97 / 149 | −0.4% | kept |
 | #41 | deblocking edge kernel (vpermt2w transposes, mask decisions) | F, BW, VL | 45904887986 (2 runs), Xeon 6975P-C | 3917.5 / 3951.5 | 3899.2 / 3944.4 | −0.5% / −0.2% | 61, 56 / 149 | +0.1% / +0.05% | dropped |
 
@@ -84,6 +84,87 @@ Before (main c6f4caf, run 45898645393, Xeon 6975P-C): ratio 0.80 at 1 thread and
 default threads, heic 0.36 / 0.35. Per family, the gain on Ice Lake (8370C, the host with the
 largest frequency drop for 512-bit code) was smaller than the combined gain on Zen 4 and Granite
 Rapids; no combined run landed on an Ice Lake host.
+
+### AVX-512 intra kernels, retry on more CPUs
+
+PR #39's intra kernels were benched only on Ice Lake (8370C), where 512-bit code can lower the
+clock. They were rebased on main (branch `avx512-intra-ab-r8w3`, on top of the A/B tooling of #45)
+and benched again with `require_avx512`, 8 dispatches in all. Rule: keep them only if they are
+about 0.5% or more faster on every AVX-512 CPU reached and slower on none; no CPU-model gate.
+A/B: base = main, whose avx512 tier runs the AVX2 intra kernels; this = the AVX-512 intra kernels;
+both the default build and tier, same host, 1 thread, ms. Run 1 has no A/B columns (the A/B mode
+came after it); its avx512-vs-avx2 gap compares with that of main on the same CPU (−5.1%, runs
+45908276617 and 45913669608).
+
+| # | run | CPU | base all | this all | change | faster | base heic | this heic | heic change | avx512 vs avx2 (this) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 46048849957 | AMD EPYC 9V74 (Zen 4) | – | 3821.0 | – | – | – | 3395.0 | – | −4.44% (main: −5.1%) |
+| 2 | 46051008778 | Intel Xeon 6975P-C | 3798.9 | 3786.6 | −0.32% | 77 / 149 | 3273.3 | 3274.0 | +0.02% | −3.45% |
+| 3 | 46053546606 | Intel Xeon 6975P-C | 3721.0 | 3702.6 | −0.49% | 102 / 149 | 3248.4 | 3244.3 | −0.12% | −4.06% |
+| 4 | 46056134028 | Intel Xeon 6975P-C | 3771.1 | 3759.5 | −0.31% | 75 / 149 | 3261.5 | 3257.7 | −0.12% | −3.74% |
+| 5 | 46058306279 | AMD EPYC 9V74 (Zen 4) | 3811.1 | 3828.2 | +0.45% | 43 / 149 | 3366.7 | 3393.0 | +0.78% | −4.45% |
+| 6 | 46060785942 | AMD EPYC 7763 (Zen 3, no AVX-512) | – | – | – | – | – | – | – | stopped by `require_avx512` |
+| 7 | 46063216181 | Intel Xeon 6975P-C | 3916.9 | 3893.0 | −0.61% | 82 / 149 | 3302.7 | 3292.8 | −0.30% | −2.50% |
+| 8 | 46065541824 | Intel Xeon 6973P-C | 4425.7 | 4424.6 | −0.03% | 62 / 149 | 3928.7 | 3995.4 | +1.70% | +1.51% |
+
+Result: dropped. They were slower on Zen 4 (run 5, and run 1 against main), under 0.5% on Granite
+Rapids (6975P-C, four runs; heic within ±0.3%), and slower on heic on the 6973P-C. The Zen 5 host
+(EPYC 9V45) was not reached in the 8 dispatches. On the 6973P-C (a CPU not seen before), the
+whole avx512 tier was 1.5% slower than avx2 at 1 thread in that run. Intra keeps the AVX2 kernels.
+
+## Scalar intra prediction
+
+Profile of main + the A/B tooling (profile run 46053542360, AMD EPYC 7763, perf, 1 thread, the
+per-line report of #45), self time: `intra::predict` 11.3%, `Avail::at` 4.9%,
+`intra::compute_into` 4.7%, memset 2.4%, memmove 2.6%. Inside `intra::predict`: the left reference
+column copy 33% (`StepBy::next_back` takes a remainder per sample: the `core::num::nonzero`
+division is 10.7% of the symbol), the availability closure 8.6%, the checked `Frame::row_mut` of
+the write-back about 12%, the top row copy 4%. Inside `compute_into`: the transpose of horizontal
+angular blocks about 23% (two checked lookups per sample), the `ref[]` fill about 18%,
+`is_x86_feature_detected!` 6%. Inside `Avail::at`: the MinTbAddrZs load and its checks about 45%.
+
+One change per A/B (bench.yml A/B mode: base and this build in the same job, 1 thread, default
+build and tier, ms); each base is main plus the changes kept before it. A change was kept at
+about 1% or more on x86_64. There is no arm64 bench job, so no change was kept by the "faster on
+both x86_64 and arm64" rule. The work stopped after three changes in a row under 1% (5, 6, 7).
+
+| # | change | run, CPU | base all | this all | change | faster | heic change | result |
+|---|---|---|---|---|---|---|---|---|
+| 1 | left reference column by a forward `StepBy` (PR #46) | 46056191192, Xeon 6975P-C | 3854.3 | 3801.4 | −1.37% | 109 / 149 | −1.17% | kept |
+| 2 | write-back of the block through one plane slice, not `row_mut` per row (branch `intra-writeback-r8w3`) | 46058302268, Xeon 6975P-C | 3755.3 | 3769.1 | +0.37% | 30 / 149 | −0.41% | dropped |
+| 3 | no availability lookup for left / top / corner neighbours in the current CTB (branch `intra-avail-fast-r8w3`) | 46060782354, Xeon 6975P-C | 3729.7 | 3741.9 | +0.33% | 42 / 149 | +0.55% | dropped |
+| 4 | transpose of horizontal angular blocks row by row of the output (PR #47) | 46063212985, EPYC 9V74 | 3851.8 | 3806.5 | −1.18% | 114 / 149 | −1.59% | kept |
+| 5 | angular `ref[]` by slice copies (branch `intra-rf-r8w3`) | 46065537602, Xeon 6975P-C | 3695.2 | 3677.3 | −0.49% | 76 / 149 | +0.32% | dropped |
+| 6 | availability z-scan order by bit interleave (6-10), no MinTbAddrZs load (branch `intra-avail-zs-r8w3`) | 46069795376, Xeon 6975P-C | 3693.8 | 3733.8 | +1.08% | 22 / 149 | +0.48% | dropped |
+| 7 | reference arrays kept in `Scratch`, no zeroing per block (branch `intra-no-zero-r8w3`) | 46072274816, EPYC 7763 | 5168.0 | 5180.5 | +0.24% | 71 / 149 | +0.78% | dropped |
+
+Profile after changes 1 and 4 (run 46067817526, EPYC 7763): `intra::predict` 8.5% (from 11.3%),
+`Avail::at` 6.7%, `compute_into` 4.0%. No `unsafe` change was tried: the safe rewrites of the
+checked write-back (2) and of the availability lookups (3, 6) gave no gain, so the bounds checks
+there are not what costs the time.
+
+Checks: `ci` (workflow_dispatch, all jobs, parity bit-exact) green on the stack of 1, 4 and 6 (run
+46069819028) and of 1, 4 and 7 (run 46072277525). Fuzz, 900 s per target on the stack of 1 and 4:
+annexb and hvcc (run 46074491189; its other x86_64 jobs failed in the image build, see below),
+decode (46081512604), heic (46081514594), intra_tiers on x86_64 and arm64 (46084354147), and the
+four tier targets on arm64 (46074491189): no crash. In one fuzz run of all targets, only the first
+two x86_64 jobs fetched the corpus; the later jobs restored the `data` layer from the Actions
+cache with an empty `/data` cache mount, and the seed step failed. One target per run
+(`-f only=<target>`) avoids that.
+
+Main before and after, `bench.yml` on push (default build and tier; ratio = hevc-rs / dec265, heic
+against libheif; 1 thread / default threads, 4 CPUs). Main 3c52696 (#45) has the decoder code of
+dc3aec9. The hosts differ between runs, so compare rows of the same CPU.
+
+| main | run | CPU | dec265 1t | hevc 1t | ratio 1t | ratio nt | heic ratio 1t | heic ratio nt |
+|---|---|---|---|---|---|---|---|---|
+| dc3aec9 (before) | 46017392130 | Intel Xeon 6975P-C | 4894.5 | 3879.8 | 0.79 | 0.79 | 0.36 | 0.35 |
+| 3c52696 (#45, before) | 46088427562 | AMD EPYC 7763 | 6351.7 | 5200.6 | 0.82 | 0.81 | 0.54 | 0.51 |
+| 0373e66 (#46) | 46090267608 | AMD EPYC 7763 | 6339.0 | 5133.6 | 0.81 | 0.80 | 0.54 | 0.51 |
+| 59e31b7 (#46, #47) | 46092051550 | AMD EPYC 9V45 (Zen 5) | 4186.1 | 3005.1 | 0.72 | 0.71 | 0.33 | 0.32 |
+
+On the EPYC 9V45 (the first bench on Zen 5), the avx512 tier of main 59e31b7 (with the AVX2
+intra kernels) was 5.1% faster than `HEVC_SIMD=avx2` (heic 4.1%).
 
 ## Hosted-runner baseline
 
