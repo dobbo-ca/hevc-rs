@@ -273,6 +273,15 @@ RUN --mount=type=cache,id=hevc-rs-target-bench-v4,sharing=locked,target=/src/tar
        cargo build --locked --release --example bench --example heic \
     && cp target/release/examples/bench /usr/local/bin/hevc-bench-v4 \
     && cp target/release/examples/heic /usr/local/bin/hevc-heic-v4
+# A/B mode (bench.yml input `base`): the base source in base/, default build, own target cache.
+# Offline: its Cargo.lock must equal this one's, so the fetched dependencies serve it.
+RUN --mount=type=cache,id=hevc-rs-target-bench-base,sharing=locked,target=/src/base/target \
+    if [ -f base/Cargo.toml ]; then \
+      cd base && find src examples tests -name '*.rs' -exec touch {} + \
+      && CARGO_NET_OFFLINE=true cargo build --locked --release --example bench --example heic \
+      && cp target/release/examples/bench /usr/local/bin/hevc-bench-base \
+      && cp target/release/examples/heic /usr/local/bin/hevc-heic-base; \
+    fi
 ARG BENCH_RUN=0
 RUN --mount=type=cache,id=hevc-rs-data,target=/data,sharing=locked,readonly \
     --mount=type=cache,id=hevc-rs-heic-data,target=/heic,sharing=locked,readonly \

@@ -9,6 +9,9 @@ on:
       simd:
         description: HEVC_SIMD for hevc-rs (empty = the best tier of the host)
         default: ''
+      lines:
+        description: hevc-rs symbols (comma-separated, as the report prints them) to give self time per source line and the callers of memset/memmove for (empty = none)
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -64,6 +67,6 @@ jobs:
       # The hosted runners default to perf_event_paranoid=4 (no perf events, even in a privileged
       # container), so profile.sh would fall back to callgrind, which cannot run AVX-512 code.
       - run: sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
-      - env: { HEVC_SIMD: "${{ inputs.simd }}" }
+      - env: { HEVC_SIMD: "${{ inputs.simd }}", PROF_LINES: "${{ inputs.lines }}" }
         run: |
-          docker run --rm --privileged ${HEVC_SIMD:+-e HEVC_SIMD} hevc-profile:local sh tests/parity/profile.sh | tee -a "$GITHUB_STEP_SUMMARY"
+          docker run --rm --privileged ${HEVC_SIMD:+-e HEVC_SIMD} ${PROF_LINES:+-e PROF_LINES} hevc-profile:local sh tests/parity/profile.sh | tee -a "$GITHUB_STEP_SUMMARY"

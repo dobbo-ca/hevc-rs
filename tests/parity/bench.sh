@@ -33,6 +33,14 @@ V4=0
 grep -q avx512bw /proc/cpuinfo && V4=1
 bestv4() { if [ "$V4" = 1 ]; then best "$@"; else echo 0; fi; }
 
+# A/B mode (bench.yml input `base`): hevc-bench-base and hevc-heic-base, the default build of the
+# base source, are timed at 1 thread right after the same build of this source, so both run on
+# the same host and the same warm files; their column is 0 otherwise. The head runs first, which
+# gives a small bias against it.
+AB=0
+command -v hevc-bench-base > /dev/null 2>&1 && AB=1
+bestab() { if [ "$AB" = 1 ]; then best "$@"; else echo 0; fi; }
+
 # best <cmd...>: the shortest wall time in ns of REPS runs; fails when a run fails.
 best() {
   b= i=0
@@ -58,7 +66,7 @@ class() {
 
 # One line per stream: name class bytes, then the times in ns:
 #  4 dec265-1t 5 ffmpeg-1t 6 hevc-1t 7 hevc-v4-1t 8 hevc-scalar-1t 9 hevc-avx2-1t
-#  10 dec265-nt 11 ffmpeg-nt 12 hevc-nt 13 hevc-v4-nt
+#  10 dec265-nt 11 ffmpeg-nt 12 hevc-nt 13 hevc-v4-nt 14 hevc-base-1t (A/B mode, else 0)
 : > $W/all.tsv; : > $W/skipped
 for p in $W/prefix/*.bit; do
   [ -f "$p" ] || continue
@@ -66,6 +74,7 @@ for p in $W/prefix/*.bit; do
   if c1=$(best dec265 -q -t1 "$p") \
     && f1=$(best ffmpeg -v error -nostdin -threads 1 -i "$p" -f null -) \
     && r1=$(best hevc-bench --threads 1 "$p") \
+    && b1=$(bestab hevc-bench-base --threads 1 "$p") \
     && v1=$(bestv4 hevc-bench-v4 --threads 1 "$p") \
     && s1=$(HEVC_SIMD=scalar best hevc-bench --threads 1 "$p") \
     && a1=$(HEVC_SIMD=avx2 best hevc-bench --threads 1 "$p") \
@@ -73,8 +82,8 @@ for p in $W/prefix/*.bit; do
     && fn=$(best ffmpeg -v error -nostdin -i "$p" -f null -) \
     && rn=$(best hevc-bench "$p") \
     && vn=$(bestv4 hevc-bench-v4 "$p"); then
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$s" "$(class "$W/probe/$s.probe")" \
-      "$(wc -c < "$p")" "$c1" "$f1" "$r1" "$v1" "$s1" "$a1" "$cn" "$fn" "$rn" "$vn" >> $W/all.tsv
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$s" "$(class "$W/probe/$s.probe")" \
+      "$(wc -c < "$p")" "$c1" "$f1" "$r1" "$v1" "$s1" "$a1" "$cn" "$fn" "$rn" "$vn" "$b1" >> $W/all.tsv
   else
     echo "$s" >> $W/skipped
   fi
@@ -92,14 +101,15 @@ if [ -f /heic.list ]; then
     n=$(printf '%s' "${f#./}" | sed 's#/#__#g')
     if c1=$(HEIC_THREADS=1 best heic-oracle $d/in $d/o) && ls $d/o | grep -q '\.info$' \
       && r1=$(HEIC_THREADS=1 best hevc-heic $d/in $d/r) && ls $d/r | grep -q '\.info$' \
+      && b1=$(HEIC_THREADS=1 bestab hevc-heic-base $d/in $d/r) \
       && v1=$(HEIC_THREADS=1 bestv4 hevc-heic-v4 $d/in $d/r) \
       && s1=$(HEVC_SIMD=scalar HEIC_THREADS=1 best hevc-heic $d/in $d/r) \
       && a1=$(HEVC_SIMD=avx2 HEIC_THREADS=1 best hevc-heic $d/in $d/r) \
       && cn=$(best heic-oracle $d/in $d/o) \
       && rn=$(best hevc-heic $d/in $d/r) \
       && vn=$(bestv4 hevc-heic-v4 $d/in $d/r); then
-      printf '%s\theic\t%s\t%s\t0\t%s\t%s\t%s\t%s\t%s\t0\t%s\t%s\n' "$n" "$(wc -c < "/heic/x/${f#./}")" \
-        "$c1" "$r1" "$v1" "$s1" "$a1" "$cn" "$rn" "$vn" >> $W/heic.tsv
+      printf '%s\theic\t%s\t%s\t0\t%s\t%s\t%s\t%s\t%s\t0\t%s\t%s\t%s\n' "$n" "$(wc -c < "/heic/x/${f#./}")" \
+        "$c1" "$r1" "$v1" "$s1" "$a1" "$cn" "$rn" "$vn" "$b1" >> $W/heic.tsv
     else
       echo "heic:$n" >> $W/skipped
     fi
@@ -131,6 +141,21 @@ files=$(cat $W/all.tsv $W/heic.tsv | wc -l)
       if ($2 != "heic") { N["all"]++; for (i = 4; i <= 13; i++) T["all",i] += $i } }
     END { split("main main10 rext all heic", K, " ")
       for (j = 1; j <= 5; j++) if (N[K[j]] > 0) row(K[j]) }'
+  if [ "$AB" = 1 ]; then
+    echo; echo "### A/B: base build vs this build (default build and tier, 1 thread, same host)"; echo
+    echo "Change: (this - base) / base. Faster: inputs where this build took less time."; echo
+    echo "| class | n | base 1t | this 1t | change | faster |"
+    echo "|---|---|---|---|---|---|"
+    cat $W/all.tsv $W/heic.tsv | awk -F'\t' '
+      function row(k) {
+        printf "| %s | %d | %.1f | %.1f | %+.2f%% | %d |\n", k, N[k], B[k]/1e6, H[k]/1e6,
+          (B[k] > 0 ? 100 * (H[k] - B[k]) / B[k] : 0), F[k]
+      }
+      function add(k) { N[k]++; B[k] += $14; H[k] += $6; if ($6 < $14) F[k]++ }
+      { add($2); if ($2 != "heic") add("all") }
+      END { split("main main10 rext all heic", K, " ")
+        for (j = 1; j <= 5; j++) if (N[K[j]] > 0) row(K[j]) }'
+  fi
   echo; echo "### Per input (1 thread; ms)"; echo
   echo "| input | class | bytes | ref | ffmpeg | hevc | v4 | scalar | avx2 | hevc / ref |"
   echo "|---|---|---|---|---|---|---|---|---|---|"

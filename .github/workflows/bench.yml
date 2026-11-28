@@ -7,6 +7,9 @@ on:
         description: Fail at once on a runner without AVX-512 (rerun to get one)
         type: boolean
         default: false
+      base:
+        description: A/B mode, a commit or branch built and timed beside this ref (1 thread, same host); its Cargo.lock must equal this ref's
+        default: ''
 permissions:
   contents: read
 # A new run waits for the one before it; it never cancels it (a measurement).
@@ -37,6 +40,14 @@ jobs:
           if [ "$REQ" = true ] && [ $ok = 0 ]; then echo "require_avx512: this host has no AVX-512" >&2; exit 1; fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { lfs: false }
+      # A/B mode: the base source in base/, which the bench stage builds as hevc-bench-base.
+      - if: inputs.base != ''
+        env: { BASE: "${{ inputs.base }}" }
+        run: |
+          git fetch -q --depth 1 origin "$BASE"
+          mkdir base && git archive FETCH_HEAD | tar -x -C base
+          echo "A/B base: $BASE at $(git rev-parse FETCH_HEAD), head $(git rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
       - id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
